@@ -1,0 +1,1263 @@
+#!/usr/bin/env python3
+"""termux-ai: A friendly AI chat CLI for Termux and any terminal.
+
+Single-file, zero-dependency (stdlib only). Talks to any OpenAI-compatible
+endpoint, or natively to Anthropic's Messages API.
+"""
+import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit, shutil, time, threading, re, html, shlex, signal
+import zipfile
+from pathlib import Path
+
+__version__ = "6.0.0"
+
+CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
+CONFIG_FILE = CONFIG_DIR / "config.json"
+DB_FILE = CONFIG_DIR / "ai_history.db"
+HIST_FILE = CONFIG_DIR / "history"
+PID_FILE = CONFIG_DIR / "server.pid"
+
+IS_TERMUX = "com.termux" in os.environ.get("PREFIX", "")
+IS_TTY = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+try:
+    import readline
+    HAVE_READLINE = True
+except ImportError:
+    HAVE_READLINE = False
+
+# Optional tiktoken import for accurate token counting
+try:
+    import tiktoken
+    _ENC = tiktoken.get_encoding("cl100k_base")
+    def est_tok(t): return len(_ENC.encode(t))
+except ImportError:
+    def est_tok(t): return len(t) // 4
+
+
+# ---------------------------------------------------------------------------
+# Colours & display helpers
+# ---------------------------------------------------------------------------
+class C:
+    RESET, BOLD, DIM, ITALIC, UNDER = "\033[0m", "\033[1m", "\033[2m", "\033[3m", "\033[4m"
+    RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, GRAY = (
+        "\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m", "\033[37m", "\033[90m"
+    )
+
+if not IS_TTY:
+    for a in dir(C):
+        if not a.startswith("_") and a != "RESET":
+            setattr(C, a, "")
+
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+def vlen(s): return len(_ANSI_RE.sub("", s))
+def pad(s, width): return s + " " * max(0, width - vlen(s))
+def mask(key): return "" if not key else "*" * len(key) if len(key) <= 8 else key[:4] + "…" + key[-4:]
+
+def parse_value(v):
+    v = v.strip()
+    low = v.lower()
+    if low in ("true", "on", "yes"): return True
+    if low in ("false", "off", "no"): return False
+    try: return int(v)
+    except ValueError: pass
+    try: return float(v)
+    except ValueError: pass
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'): return v[1:-1]
+    return v
+
+def fmt_time(ts):
+    if not ts: return ""
+    try:
+        from datetime import datetime
+        dt = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        delta = now - dt
+        if delta.days == 0: return dt.strftime("today %H:%M")
+        if delta.days == 1: return dt.strftime("yest %H:%M")
+        if delta.days < 7: return f"{delta.days}d ago"
+        return dt.strftime("%m-%d %H:%M")
+    except Exception: return ts[:16]
+
+
+# ---------------------------------------------------------------------------
+# File Reader — Pure Python extractors for Office Docs & PDFs
+# ---------------------------------------------------------------------------
+class FileReader:
+    @staticmethod
+    def read(path):
+        p = os.path.expanduser(path)
+        if not os.path.exists(p): return None
+        ext = os.path.splitext(p)[1].lower()
+        try:
+            if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".py", ".sh", ".js", ".ts", ".c", ".cpp", ".java", ".go", ".rs", ".rb", ".php", ".css", ".scss"):
+                with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()
+            elif ext == ".pdf":
+                if shutil.which("pdftotext"):
+                    r = subprocess.run(["pdftotext", "-layout", p, "-"], capture_output=True, text=True, timeout=15)
+                    return r.stdout if r.returncode == 0 else "[Error reading PDF]"
+                return "[Error: pdftotext not found. Run: pkg install poppler]"
+            elif ext == ".docx": return FileReader._read_docx(p)
+            elif ext == ".pptx": return FileReader._read_pptx(p)
+            elif ext == ".xlsx": return FileReader._read_xlsx(p)
+            else: return f"[Unsupported file type: {ext}]"
+        except Exception as e: return f"[Error reading {p}: {e}]"
+
+    @staticmethod
+    def _read_docx(path):
+        with zipfile.ZipFile(path) as z: xml = z.read("word/document.xml").decode("utf-8")
+        xml = xml.replace("</w:p>", "\n").replace("<w:br/>", "\n")
+        return html.unescape("".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", xml, re.DOTALL))).strip()
+
+    @staticmethod
+    def _read_pptx(path):
+        texts = []
+        with zipfile.ZipFile(path) as z:
+            slides = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")], key=lambda x: int(re.search(r"slide(\d+)", x).group(1)))
+            for slide in slides:
+                xml = z.read(slide).decode("utf-8").replace("</a:p>", "\n")
+                t = "".join(re.findall(r"<a:t[^>]*>(.*?)</a:t>", xml, re.DOTALL))
+                if t: texts.append(f"--- Slide {re.search(r'slide(\d+)', slide).group(1)} ---\n" + html.unescape(t))
+        return "\n\n".join(texts).strip()
+
+    @staticmethod
+    def _read_xlsx(path):
+        texts = []
+        with zipfile.ZipFile(path) as z:
+            if "xl/sharedStrings.xml" not in z.namelist(): return "[No text data found in xlsx]"
+            xml = z.read("xl/sharedStrings.xml").decode("utf-8")
+            for s in re.findall(r"<si>(.*?)</si>", xml, re.DOTALL):
+                texts.append(html.unescape("".join(re.findall(r"<t[^>]*>(.*?)</t>", s, re.DOTALL))))
+        return "\n".join(texts).strip()
+
+
+# ---------------------------------------------------------------------------
+# Markdown Formatter
+# ---------------------------------------------------------------------------
+class MarkdownFormatter:
+    def __init__(self, indent="      "):
+        self.buffer = ""
+        self.in_code_block = False
+        self.first_line = True
+        self.indent = indent
+
+    def feed(self, text):
+        self.buffer += text.replace("\r\n", "\n").replace("\r", "")
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            self._print_line(line + "\n")
+
+    def flush(self):
+        if self.buffer:
+            self._print_line(self.buffer)
+            self.buffer = ""
+
+    def _print_line(self, line):
+        prefix = "" if self.first_line else self.indent
+        self.first_line = False
+        if line.strip().startswith("```"):
+            self.in_code_block = not self.in_code_block
+            print(f"{prefix}{C.DIM}{line}{C.RESET}", end="")
+            return
+        if self.in_code_block:
+            print(f"{prefix}{C.CYAN}{line}{C.RESET}", end="")
+            return
+        if re.match(r"^#{1,6}\s", line):
+            line = f"{C.BOLD}{C.MAGENTA}{line}{C.RESET}"
+        else:
+            parts = re.split(r"(`[^`]+`)", line)
+            for i, part in enumerate(parts):
+                if part.startswith("`") and part.endswith("`") and len(part) > 1:
+                    parts[i] = f"{C.CYAN}{part[1:-1]}{C.RESET}"
+                else:
+                    part = re.sub(r"\*\*(.+?)\*\*", f"{C.BOLD}\\1{C.RESET}", part)
+                    part = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", f"{C.ITALIC}\\1{C.RESET}", part)
+                    parts[i] = re.sub(r"(?<!\_)_(?!\s)(.+?)(?<!\s)_(?!\_)", f"{C.ITALIC}\\1{C.RESET}", part)
+            line = "".join(parts)
+            line = re.sub(r"^(\s*)([-*])\s", f"\\1{C.CYAN}\\2{C.RESET} ", line)
+            line = re.sub(r"^(\s*)(\d+\.)\s", f"\\1{C.CYAN}\\2{C.RESET} ", line)
+        print(f"{prefix}{line}", end="")
+
+
+# ---------------------------------------------------------------------------
+# Spinner
+# ---------------------------------------------------------------------------
+class Spinner:
+    CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    def __init__(self, msg="thinking"):
+        self.msg = msg
+        self._stop = False
+        self._t = None
+        self._started = False
+
+    def start(self):
+        self._started = True
+        if not IS_TTY:
+            sys.stdout.write(f"{C.DIM}… {self.msg}{C.RESET}"); sys.stdout.flush(); return
+        self._stop = False
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def _run(self):
+        i = 0
+        while not self._stop:
+            sys.stdout.write(f"\r{C.CYAN}{self.CHARS[i % len(self.CHARS)]}{C.RESET} {C.DIM}{self.msg}{C.RESET}")
+            sys.stdout.flush(); time.sleep(0.08); i += 1
+
+    def stop(self):
+        if not self._started: return
+        self._started = False
+        if not IS_TTY:
+            sys.stdout.write("\r" + " " * 20 + "\r"); sys.stdout.flush(); return
+        self._stop = True
+        if self._t: self._t.join(timeout=0.3)
+        sys.stdout.write("\r" + " " * 30 + "\r"); sys.stdout.flush()
+
+
+# ---------------------------------------------------------------------------
+# Termux API & Server Manager
+# ---------------------------------------------------------------------------
+class TermuxAPI:
+    @staticmethod
+    def available(cmd): return shutil.which(cmd) is not None
+
+    @staticmethod
+    def speak(text):
+        if TermuxAPI.available("termux-tts-speak"):
+            try: subprocess.run(["termux-tts-speak", text[:1000]], timeout=15); return True
+            except: return False
+        return False
+
+    @staticmethod
+    def copy(text):
+        if TermuxAPI.available("termux-clipboard-set"):
+            try: subprocess.run(["termux-clipboard-set"], input=text, text=True, timeout=5); return True
+            except: return False
+        return False
+
+    @staticmethod
+    def paste():
+        if TermuxAPI.available("termux-clipboard-get"):
+            try:
+                r = subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, timeout=5)
+                return r.stdout
+            except: return None
+        return None
+
+    @staticmethod
+    def share(text):
+        if TermuxAPI.available("termux-share"):
+            try: subprocess.run(["termux-share", "-a", "send"], input=text, text=True, timeout=10); return True
+            except: return False
+        return False
+
+    @staticmethod
+    def status():
+        return {
+            "tts": TermuxAPI.available("termux-tts-speak"),
+            "clipboard": TermuxAPI.available("termux-clipboard-set"),
+            "share": TermuxAPI.available("termux-share"),
+        }
+
+class ServerManager:
+    @staticmethod
+    def manage(action, engine="ollama"):
+        if action == "start":
+            if PID_FILE.exists(): print(f"{C.YELLOW}Server PID file already exists. Check status or stop it first.{C.RESET}"); return
+            if engine == "ollama": cmd = ["ollama", "serve"]
+            else: print(f"{C.RED}Invalid engine. Use 'ollama'.{C.RESET}"); return
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+                PID_FILE.write_text(f"{proc.pid},{engine}")
+                print(f"{C.GREEN}Started {engine} server in background (PID: {proc.pid}).{C.RESET}")
+            except Exception as e: print(f"{C.RED}Failed to start server: {e}{C.RESET}")
+        elif action == "stop":
+            if not PID_FILE.exists(): print(f"{C.YELLOW}No running server process found.{C.RESET}"); return
+            try:
+                content = PID_FILE.read_text().strip().split(",")
+                pid, eng = int(content[0]), content[1]
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                print(f"{C.GREEN}Stopped background {eng} server (PID: {pid}).{C.RESET}")
+            except Exception as e: print(f"{C.RED}Error stopping server: {e}{C.RESET}")
+            finally:
+                if PID_FILE.exists(): PID_FILE.unlink()
+        elif action == "status":
+            if not PID_FILE.exists(): print(f"{C.YELLOW}Local server status: Stopped{C.RESET}"); return
+            try:
+                content = PID_FILE.read_text().strip().split(",")
+                pid, eng = int(content[0]), content[1]
+                os.kill(pid, 0)
+                print(f"{C.GREEN}Local server status: Running ({eng}, PID: {pid}){C.RESET}")
+            except OSError:
+                print(f"{C.RED}Local server status: Dead. Cleaning PID file.{C.RESET}")
+                PID_FILE.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+class Database:
+    def __init__(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(DB_FILE))
+        self.conn.row_factory = sqlite3.Row
+        self._migrate_schema()
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
+                content TEXT, model TEXT, tokens INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id));
+        """)
+        self.conn.commit()
+
+    def _table_cols(self, table):
+        try: return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        except sqlite3.Error: return set()
+
+    def _migrate_schema(self):
+        # Safely add missing columns instead of renaming tables
+        conv_cols = self._table_cols("conversations")
+        if conv_cols:
+            if "title" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
+            if "model" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT")
+            if "backend" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN backend TEXT")
+            if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            self.conn.commit()
+            
+        msg_cols = self._table_cols("messages")
+        if msg_cols:
+            if "conversation_id" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN conversation_id INTEGER")
+            if "role" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN role TEXT")
+            if "content" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN content TEXT")
+            if "model" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
+            if "tokens" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN tokens INTEGER DEFAULT 0")
+            if "created_at" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            self.conn.commit()
+
+    def new_conv(self, title="New Chat", model="", backend=""):
+        cur = self.conn.execute("INSERT INTO conversations (title, model, backend) VALUES (?,?,?)", (title, model, backend))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def save_msg(self, cid, role, content, model=""):
+        self.conn.execute("INSERT INTO messages (conversation_id, role, content, model) VALUES (?,?,?,?)", (cid, role, content, model))
+        self.conn.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (cid,))
+        self.conn.commit()
+
+    def get_msgs(self, cid, limit=200):
+        rows = self.conn.execute("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?", (cid, limit)).fetchall()
+        return [{"role": r["role"], "content": r["content"]} for r in rows][::-1]
+
+    def list_convs(self, limit=20):
+        return self.conn.execute(
+            "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    def del_conv(self, cid):
+        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+        self.conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+        self.conn.commit()
+
+    def rename_conv(self, cid, title):
+        self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+        self.conn.commit()
+
+    def get_conv(self, cid):
+        return self.conn.execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
+
+    def clear_conv_msgs(self, cid):
+        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+class Config:
+    DEFAULTS = {
+        "backend": "ollama",
+        "system_prompt": "You are a helpful assistant. Be concise and clear.",
+        "system_instruction": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "stream": True,
+        "show_tokens": True,
+        "tools_enabled": False,
+        "tts_replies": False,
+        "multi_line": False,
+        "api_keys": {"anthropic": ""},
+        "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
+    }
+
+    def __init__(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        self.cfg = json.loads(json.dumps(self.DEFAULTS))
+        if CONFIG_FILE.exists():
+            try: self._deep_update(self.cfg, json.loads(CONFIG_FILE.read_text()))
+            except: pass
+
+    @staticmethod
+    def _deep_update(base, new):
+        for k, v in new.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict): Config._deep_update(base[k], v)
+            else: base[k] = v
+
+    def save(self): CONFIG_FILE.write_text(json.dumps(self.cfg, indent=2))
+    def get(self, k, d=None): return self.cfg.get(k, d)
+    def set(self, k, v): self.cfg[k] = v; self.save()
+    def set_path(self, dotted_key, v):
+        parts = dotted_key.split(".")
+        node = self.cfg
+        for p in parts[:-1]:
+            if p not in node or not isinstance(node[p], dict): node[p] = {}
+            node = node[p]
+        node[parts[-1]] = v
+        self.save()
+
+    def system_prompt(self): return self.get("system_instruction") or self.get("system_prompt") or ""
+    def active_profile(self): return self.get("backend", "ollama"), self.get("backends", {}).get(self.get("backend", "ollama"))
+    
+    def masked_dict(self):
+        def scrub(node):
+            if isinstance(node, dict): return {k: (mask(v) if k == "api_key" and isinstance(v, str) else scrub(v)) for k, v in node.items()}
+            return node
+        return scrub(self.cfg)
+
+
+# ---------------------------------------------------------------------------
+# Tools & Backends
+# ---------------------------------------------------------------------------
+class Tools:
+    TOOLS = [
+        {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        {"type": "function", "function": {"name": "write_file", "description": "Write content to file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+        {"type": "function", "function": {"name": "list_files", "description": "List files in directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
+        {"type": "function", "function": {"name": "run_command", "description": "Execute a safe shell command and return stdout/stderr", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
+    ]
+    PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
+
+    @staticmethod
+    def get_schemas(build_mode: bool): return Tools.TOOLS if build_mode else Tools.PLAN_TOOLS
+
+    @staticmethod
+    def to_anthropic_schema(build_mode: bool):
+        return [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in Tools.get_schemas(build_mode)]
+
+    @staticmethod
+    def run(name, args, build_mode=False):
+        try:
+            if name == "read_file":
+                p = os.path.expanduser(args.get("path", ""))
+                return Path(p).read_text(errors="ignore") if os.path.exists(p) else "Error: Not found"
+            elif name == "write_file":
+                if not build_mode: return "Error: Write access is disabled in Plan mode."
+                p = os.path.expanduser(args.get("path", ""))
+                cwd = os.getcwd()
+                # Strict security: Prevent path traversal outside cwd
+                if not os.path.abspath(p).startswith(cwd):
+                    return f"Error: Cannot write files outside current working directory ({cwd})."
+                Path(p).parent.mkdir(parents=True, exist_ok=True)
+                Path(p).write_text(args.get("content", ""))
+                return f"Written to {p}"
+            elif name == "list_files":
+                p = os.path.expanduser(args.get("path", "."))
+                return "\n".join(sorted(e for e in os.listdir(p) if not e.startswith(".")))
+            elif name == "run_command":
+                cmd_str = args.get("command", "")
+                if not build_mode:
+                    # Enforce strict read-only rules for shell commands
+                    block_patterns = [
+                        r'\brm\b', r'\bmv\b', r'\bcp\b', r'\btouch\b', r'\bmkdir\b', r'\bchmod\b', r'\bchown\b', r'\bdd\b', r'\btee\b',
+                        r'pip\sinstall', r'\bapt\b', r'\bpkg\b', r'\bnpm\b', r'\byarn\b', r'>', r'>>',
+                        r'python3?\s+-c', r'python3?\s+-m', r'\bperl\b', r'\bnode\b', r'\bruby\b', r'\bphp\b', r'bash\s+-c', r'sh\s+-c'
+                    ]
+                    if any(re.search(p, cmd_str, re.IGNORECASE) for p in block_patterns):
+                        return "Error: Plan mode active. Command blocked because it may modify the system or run an interpreter."
+                
+                # Security: Use shell=False to prevent shell injection
+                try:
+                    cmd_list = shlex.split(cmd_str)
+                    if not cmd_list: return "Error: Empty command."
+                    r = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30)
+                    return (r.stdout + r.stderr)[:5000]
+                except Exception as e:
+                    return f"Error executing command: {e}"
+            elif name == "search_files":
+                path = args.get("path", ".")
+                r = subprocess.run(["grep", "-rn", args.get("query", ""), path], capture_output=True, text=True, timeout=15)
+                return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
+            return "Unknown tool"
+        except Exception as e: return f"Error: {e}"
+
+
+class Backend:
+    def __init__(self, cfg): self.c = cfg
+    def _req(self, url, data, headers, timeout=120):
+        r = urllib.request.Request(url, data=json.dumps(data).encode(), headers=headers, method="POST")
+        try: return urllib.request.urlopen(r, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            body = ""
+            try: body = e.read().decode()[:300]
+            except: pass
+            raise Exception(f"HTTP {e.code}: {body}")
+        except urllib.error.URLError as e: raise Exception(f"Connection failed: {e.reason}")
+
+    def _sse_lines(self, resp):
+        buf = b""
+        while True:
+            chunk = resp.read(4096)
+            if not chunk: break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.decode("utf-8", "replace").strip()
+                if line.startswith("data: "):
+                    d = line[6:]
+                    if d == "[DONE]": return
+                    try: yield json.loads(d)
+                    except: pass
+
+class OpenAICompatible(Backend):
+    def __init__(self, cfg, profile_name, profile):
+        super().__init__(cfg)
+        self.name = profile_name
+        self.profile = profile or {}
+
+    def _headers(self):
+        k = self.profile.get("api_key", "")
+        h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+        if k: h["Authorization"] = f"Bearer {k}"
+        return h
+
+    def _url(self):
+        base = (self.profile.get("base_url") or "").rstrip("/")
+        if not base: raise Exception(f"Profile '{self.name}' has no base_url.\n  Fix: /profile set {self.name}.base_url <url>")
+        return f"{base}/chat/completions"
+
+    def _model(self):
+        m = self.profile.get("model")
+        if not m: raise Exception(f"Profile '{self.name}' has no model set.\n  Fix: /profile set {self.name}.model <name>")
+        return m
+
+    def _check_api_key(self):
+        base = self.profile.get("base_url", "")
+        if not self.profile.get("api_key") and "localhost" not in base and "127.0.0.1" not in base:
+            raise Exception(f"Profile '{self.name}' has no api_key set.\n  Fix: /profile set {self.name}.api_key YOUR_KEY")
+
+    def chat(self, msgs, stream=True):
+        self._check_api_key()
+        d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream}
+        h = self._headers()
+        if stream:
+            for chunk in self._sse_lines(self._req(self._url(), d, h)):
+                choices = chunk.get("choices") or [{}]
+                if t := choices[0].get("delta", {}).get("content", ""): yield t
+        else: yield json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, msgs):
+        self._check_api_key()
+        h = self._headers()
+        build_mode = self.c.get("tools_enabled", False)
+        for _ in range(5):
+            d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": False, "tools": Tools.get_schemas(build_mode)}
+            obj = json.loads(self._req(self._url(), d, h).read())
+            msg = obj["choices"][0]["message"]
+            calls = msg.get("tool_calls") or []
+            if not calls:
+                yield {"type": "text", "content": msg.get("content", "") or ""}
+                return
+            msgs.append(msg)
+            for call in calls:
+                fn = call["function"]
+                try: args = json.loads(fn.get("arguments") or "{}")
+                except: args = {}
+                yield {"type": "tool_call", "name": fn["name"], "args": args}
+                result = Tools.run(fn["name"], args, build_mode)
+                yield {"type": "tool_result", "name": fn["name"], "result": result}
+                msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+        yield {"type": "text", "content": "(stopped after 5 tool iterations)"}
+
+class AnthropicBackend(Backend):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.profile = cfg.get("backends", {}).get("anthropic", {})
+
+    def _headers(self):
+        k = self.profile.get("api_key") or self.c.get("api_keys", {}).get("anthropic", "")
+        if not k: raise Exception("Anthropic key missing.\n  Fix: /profile set anthropic.api_key KEY")
+        return {"Content-Type": "application/json", "x-api-key": k, "anthropic-version": "2023-06-01"}
+
+    def _model(self): return self.profile.get("model") or "claude-3-5-sonnet-20241022"
+
+    @staticmethod
+    def _split_system(msgs):
+        sys_prompt, payload = "", []
+        for m in msgs:
+            if m["role"] == "system": sys_prompt = m["content"]
+            else: payload.append(m)
+        return sys_prompt, payload
+
+    def chat(self, msgs, stream=True):
+        sys_prompt, payload = self._split_system(msgs)
+        d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "stream": stream}
+        if sys_prompt: d["system"] = sys_prompt
+        h = self._headers()
+        url = "https://api.anthropic.com/v1/messages"
+        if stream:
+            for chunk in self._sse_lines(self._req(url, d, h)):
+                if chunk.get("type") == "content_block_delta":
+                    if t := chunk.get("delta", {}).get("text", ""): yield t
+        else: yield json.loads(self._req(url, d, h).read())["content"][0]["text"]
+
+    def chat_with_tools(self, msgs):
+        sys_prompt, payload = self._split_system(msgs)
+        h = self._headers()
+        url = "https://api.anthropic.com/v1/messages"
+        build_mode = self.c.get("tools_enabled", False)
+        for _ in range(5):
+            d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode)}
+            if sys_prompt: d["system"] = sys_prompt
+            obj = json.loads(self._req(url, d, h).read())
+            blocks = obj.get("content", [])
+            tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+            if not tool_uses:
+                yield {"type": "text", "content": "".join(b.get("text", "") for b in blocks if b.get("type") == "text")}
+                return
+            payload.append({"role": "assistant", "content": blocks})
+            results = []
+            for tu in tool_uses:
+                args = tu.get("input", {}) or {}
+                yield {"type": "tool_call", "name": tu["name"], "args": args}
+                result = Tools.run(tu["name"], args, build_mode)
+                yield {"type": "tool_result", "name": tu["name"], "result": result}
+                results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
+            payload.append({"role": "user", "content": results})
+        yield {"type": "text", "content": "(stopped after 5 tool iterations)"}
+
+def get_backend(cfg):
+    name, profile = cfg.active_profile()
+    if name in ("anthropic", "claude"): return AnthropicBackend(cfg)
+    if profile is None:
+        available = ", ".join(cfg.get("backends", {}).keys()) or "(none)"
+        raise Exception(f"Backend '{name}' not found in config.backends.\n  Available: {available}\n  Fix: /profile add {name} <base_url> <model> [api_key]")
+    return OpenAICompatible(cfg, name, profile)
+
+
+# ---------------------------------------------------------------------------
+# Main App
+# ---------------------------------------------------------------------------
+class App:
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/export", "/compact", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+
+    def __init__(self):
+        self.cfg = Config()
+        self.db = Database()
+        atexit.register(self.db.close) # Ensure DB closes safely
+        try: self.backend = get_backend(self.cfg)
+        except Exception as e: print(f"{C.RED}Backend error: {e}{C.RESET}"); self.backend = None
+        self.cid = None
+        self.last_reply = ""
+        self.last_user_msg = ""
+        self.multi_line = self.cfg.get("multi_line", False)
+        self._validate_config()
+        self.setup_rl()
+
+    def _validate_config(self):
+        name, prof = self.cfg.active_profile()
+        if not prof: return
+        base = prof.get("base_url", "")
+        if not base.startswith("http"): self.warn(f"Backend '{name}' URL looks invalid: {base}")
+        if "localhost" not in base and "127.0.0.1" not in base and not prof.get("api_key"):
+            self.warn(f"Backend '{name}' is remote but has no API key.")
+
+    def setup_rl(self):
+        if not HAVE_READLINE: return
+        try: readline.read_history_file(str(HIST_FILE))
+        except: pass
+        readline.set_history_length(1000)
+        self._default_completer = readline.get_completer()
+        try:
+            readline.set_completer_delims(" \t\n")
+            readline.set_completer(self._completer)
+            readline.parse_and_bind("tab: complete")
+        except: pass
+        atexit.register(self._save_history)
+
+    def _completer(self, text, state):
+        line = readline.get_line_buffer()
+        if not line.startswith("/"):
+            return self._default_completer(text, state) if self._default_completer else None
+        parts = line.split()
+        if len(parts) <= 1 and not line.endswith(" "):
+            matches = [c + " " for c in self.COMMANDS if c.startswith(text)]
+        else:
+            cmd = parts[0]
+            if cmd in ("/tools", "/multi") and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+                matches = [o + " " for o in ["on", "off"] if o.startswith(text)]
+            elif cmd == "/profile" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+                matches = [o + " " for o in ["add", "set", "show"] if o.startswith(text)]
+            elif cmd in ("/load", "/delete"):
+                try:
+                    convs = self.db.list_convs(limit=50)
+                    matches = [str(c["id"]) + " " for c in convs if str(c["id"]).startswith(text)]
+                except: matches = []
+            elif cmd == "/backend":
+                backends = list(self.cfg.get("backends", {}).keys()) + ["anthropic", "claude"]
+                matches = [b + " " for b in backends if b.startswith(text)]
+            elif cmd == "/server" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+                matches = [o + " " for o in ["start", "stop", "status"] if o.startswith(text)]
+            else: matches = []
+        if state < len(matches): return matches[state]
+        return None
+
+    def _save_history(self):
+        if not HAVE_READLINE: return
+        try: CONFIG_DIR.mkdir(parents=True, exist_ok=True); readline.write_history_file(str(HIST_FILE))
+        except: pass
+
+    def _current_model(self):
+        name, profile = self.cfg.active_profile()
+        if name in ("anthropic", "claude"): return (profile or {}).get("model") or "claude-3-5-sonnet-20241022"
+        return (profile or {}).get("model", "?")
+
+    def banner(self):
+        name, _ = self.cfg.active_profile()
+        model = self._current_model()
+        tools = "build" if self.cfg.get("tools_enabled") else "plan"
+        env = f"{C.MAGENTA}Termux{C.CYAN}" if IS_TERMUX else f"{C.BLUE}Shell{C.CYAN}"
+        conv = f"#{self.cid}" if self.cid else "new"
+        api = TermuxAPI.status() if IS_TERMUX else {}
+        api_ok = all(api.values()) if api else False
+        api_tag = f"{C.GREEN}✓{C.CYAN} termux-api" if api_ok else (f"{C.YELLOW}~{C.CYAN} termux-api" if IS_TERMUX else f"{C.DIM}n/a{C.CYAN}")
+
+        W = 44
+        def line(content): print(f"{C.CYAN}│{C.RESET} {pad(content, W - 2)} {C.CYAN}│{C.RESET}")
+
+        print(f"\n{C.CYAN}╭{'─' * (W + 2)}╮{C.RESET}")
+        line(f"{C.BOLD} Termux AI{C.RESET} {C.DIM}v{__version__}{C.RESET}  {env}")
+        print(f"{C.CYAN}├{'─' * (W + 2)}┤{C.RESET}")
+        line(f"{C.DIM}backend  {C.RESET}{C.GREEN}{name}{C.RESET}")
+        line(f"{C.DIM}model    {C.RESET}{C.GREEN}{model}{C.RESET}")
+        line(f"{C.DIM}tools    {C.RESET}{C.GREEN}{tools}{C.RESET}")
+        line(f"{C.DIM}chat     {C.RESET}{C.GREEN}{conv}{C.RESET}")
+        line(f"{C.DIM}api      {C.RESET}{api_tag}")
+        print(f"{C.CYAN}├{'─' * (W + 2)}┤{C.RESET}")
+        line(f"{C.DIM}Type {C.RESET}{C.YELLOW}/help{C.RESET}{C.DIM} · auto-aware of {C.YELLOW}./{C.RESET}")
+        print(f"{C.CYAN}╰{'─' * (W + 2)}╯{C.RESET}")
+
+        if IS_TERMUX and not HAVE_READLINE: print(f"{C.YELLOW}  Tip: pkg install readline  (for arrow-key history){C.RESET}")
+        if name == "ollama" and not self._check_ollama():
+            print(f"\n{C.YELLOW}  Ollama not detected on localhost:11434.{C.RESET}")
+            print(f"{C.DIM}  Start it with: /server start ollama{C.RESET}")
+
+    def _check_ollama(self):
+        try: urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1); return True
+        except: return False
+
+    def prompt(self):
+        name, _ = self.cfg.active_profile()
+        model = self._current_model()
+        conv = f"{C.DIM}#{self.cid}{C.RESET}" if self.cid else ""
+        ml = f"{C.MAGENTA}↵{C.RESET}" if self.multi_line else ""
+        return f"{C.GREEN}{name[:10]}{C.RESET} {C.DIM}{model[:20]}{C.RESET}{conv}{ml} {C.BOLD}❯{C.RESET} "
+
+    def info(self, msg, color=C.GREEN): print(f"  {color}✓ {msg}{C.RESET}")
+    def warn(self, msg): print(f"  {C.YELLOW}⚠ {msg}{C.RESET}")
+    def err(self, msg): print(f"  {C.RED}✗ {msg}{C.RESET}")
+    def hint(self, msg): print(f"  {C.DIM}→ {msg}{C.RESET}")
+
+    HELP_TEXT = f"""\
+{C.BOLD}─ CHAT ──────────────────────────────────────────────────{C.RESET}
+  {C.YELLOW}/new{C.RESET}                       start a fresh conversation
+  {C.YELLOW}/show{C.RESET}                      show messages in current chat
+  {C.YELLOW}/history{C.RESET}                   list past conversations
+  {C.YELLOW}/load{C.RESET} {C.DIM}<id>{C.RESET}                load a conversation
+  {C.YELLOW}/rename{C.RESET} {C.DIM}<title>{C.RESET}            rename current conversation
+  {C.YELLOW}/delete{C.RESET} {C.DIM}[id]{C.RESET}               delete a conversation
+  {C.YELLOW}/regen{C.RESET}                     regenerate last response
+  {C.YELLOW}/compact{C.RESET}                   summarize chat to save tokens
+  {C.YELLOW}/export{C.RESET} {C.DIM}[file]{C.RESET}             export chat to markdown
+
+{C.BOLD}─ MODEL & BACKEND ─────────────────────────────────────{C.RESET}
+  {C.YELLOW}/backends{C.RESET}                  list configured profiles
+  {C.YELLOW}/backend{C.RESET} {C.DIM}<name>{C.RESET}            switch active profile
+  {C.YELLOW}/model{C.RESET} {C.DIM}<name>{C.RESET}              change model on active profile
+  {C.YELLOW}/profile add{C.RESET} {C.DIM}<n> <url> <model> [key]{C.RESET}
+  {C.YELLOW}/profile set{C.RESET} {C.DIM}<n>.<field> <value>{C.RESET}
+  {C.YELLOW}/profile show{C.RESET} {C.DIM}<name>{C.RESET}       show profile (key masked)
+
+{C.BOLD}─ SETTINGS ────────────────────────────────────────────{C.RESET}
+  {C.YELLOW}/system{C.RESET} {C.DIM}[prompt]{C.RESET}           view/set system prompt
+  {C.YELLOW}/config{C.RESET} {C.DIM}set <key> <val>{C.RESET}    set any config value
+  {C.YELLOW}/config{C.RESET}                    show full config (masked)
+  {C.YELLOW}/tools{C.RESET} {C.DIM}[on|off]{C.RESET}            on=build (read/write), off=plan (read-only)
+  {C.YELLOW}/multi{C.RESET} {C.DIM}[on|off]{C.RESET}            toggle multi-line input
+  {C.YELLOW}/tokens{C.RESET}                    show token usage
+  {C.YELLOW}/status{C.RESET}                    show current settings
+
+{C.BOLD}─ TERMUX-API & SERVER ─────────────────────────────────{C.RESET}
+  {C.YELLOW}/copy{C.RESET}                      copy last reply to clipboard
+  {C.YELLOW}/paste{C.RESET}                      paste clipboard & send to AI
+  {C.YELLOW}/speak{C.RESET}                      TTS the last reply
+  {C.YELLOW}/share{C.RESET}                      share last reply via Android
+  {C.YELLOW}/server{C.RESET} {C.DIM}start|stop|status{C.RESET} manage local ollama server
+
+{C.BOLD}─ FILES & FOLDERS ─────────────────────────────────────{C.RESET}
+  The AI automatically knows your {C.YELLOW}cwd{C.RESET} and sees local files.
+  Mention a file {C.DIM}(report.pdf){C.RESET} or folder {C.DIM}(./src){C.RESET}
+  in your message to attach it!
+  Supports: {C.CYAN}txt, md, csv, pdf, docx, pptx, xlsx, code{C.RESET}
+
+{C.BOLD}─ OTHER ───────────────────────────────────────────────{C.RESET}
+  {C.YELLOW}/clear{C.RESET}                      clear the screen
+  {C.YELLOW}/help{C.RESET}                       show this help
+  {C.YELLOW}/exit{C.RESET}                       quit ({C.DIM}Ctrl-D also works{C.RESET})
+"""
+
+    def run_cmd(self, txt):
+        p = txt.strip().split(maxsplit=1)
+        cmd = p[0].lower()
+        arg = p[1].strip() if len(p) > 1 else ""
+
+        if cmd in ("/exit", "/quit"): sys.exit(0)
+        elif cmd == "/help": print(self.HELP_TEXT)
+        elif cmd == "/backend":
+            if not arg: self.info(f"Active backend: {self.cfg.get('backend')}"); return True
+            if arg not in self.cfg.get("backends", {}) and arg not in ("anthropic", "claude"):
+                self.warn(f"'{arg}' not configured."); self.hint(f"/profile add {arg} <base_url> <model> [api_key]"); return True
+            self.cfg.set("backend", arg)
+            try: self.backend = get_backend(self.cfg); self.info(f"Switched to: {arg} ({self._current_model()})")
+            except Exception as e: self.err(str(e))
+        elif cmd == "/backends":
+            backends = self.cfg.get("backends", {})
+            if not backends: self.warn("No backends configured."); self.hint("/profile add <name> <base_url> <model> [api_key]"); return True
+            print(f"\n  {C.BOLD}{'':2s}{'name':12s} {'model':24s} {'base_url'}{C.RESET}")
+            print(f"  {C.DIM}{'─' * 70}{C.RESET}")
+            for n, prof in backends.items():
+                active = f"{C.GREEN}▶{C.RESET}" if n == self.cfg.get("backend") else " "
+                m, u = prof.get("model", "?"), prof.get("base_url", "")
+                print(f"  {active} {C.CYAN}{n:12s}{C.RESET} {m:24s} {C.DIM}{u}{C.RESET}")
+        elif cmd == "/profile": self._cmd_profile(arg)
+        elif cmd == "/model":
+            if not arg: self.info(f"Model: {self._current_model()}"); return True
+            name, _ = self.cfg.active_profile()
+            target = "backends.anthropic.model" if name in ("anthropic", "claude") else f"backends.{name}.model"
+            self.cfg.set_path(target, arg)
+            try: self.backend = get_backend(self.cfg); self.info(f"Model → {arg}")
+            except Exception as e: self.err(str(e))
+        elif cmd == "/tools":
+            if arg in ("on", "off"): self.cfg.set("tools_enabled", arg == "on")
+            state = "build" if self.cfg.get("tools_enabled") else "plan"
+            color = C.GREEN if state == "build" else C.YELLOW
+            self.info(f"Tools: {color}{state}{C.RESET}")
+            if state == "build": self.hint("AI can read/write files & run any shell commands")
+            else: self.hint("AI can read files & run safe commands, but cannot write/modify")
+        elif cmd == "/multi":
+            if arg in ("on", "off"): self.cfg.set("multi_line", arg == "on"); self.multi_line = arg == "on"
+            state = "on" if self.multi_line else "off"
+            self.info(f"Multi-line: {state}")
+            if self.multi_line: self.hint("End input with a blank line (or Ctrl-D) to send")
+        elif cmd == "/system":
+            if arg: self.cfg.set("system_prompt", arg); self.info("System prompt updated.")
+            else: print(f"\n  {C.DIM}system prompt:{C.RESET}\n  {C.ITALIC}{self.cfg.system_prompt()}{C.RESET}\n")
+        elif cmd == "/status": self._show_status()
+        elif cmd == "/new":
+            self.cid = None; self.last_reply = ""; self.info("Started a new conversation.")
+        elif cmd == "/history": self._show_history()
+        elif cmd == "/load":
+            if not arg.isdigit(): self.warn("Usage: /load <id>"); return True
+            cid = int(arg)
+            conv = self.db.get_conv(cid)
+            if not conv: self.err(f"Conversation #{cid} not found."); return True
+            self.cid = cid; self.info(f"Loaded: {conv['title']}"); self._show_conversation(cid, limit=6)
+        elif cmd == "/rename":
+            if not self.cid: self.warn("No active conversation. Send a message first."); return True
+            if not arg: self.warn("Usage: /rename <new title>"); return True
+            self.db.rename_conv(self.cid, arg); self.info(f"Renamed to: {arg}")
+        elif cmd == "/delete":
+            cid = int(arg) if arg.isdigit() else self.cid
+            if cid is None: self.warn("Usage: /delete [id]"); return True
+            conv = self.db.get_conv(cid)
+            if not conv: self.err(f"Conversation #{cid} not found."); return True
+            try: confirm = input(f"  {C.YELLOW}Delete '#{cid}' '{conv['title']}'? [y/N] {C.RESET}").strip().lower()
+            except: confirm = ""
+            if confirm in ("y", "yes"):
+                self.db.del_conv(cid)
+                if self.cid == cid: self.cid = None
+                self.info(f"Deleted #{cid}.")
+            else: self.hint("Cancelled.")
+        elif cmd == "/show":
+            if not self.cid: self.warn("No active conversation."); return True
+            self._show_conversation(self.cid, limit=50)
+        elif cmd == "/export":
+            if not self.cid: self.warn("No active conversation to export."); return True
+            fname = arg or f"chat-{self.cid}.md"
+            if not fname.endswith((".md", ".txt")): fname += ".md"
+            self._export(self.cid, fname)
+        elif cmd == "/regen": self._regenerate()
+        elif cmd == "/compact": self._compact()
+        elif cmd == "/config": self._cmd_config(arg)
+        elif cmd == "/clear": print("\033c", end="")
+        elif cmd == "/tokens":
+            if not self.cid: self.warn("No active conversation."); return True
+            msgs = self.db.get_msgs(self.cid)
+            total = sum(est_tok(m["content"]) for m in msgs)
+            self.info(f"Conversation: ~{total} tokens ({len(msgs)} messages)")
+        elif cmd == "/copy":
+            if not self.last_reply: self.warn("Nothing to copy yet."); return True
+            self.info("Copied to clipboard." if TermuxAPI.copy(self.last_reply) else "termux-api not available.")
+        elif cmd == "/paste":
+            txt = TermuxAPI.paste()
+            if txt is None: self.warn("termux-api not available.")
+            elif not txt.strip(): self.warn("Clipboard is empty.")
+            else: print(f"  {C.GRAY}clipboard →{C.RESET} {C.ITALIC}{txt[:80]}{'…' if len(txt) > 80 else ''}{C.RESET}"); self.chat(txt.strip())
+        elif cmd == "/speak":
+            if not self.last_reply: self.warn("Nothing to speak yet."); return True
+            if not TermuxAPI.speak(self.last_reply): self.warn("termux-api not available.")
+        elif cmd == "/share":
+            if not self.last_reply: self.warn("Nothing to share yet."); return True
+            if not TermuxAPI.share(self.last_reply): self.warn("termux-api not available.")
+        elif cmd == "/server":
+            parts = arg.split()
+            if not parts: self.warn("Usage: /server start|stop|status [ollama]"); return True
+            action = parts[0]
+            engine = parts[1] if len(parts) > 1 else "ollama"
+            ServerManager.manage(action, engine)
+        else: self.warn(f"Unknown command: {cmd}"); self.hint("Type /help for available commands.")
+        return True
+
+    def _cmd_profile(self, arg):
+        sub = arg.split(maxsplit=1)
+        if not sub: self.hint("Usage: /profile add|set|show ..."); return
+        if sub[0] == "add" and len(sub) > 1:
+            parts = sub[1].split()
+            if len(parts) < 3: self.warn("Usage: /profile add <name> <base_url> <model> [api_key]"); return
+            name, base_url, model = parts[0], parts[1], parts[2]
+            api_key = parts[3] if len(parts) > 3 else ""
+            self.cfg.set_path(f"backends.{name}", {"base_url": base_url, "model": model, "api_key": api_key})
+            self.info(f"Added profile '{name}'."); self.hint(f"Switch to it: /backend {name}")
+        elif sub[0] == "set" and len(sub) > 1:
+            bits = sub[1].split(maxsplit=1)
+            if len(bits) != 2 or "." not in bits[0]: self.warn("Usage: /profile set <name>.<field> <value>"); return
+            key, val = bits[0], parse_value(bits[1])
+            self.cfg.set_path(f"backends.{key}", val)
+            display = mask(str(val)) if "api_key" in key else val
+            self.info(f"Set backends.{key} = {display}")
+            if key.split(".")[0] == self.cfg.get("backend"):
+                try: self.backend = get_backend(self.cfg)
+                except: pass
+        elif sub[0] == "show" and len(sub) > 1:
+            p = self.cfg.get("backends", {}).get(sub[1])
+            if not p: self.err(f"No such profile: {sub[1]}"); return
+            shown = dict(p)
+            if shown.get("api_key"): shown["api_key"] = mask(shown["api_key"])
+            print(json.dumps(shown, indent=2))
+        else: self.hint("Usage: /profile add|set|show ...")
+
+    def _cmd_config(self, arg):
+        if arg.startswith("set "):
+            rest = arg[4:].strip()
+            bits = rest.split(maxsplit=1)
+            if len(bits) != 2: self.warn("Usage: /config set <key> <value>"); return
+            key, val = bits[0], parse_value(bits[1])
+            self.cfg.set_path(key, val)
+            display = mask(str(val)) if "api_key" in key else val
+            self.info(f"Set {key} = {display}")
+            try: self.backend = get_backend(self.cfg)
+            except: pass
+        else: print(json.dumps(self.cfg.masked_dict(), indent=2))
+
+    def _show_status(self):
+        name, _ = self.cfg.active_profile()
+        api = TermuxAPI.status() if IS_TERMUX else {}
+        print(f"\n  {C.BOLD}── Status ──{C.RESET}")
+        print(f"  {C.DIM}backend    {C.RESET}{C.GREEN}{name}{C.RESET}")
+        print(f"  {C.DIM}model      {C.RESET}{C.GREEN}{self._current_model()}{C.RESET}")
+        print(f"  {C.DIM}chat       {C.RESET}{'#'+str(self.cid) if self.cid else 'new'}")
+        print(f"  {C.DIM}tools      {C.RESET}{'build' if self.cfg.get('tools_enabled') else 'plan'}")
+        print(f"  {C.DIM}multi-line {C.RESET}{'on' if self.multi_line else 'off'}")
+        print(f"  {C.DIM}stream     {C.RESET}{'on' if self.cfg.get('stream') else 'off'}")
+        print(f"  {C.DIM}temperature{C.RESET} {self.cfg.get('temperature')}")
+        print(f"  {C.DIM}max_tokens {C.RESET} {self.cfg.get('max_tokens')}")
+        print(f"  {C.DIM}show_tokens{C.RESET} {'on' if self.cfg.get('show_tokens') else 'off'}")
+        print(f"  {C.DIM}system     {C.RESET}{C.ITALIC}{self.cfg.system_prompt()[:70]}{C.RESET}")
+        if IS_TERMUX:
+            parts = [k for k, v in api.items() if v]
+            print(f"  {C.DIM}termux-api {C.RESET}{', '.join(parts) if parts else 'not installed'}")
+        print()
+
+    def _show_history(self):
+        convs = self.db.list_convs()
+        if not convs: self.warn("No conversations yet."); return
+        print(f"\n  {C.BOLD}{'':3s}{'id':>4s}  {'title':30s} {'msgs':>4s}  {'updated'}{C.RESET}")
+        print(f"  {C.DIM}{'─' * 65}{C.RESET}")
+        for c in convs:
+            mark = f"{C.GREEN}▶{C.RESET}" if c["id"] == self.cid else " "
+            title, mc = c["title"][:30], c["msg_count"]
+            ts = fmt_time(c["updated_at"])
+            print(f"  {mark} {C.CYAN}{c['id']:>4d}{C.RESET}  {title:30s} {mc:>4d}  {C.DIM}{ts}{C.RESET}")
+        print()
+
+    def _show_conversation(self, cid, limit=50):
+        msgs = self.db.get_msgs(cid, limit=limit)
+        if not msgs: self.hint("Conversation is empty."); return
+        print(f"\n  {C.DIM}── {len(msgs)} messages ──{C.RESET}\n")
+        for m in msgs:
+            if m["role"] == "user": print(f"  {C.GREEN}You:{C.RESET} {m['content'][:200]}{'…' if len(m['content']) > 200 else ''}")
+            elif m["role"] == "assistant": print(f"  {C.CYAN}AI:{C.RESET}  {m['content'][:200]}{'…' if len(m['content']) > 200 else ''}")
+            print()
+
+    def _export(self, cid, fname):
+        conv = self.db.get_conv(cid)
+        msgs = self.db.get_msgs(cid, limit=10000)
+        lines = [f"# {conv['title']}", f"", f"- Backend: {conv['backend']}", f"- Model: {conv['model']}", f"- Exported: {time.strftime('%Y-%m-%d %H:%M')}", ""]
+        for m in msgs:
+            if m["role"] == "user": lines += ["## You", "", m["content"], ""]
+            elif m["role"] == "assistant": lines += ["## AI", "", m["content"], ""]
+        try: Path(fname).write_text("\n".join(lines)); self.info(f"Exported to: {fname}")
+        except Exception as e: self.err(str(e))
+
+    def _regenerate(self):
+        if not self.cid or not self.last_user_msg: self.warn("Nothing to regenerate."); return
+        self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'assistant' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'assistant')", (self.cid, self.cid))
+        self.db.conn.commit()
+        self.chat(self.last_user_msg)
+
+    def _compact(self):
+        if not self.cid: self.warn("No active conversation to compact."); return
+        msgs = self.db.get_msgs(self.cid, limit=100)
+        if len(msgs) < 4: self.warn("Not enough messages to compact."); return
+        self.info("Compacting conversation...")
+        transcript = "\n\n".join([f"{m['role']}: {m['content'][:500]}" for m in msgs])
+        prompt = f"Summarize the following conversation into a concise context block. Preserve key facts, code snippets, and decisions:\n\n{transcript}"
+        try:
+            resp = ""
+            for t in self.backend.chat([{"role":"user", "content":prompt}], stream=True): resp += t
+            self.db.clear_conv_msgs(self.cid)
+            self.db.save_msg(self.cid, "assistant", f"[Summary of previous messages]:\n{resp}")
+            self.info("Conversation compacted successfully.")
+        except Exception as e: self.err(str(e))
+
+    def _read_multi_line(self):
+        print(f"  {C.DIM}(multi-line mode — blank line or Ctrl-D to send){C.RESET}")
+        lines = []
+        try:
+            while True:
+                line = input(f"  {C.DIM}…{C.RESET} " if lines else self.prompt())
+                if not line and lines: break
+                lines.append(line)
+        except EOFError: pass
+        return "\n".join(lines).strip()
+
+    def _read_directory(self, dir_path, dir_name):
+        files_content = []
+        total_chars, max_files, max_total_chars = 0, 15, 12000
+        valid_exts = ('.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.c', '.cpp', '.h', '.cs', '.go', '.rb', '.php', '.swift', '.kt', '.rs', '.txt', '.md', '.csv', '.json', '.xml', '.html', '.css', '.scss', '.sh', '.bash', '.yml', '.yaml', '.toml', '.ini', '.cfg')
+        files_scanned, stop_walk = 0, False
+        
+        for root, dirs, files in os.walk(dir_path):
+            if stop_walk: break
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', 'env', 'build', 'dist')]
+            for f in sorted(files):
+                if files_scanned >= max_files or total_chars > max_total_chars: stop_walk = True; break
+                if f.startswith('.'): continue
+                ext = os.path.splitext(f)[1].lower()
+                if ext in valid_exts:
+                    file_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(file_path, dir_path)
+                    content = FileReader.read(file_path)
+                    if content and not content.startswith("[Error") and not content.startswith("[Unsupported"):
+                        files_scanned += 1
+                        snippet = content[:2000]
+                        total_chars += len(snippet)
+                        files_content.append(f"--- File: {rel_path} ---\n{snippet}")
+        if not files_content: return f"[Directory '{dir_name}' scanned, but no readable text/code files found.]"
+        return f"[Contents of directory '{dir_name}']:\n" + "\n\n".join(files_content)
+
+    def _extract_files(self, text):
+        attached = []
+        # Smarter regex: looks for strings with dots or slashes that actually exist on disk
+        tokens = re.findall(r'(?:(?:\./|~/|/)?(?:[\w.\-]+/)*[\w.\-]+\.\w{2,5})', text)
+        if "this folder" in text.lower() or "current directory" in text.lower() or "this directory" in text.lower():
+            tokens.append(".")
+            
+        for token in tokens:
+            if "://" in token: continue
+            path_str = token.strip("\"'.,")
+            path = os.path.expanduser(path_str)
+            if not os.path.exists(path): continue # Strict check: only attach if it exists
+                
+            if os.path.isfile(path):
+                content = FileReader.read(path)
+                if content:
+                    max_len = 12000
+                    snippet = content[:max_len]
+                    if len(content) > max_len: snippet += "\n... [truncated]"
+                    attached.append(f"[Content of file '{path_str}']:\n{snippet}")
+                    self.info(f"Attached file: {C.CYAN}{path_str}{C.RESET}")
+            elif os.path.isdir(path):
+                dir_content = self._read_directory(path, path_str)
+                if dir_content:
+                    attached.append(dir_content)
+                    self.info(f"Scanned directory: {C.CYAN}{path_str}{C.RESET}")
+        if attached: return text + "\n\n" + "\n\n".join(attached)
+        return text
+
+    def _build_sys_prompt(self):
+        sys_prompt = self.cfg.system_prompt()
+        cwd = os.getcwd()
+        try:
+            files = sorted([f for f in os.listdir(cwd) if not f.startswith('.')])
+            tree = ", ".join(files[:30]) if files else "(empty)"
+            sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}\nFiles visible here: {tree}"
+        except: sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
+        if self.cfg.get("tools_enabled"): sys_prompt += "\n\n[Tools] You are in BUILD mode. You can read, write, and modify files, and execute any shell commands. Ensure you use exact paths."
+        else: sys_prompt += "\n\n[Tools] You are in PLAN mode. You can read files and run safe inspection commands (ls, cat, grep), but you must NOT modify, write, or delete anything. Write attempts will be blocked."
+        return sys_prompt
+
+    def chat(self, txt):
+        if not self.backend: self.err("No working backend. Use /profile add or /backend to configure one."); return
+        txt = self._extract_files(txt)
+        name, _ = self.cfg.active_profile()
+        if not self.cid: self.cid = self.db.new_conv(title=txt[:50], model=self._current_model(), backend=name)
+        self.db.save_msg(self.cid, "user", txt)
+        self.last_user_msg = txt
+        
+        sys_prompt = self._build_sys_prompt()
+        msgs = [{"role": "system", "content": sys_prompt}] + self.db.get_msgs(self.cid)
+
+        sys.stdout.write(f"\n  {C.CYAN}AI{C.RESET}  ")
+        sys.stdout.flush()
+        spinner = Spinner("thinking")
+        spinner.start()
+
+        resp, formatter = "", MarkdownFormatter()
+        try:
+            for event in self.backend.chat_with_tools(msgs):
+                if event["type"] == "tool_call":
+                    spinner.stop()
+                    name, args = event["name"], event["args"]
+                    if name == "run_command": print(f"\n  {C.MAGENTA}⚙ AI is running command:{C.RESET} {C.CYAN}{args.get('command', '')}{C.RESET}")
+                    elif name == "read_file": print(f"\n  {C.MAGENTA}📄 AI is reading file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
+                    elif name == "write_file": print(f"\n  {C.MAGENTA}✍️  AI is writing to file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
+                    elif name == "list_files": print(f"\n  {C.MAGENTA}📁 AI is listing files in:{C.RESET} {C.CYAN}{args.get('path', '.')}{C.RESET}")
+                    elif name == "search_files": print(f"\n  {C.MAGENTA}🔍 AI is searching for '{args.get('query', '')}' in {args.get('path', '.')}{C.RESET}")
+                    spinner = Spinner("executing"); spinner.start()
+                elif event["type"] == "tool_result":
+                    spinner.stop()
+                    print(f"  {C.DIM}└ Done.{C.RESET}\n")
+                    spinner = Spinner("thinking"); spinner.start()
+                elif event["type"] == "text":
+                    spinner.stop()
+                    resp += event["content"]
+                    formatter.feed(event["content"])
+                    formatter.flush()
+                    sys.stdout.flush()
+        except KeyboardInterrupt:
+            spinner.stop(); formatter.flush()
+            print(f"\n  {C.YELLOW}[interrupted — partial reply saved]{C.RESET}")
+            if resp:
+                self.db.save_msg(self.cid, "assistant", resp)
+                self.last_reply = resp
+                return
+        except Exception as e:
+            spinner.stop(); formatter.flush()
+            print(f"\n  {C.RED}✗ {e}{C.RESET}")
+            self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
+            self.db.conn.commit()
+            return
+
+        print()
+        if self.cfg.get("show_tokens") and resp: print(f"  {C.DIM}~{est_tok(resp)} tokens{C.RESET}")
+        if resp:
+            self.db.save_msg(self.cid, "assistant", resp)
+            self.last_reply = resp
+            if self.cfg.get("tts_replies"): TermuxAPI.speak(resp)
+
+    def run(self):
+        self.banner()
+        while True:
+            try:
+                i = self._read_multi_line() if self.multi_line else input(self.prompt()).strip()
+                if not i: continue
+                if i.startswith("/"): self.run_cmd(i); continue
+                self.chat(i)
+            except EOFError: print(f"\n  {C.DIM}Bye!{C.RESET}"); break
+            except KeyboardInterrupt: print(f"\n  {C.DIM}Ctrl-C again or /exit to quit{C.RESET}")
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Termux AI CLI")
+    parser.add_argument("prompt", nargs="*", help="Prompt for the AI")
+    parser.add_argument("-c", "--cmd", action="store_true", help="Generate a shell command from prompt")
+    parser.add_argument("-j", "--json", action="store_true", help="Output response as JSON")
+    parser.add_argument("-m", "--model", help="Override model")
+    args = parser.parse_args()
+
+    if args.prompt or args.cmd:
+        cfg = Config()
+        try: backend = get_backend(cfg)
+        except Exception as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+        
+        prompt_text = " ".join(args.prompt)
+        prompt_text = App()._extract_files(prompt_text)
+        
+        if args.cmd:
+            sys_msg = "You are a translation tool that translates natural language descriptions into a single executable Termux/Linux bash command. Return ONLY the raw shell command, with absolutely no markdown code block formatting, no explanation, and no extra text. Just the executable command line."
+            payload = prompt_text
+        else:
+            sys_msg = cfg.system_prompt()
+            cwd = os.getcwd()
+            try:
+                files = sorted([f for f in os.listdir(cwd) if not f.startswith('.')])
+                tree = ", ".join(files[:30]) if files else "(empty)"
+                sys_msg += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}\nFiles visible here: {tree}"
+            except: sys_msg += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
+            payload = prompt_text
+
+        msgs = [{"role": "system", "content": sys_msg}, {"role": "user", "content": payload}]
+        
+        try:
+            resp = ""
+            for t in backend.chat(msgs, stream=True):
+                resp += t
+            
+            if args.cmd:
+                cmd_str = resp.strip().replace("```bash", "").replace("```", "").strip()
+                if args.json:
+                    print(json.dumps({"command": cmd_str}))
+                else:
+                    print(f"{C.CYAN}Suggested Command:{C.RESET} {C.BOLD}{cmd_str}{C.RESET}")
+                    try:
+                        confirm = input(f"{C.YELLOW}Run this command? (y/N): {C.RESET}").strip().lower()
+                        if confirm in ("y", "yes"):
+                            # Safer execution using shell=False for one-shot commands
+                            import shlex
+                            subprocess.run(shlex.split(cmd_str))
+                    except: pass
+            else:
+                if args.json:
+                    print(json.dumps({"response": resp}))
+                else:
+                    formatter = MarkdownFormatter(indent="")
+                    formatter.feed(resp)
+                    formatter.flush()
+                    print()
+        except Exception as e:
+            if args.json: print(json.dumps({"error": str(e)}))
+            else: print(f"\nError: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        App().run()
+
+if __name__ == "__main__":
+    main()
