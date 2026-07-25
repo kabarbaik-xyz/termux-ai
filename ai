@@ -8,7 +8,7 @@ import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit,
 import zipfile
 from pathlib import Path
 
-__version__ = "6.0.0"
+__version__ = "6.0.1"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -25,7 +25,6 @@ try:
 except ImportError:
     HAVE_READLINE = False
 
-# Optional tiktoken import for accurate token counting
 try:
     import tiktoken
     _ENC = tiktoken.get_encoding("cl100k_base")
@@ -48,7 +47,7 @@ if not IS_TTY:
         if not a.startswith("_") and a != "RESET":
             setattr(C, a, "")
 
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_ANSI_RE = re.compile(r"\001?\033\[[0-9;]*m\002?")
 
 def vlen(s): return len(_ANSI_RE.sub("", s))
 def pad(s, width): return s + " " * max(0, width - vlen(s))
@@ -318,7 +317,6 @@ class Database:
         except sqlite3.Error: return set()
 
     def _migrate_schema(self):
-        # Safely add missing columns instead of renaming tables
         conv_cols = self._table_cols("conversations")
         if conv_cols:
             if "title" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
@@ -461,7 +459,6 @@ class Tools:
                 if not build_mode: return "Error: Write access is disabled in Plan mode."
                 p = os.path.expanduser(args.get("path", ""))
                 cwd = os.getcwd()
-                # Strict security: Prevent path traversal outside cwd
                 if not os.path.abspath(p).startswith(cwd):
                     return f"Error: Cannot write files outside current working directory ({cwd})."
                 Path(p).parent.mkdir(parents=True, exist_ok=True)
@@ -473,7 +470,6 @@ class Tools:
             elif name == "run_command":
                 cmd_str = args.get("command", "")
                 if not build_mode:
-                    # Enforce strict read-only rules for shell commands
                     block_patterns = [
                         r'\brm\b', r'\bmv\b', r'\bcp\b', r'\btouch\b', r'\bmkdir\b', r'\bchmod\b', r'\bchown\b', r'\bdd\b', r'\btee\b',
                         r'pip\sinstall', r'\bapt\b', r'\bpkg\b', r'\bnpm\b', r'\byarn\b', r'>', r'>>',
@@ -481,8 +477,6 @@ class Tools:
                     ]
                     if any(re.search(p, cmd_str, re.IGNORECASE) for p in block_patterns):
                         return "Error: Plan mode active. Command blocked because it may modify the system or run an interpreter."
-                
-                # Security: Use shell=False to prevent shell injection
                 try:
                     cmd_list = shlex.split(cmd_str)
                     if not cmd_list: return "Error: Empty command."
@@ -660,7 +654,7 @@ class App:
     def __init__(self):
         self.cfg = Config()
         self.db = Database()
-        atexit.register(self.db.close) # Ensure DB closes safely
+        atexit.register(self.db.close) 
         try: self.backend = get_backend(self.cfg)
         except Exception as e: print(f"{C.RED}Backend error: {e}{C.RESET}"); self.backend = None
         self.cid = None
@@ -765,9 +759,11 @@ class App:
     def prompt(self):
         name, _ = self.cfg.active_profile()
         model = self._current_model()
-        conv = f"{C.DIM}#{self.cid}{C.RESET}" if self.cid else ""
-        ml = f"{C.MAGENTA}↵{C.RESET}" if self.multi_line else ""
-        return f"{C.GREEN}{name[:10]}{C.RESET} {C.DIM}{model[:20]}{C.RESET}{conv}{ml} {C.BOLD}❯{C.RESET} "
+        # \001 and \002 tell readline to ignore ANSI color codes when calculating prompt width
+        # This completely fixes the line-wrapping overlap bug when typing long messages.
+        conv = f"\001{C.DIM}\002#{self.cid}\001{C.RESET}\002" if self.cid else ""
+        ml = f"\001{C.MAGENTA}\002↵\001{C.RESET}\002" if self.multi_line else ""
+        return f"\001{C.GREEN}\002{name[:10]}\001{C.RESET}\002 \001{C.DIM}\002{model[:20]}\001{C.RESET}\002{conv}{ml} \001{C.BOLD}\002❯\001{C.RESET}\002 "
 
     def info(self, msg, color=C.GREEN): print(f"  {color}✓ {msg}{C.RESET}")
     def warn(self, msg): print(f"  {C.YELLOW}⚠ {msg}{C.RESET}")
@@ -887,7 +883,8 @@ class App:
             if cid is None: self.warn("Usage: /delete [id]"); return True
             conv = self.db.get_conv(cid)
             if not conv: self.err(f"Conversation #{cid} not found."); return True
-            try: confirm = input(f"  {C.YELLOW}Delete '#{cid}' '{conv['title']}'? [y/N] {C.RESET}").strip().lower()
+            try: 
+                confirm = input(f"  \001{C.YELLOW}\002Delete '#{cid}' '{conv['title']}'? [y/N] \001{C.RESET}\002").strip().lower()
             except: confirm = ""
             if confirm in ("y", "yes"):
                 self.db.del_conv(cid)
@@ -1051,7 +1048,7 @@ class App:
         lines = []
         try:
             while True:
-                line = input(f"  {C.DIM}…{C.RESET} " if lines else self.prompt())
+                line = input(f"  \001{C.DIM}\002…\001{C.RESET}\002 " if lines else self.prompt())
                 if not line and lines: break
                 lines.append(line)
         except EOFError: pass
@@ -1084,7 +1081,6 @@ class App:
 
     def _extract_files(self, text):
         attached = []
-        # Smarter regex: looks for strings with dots or slashes that actually exist on disk
         tokens = re.findall(r'(?:(?:\./|~/|/)?(?:[\w.\-]+/)*[\w.\-]+\.\w{2,5})', text)
         if "this folder" in text.lower() or "current directory" in text.lower() or "this directory" in text.lower():
             tokens.append(".")
@@ -1093,7 +1089,7 @@ class App:
             if "://" in token: continue
             path_str = token.strip("\"'.,")
             path = os.path.expanduser(path_str)
-            if not os.path.exists(path): continue # Strict check: only attach if it exists
+            if not os.path.exists(path): continue 
                 
             if os.path.isfile(path):
                 content = FileReader.read(path)
@@ -1238,9 +1234,8 @@ def main():
                 else:
                     print(f"{C.CYAN}Suggested Command:{C.RESET} {C.BOLD}{cmd_str}{C.RESET}")
                     try:
-                        confirm = input(f"{C.YELLOW}Run this command? (y/N): {C.RESET}").strip().lower()
+                        confirm = input(f"\001{C.YELLOW}\002Run this command? (y/N): \001{C.RESET}\002").strip().lower()
                         if confirm in ("y", "yes"):
-                            # Safer execution using shell=False for one-shot commands
                             import shlex
                             subprocess.run(shlex.split(cmd_str))
                     except: pass
