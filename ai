@@ -8,7 +8,7 @@ import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit,
 import zipfile
 from pathlib import Path
 
-__version__ = "6.0.5"
+__version__ = "6.1.0"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -202,6 +202,8 @@ class Spinner:
         self._stop = False
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()
+        # Register cleanup to prevent orphaned spinners on crash
+        atexit.register(self.stop)
 
     def _run(self):
         i = 0
@@ -218,6 +220,9 @@ class Spinner:
         if self._t: self._t.join(timeout=0.3)
         sys.stdout.write("\r" + " " * 30 + "\r"); sys.stdout.flush()
 
+    def __del__(self):
+        self.stop()
+
 
 # ---------------------------------------------------------------------------
 # Termux API & Server Manager
@@ -230,14 +235,14 @@ class TermuxAPI:
     def speak(text):
         if TermuxAPI.available("termux-tts-speak"):
             try: subprocess.run(["termux-tts-speak", text[:1000]], timeout=15); return True
-            except: return False
+            except Exception: return False
         return False
 
     @staticmethod
     def copy(text):
         if TermuxAPI.available("termux-clipboard-set"):
             try: subprocess.run(["termux-clipboard-set"], input=text, text=True, timeout=5); return True
-            except: return False
+            except Exception: return False
         return False
 
     @staticmethod
@@ -246,14 +251,14 @@ class TermuxAPI:
             try:
                 r = subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, timeout=5)
                 return r.stdout
-            except: return None
+            except Exception: return None
         return None
 
     @staticmethod
     def share(text):
         if TermuxAPI.available("termux-share"):
             try: subprocess.run(["termux-share", "-a", "send"], input=text, text=True, timeout=10); return True
-            except: return False
+            except Exception: return False
         return False
 
     @staticmethod
@@ -323,24 +328,30 @@ class Database:
         except sqlite3.Error: return set()
 
     def _migrate_schema(self):
-        conv_cols = self._table_cols("conversations")
-        if conv_cols:
-            if "title" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
-            if "model" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT")
-            if "backend" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN backend TEXT")
-            if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            self.conn.commit()
+        # Safely migrate schema inside a transaction
+        try:
+            self.conn.execute("BEGIN")
+            conv_cols = self._table_cols("conversations")
+            if conv_cols:
+                if "title" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
+                if "model" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT")
+                if "backend" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN backend TEXT")
+                if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                
+            msg_cols = self._table_cols("messages")
+            if msg_cols:
+                if "conversation_id" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN conversation_id INTEGER")
+                if "role" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN role TEXT")
+                if "content" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN content TEXT")
+                if "model" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
+                if "tokens" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN tokens INTEGER DEFAULT 0")
+                if "created_at" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
             
-        msg_cols = self._table_cols("messages")
-        if msg_cols:
-            if "conversation_id" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN conversation_id INTEGER")
-            if "role" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN role TEXT")
-            if "content" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN content TEXT")
-            if "model" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
-            if "tokens" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN tokens INTEGER DEFAULT 0")
-            if "created_at" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            self.conn.commit()
+            self.conn.execute("COMMIT")
+        except Exception as e:
+            self.conn.execute("ROLLBACK")
+            raise e
 
     def new_conv(self, title="New Chat", model="", backend=""):
         cur = self.conn.execute("INSERT INTO conversations (title, model, backend) VALUES (?,?,?)", (title, model, backend))
@@ -436,7 +447,7 @@ class Config:
         self.cfg = json.loads(json.dumps(self.DEFAULTS))
         if CONFIG_FILE.exists():
             try: self._deep_update(self.cfg, json.loads(CONFIG_FILE.read_text()))
-            except: pass
+            except Exception: pass
 
     @staticmethod
     def _deep_update(base, new):
@@ -491,7 +502,7 @@ class Tools:
         return [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in Tools.get_schemas(build_mode)]
 
     @staticmethod
-    def run(name, args, build_mode=False, confirm_fn=None):
+    def run(name, args, build_mode=False):
         try:
             if name == "read_file":
                 p = os.path.expanduser(args.get("path", ""))
@@ -506,12 +517,7 @@ class Tools:
                 cwd = os.getcwd()
                 if not os.path.abspath(p).startswith(cwd):
                     return f"Error: Cannot write files outside current working directory ({cwd})."
-                
-                if confirm_fn:
-                    approved = confirm_fn("write_file", args)
-                    if not approved:
-                        return "Error: User declined to write this file."
-                        
+                    
                 Path(p).parent.mkdir(parents=True, exist_ok=True)
                 Path(p).write_text(content)
                 return f"Written to {p}"
@@ -529,16 +535,12 @@ class Tools:
                     ]
                     if any(re.search(p, cmd_str, re.IGNORECASE) for p in block_patterns):
                         return "Error: Plan mode active. Command blocked because it may modify the system or run an interpreter."
-                
-                if confirm_fn:
-                    approved = confirm_fn("run_command", args)
-                    if not approved:
-                        return "Error: User declined to run this command."
 
                 try:
                     cmd_list = shlex.split(cmd_str)
                     if not cmd_list: return "Error: Empty command."
-                    r = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30)
+                    # Use preexec_fn for consistent process management and cleanup
+                    r = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30, preexec_fn=os.setsid)
                     return (r.stdout + r.stderr)[:5000]
                 except Exception as e:
                     return f"Error executing command: {e}"
@@ -558,7 +560,7 @@ class Backend:
         except urllib.error.HTTPError as e:
             body = ""
             try: body = e.read().decode()[:300]
-            except: pass
+            except Exception: pass
             raise Exception(f"HTTP {e.code}: {body}")
         except urllib.error.URLError as e: raise Exception(f"Connection failed: {e.reason}")
 
@@ -575,7 +577,7 @@ class Backend:
                     d = line[6:]
                     if d == "[DONE]": return
                     try: yield json.loads(d)
-                    except: pass
+                    except Exception: pass
 
 class OpenAICompatible(Backend):
     def __init__(self, cfg, profile_name, profile):
@@ -614,11 +616,21 @@ class OpenAICompatible(Backend):
                 if t := choices[0].get("delta", {}).get("content", ""): yield t
         else: yield json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"]
 
-    def chat_with_tools(self, msgs, confirm_fn=None):
+    def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         self._check_api_key()
         h = self._headers()
         build_mode = self.c.get("tools_enabled", False)
-        for _ in range(15):  # Increased to 15 iterations to prevent stopping prematurely
+        
+        iterations = 0
+        loop_history = []
+        
+        while True:
+            iterations += 1
+            if iterations % 10 == 0:
+                if not continue_fn(iterations):
+                    yield {"type": "text", "content": "[Task stopped by user]"}
+                    return
+                    
             d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
             resp = self._req(self._url(), d, h)
             
@@ -651,24 +663,51 @@ class OpenAICompatible(Backend):
             
             calls = list(tool_calls_buf.values())
             
-            # Yield intermediate text BEFORE running tools
             if content_buf:
                 yield {"type": "text", "content": content_buf}
                 
             if not calls:
                 return
             
+            # Loop Detection
+            calls_str = str(calls)
+            loop_history.append(calls_str)
+            if len(loop_history) > 3:
+                loop_history.pop(0)
+                if len(set(loop_history)) == 1:
+                    yield {"type": "text", "content": "[Stopped: AI is stuck in a loop repeating the same action.]"}
+                    return
+
+            # Normalize calls for the batch confirmation UI
+            norm_calls = []
+            for c in calls:
+                fn = c["function"]
+                try: args = json.loads(fn.get("arguments") or "{}")
+                except Exception: args = {}
+                norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
+            
+            # Ask the user to approve the entire batch of actions
+            if not confirm_batch_fn(norm_calls):
+                for c in calls:
+                    msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": "Error: User declined to execute this batch."})
+                yield {"type": "text", "content": "\n[User declined the proposed actions. Please try a different approach.]"}
+                continue
+
             msg = {"role": "assistant", "content": content_buf, "tool_calls": calls}
             msgs.append(msg)
-            for call in calls:
-                fn = call["function"]
+            
+            # Execute the batch and yield progress events
+            total = len(calls)
+            for i, c in enumerate(calls):
+                fn = c["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
-                except: args = {}
-                yield {"type": "tool_call", "name": fn["name"], "args": args}
-                result = Tools.run(fn["name"], args, build_mode, confirm_fn)
+                except Exception: args = {}
+                
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": fn["name"], "args": args}
+                
+                result = Tools.run(fn["name"], args, build_mode)
                 yield {"type": "tool_result", "name": fn["name"], "result": result}
-                msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-        yield {"type": "text", "content": "(stopped after 15 tool iterations)"}
+                msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
 
 class AnthropicBackend(Backend):
     def __init__(self, cfg):
@@ -702,35 +741,99 @@ class AnthropicBackend(Backend):
                     if t := chunk.get("delta", {}).get("text", ""): yield t
         else: yield json.loads(self._req(url, d, h).read())["content"][0]["text"]
 
-    def chat_with_tools(self, msgs, confirm_fn=None):
+    def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         sys_prompt, payload = self._split_system(msgs)
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
         build_mode = self.c.get("tools_enabled", False)
-        for _ in range(15):  # Increased to 15 iterations
-            d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode)}
+        
+        iterations = 0
+        loop_history = []
+        
+        while True:
+            iterations += 1
+            if iterations % 10 == 0:
+                if not continue_fn(iterations):
+                    yield {"type": "text", "content": "[Task stopped by user]"}
+                    return
+                    
+            d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if sys_prompt: d["system"] = sys_prompt
-            obj = json.loads(self._req(url, d, h).read())
-            blocks = obj.get("content", [])
             
-            text_block = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+            # Fix #3: Implement SSE streaming for Anthropic tool use
+            resp = self._req(url, d, h)
+            
+            content_blocks = {}
+            text_block = ""
+            
+            for chunk in self._sse_lines(resp):
+                evt_type = chunk.get("type")
+                if evt_type == "content_block_start":
+                    idx = chunk.get("index")
+                    block = chunk.get("content_block", {})
+                    content_blocks[idx] = block
+                    if block.get("type") == "tool_use":
+                        content_blocks[idx]["input"] = ""
+                elif evt_type == "content_block_delta":
+                    idx = chunk.get("index")
+                    delta = chunk.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        content_blocks[idx]["text"] += text
+                        text_block += text
+                    elif delta.get("type") == "input_json_delta":
+                        content_blocks[idx]["input"] += delta.get("partial_json", "")
+                        
+            blocks = [content_blocks[k] for k in sorted(content_blocks.keys())]
+            tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+            
+            # Parse tool inputs
+            for tu in tool_uses:
+                try: tu["input"] = json.loads(tu.get("input", "{}") or "{}")
+                except Exception: tu["input"] = {}
+                
             if text_block:
                 yield {"type": "text", "content": text_block}
                 
-            tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
             if not tool_uses:
                 return
                 
+            # Loop Detection
+            calls_str = str(tool_uses)
+            loop_history.append(calls_str)
+            if len(loop_history) > 3:
+                loop_history.pop(0)
+                if len(set(loop_history)) == 1:
+                    yield {"type": "text", "content": "[Stopped: AI is stuck in a loop repeating the same action.]"}
+                    return
+
+            # Normalize calls for batch confirmation
+            norm_calls = []
+            for tu in tool_uses:
+                norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
+                
+            if not confirm_batch_fn(norm_calls):
+                results = []
+                for tu in tool_uses:
+                    results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": "Error: User declined to execute this batch."})
+                payload.append({"role": "assistant", "content": blocks})
+                payload.append({"role": "user", "content": results})
+                yield {"type": "text", "content": "\n[User declined the proposed actions. Please try a different approach.]"}
+                continue
+                
             payload.append({"role": "assistant", "content": blocks})
             results = []
-            for tu in tool_uses:
+            
+            total = len(tool_uses)
+            for i, tu in enumerate(tool_uses):
                 args = tu.get("input", {}) or {}
-                yield {"type": "tool_call", "name": tu["name"], "args": args}
-                result = Tools.run(tu["name"], args, build_mode, confirm_fn)
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
+                
+                result = Tools.run(tu["name"], args, build_mode)
                 yield {"type": "tool_result", "name": tu["name"], "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
+                
             payload.append({"role": "user", "content": results})
-        yield {"type": "text", "content": "(stopped after 15 tool iterations)"}
 
 def get_backend(cfg):
     name, profile = cfg.active_profile()
@@ -745,7 +848,7 @@ def get_backend(cfg):
 # Main App
 # ---------------------------------------------------------------------------
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -778,7 +881,7 @@ class App:
             r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
             data = json.loads(r.read().decode("utf-8"))
             return [m["name"] for m in data.get("models", [])]
-        except: return []
+        except Exception: return []
 
     def _run_setup(self, arg):
         print(f"\n{C.BOLD}{C.CYAN}=== Termux AI Setup Wizard ==={C.RESET}")
@@ -795,7 +898,7 @@ class App:
                 for i, m in enumerate(models, 1): print(f"  {i}) {m}")
                 m_idx = input(f"Choose model [1]: ").strip() or "1"
                 try: model = models[int(m_idx)-1]
-                except: model = "llama3.2"
+                except Exception: model = "llama3.2"
             else:
                 model = input("Enter model name (e.g., llama3.2): ").strip() or "llama3.2"
             self.cfg.set_path("backends.ollama", {"base_url": "http://localhost:11434/v1", "model": model, "api_key": "ollama"})
@@ -821,10 +924,37 @@ class App:
         try: self.backend = get_backend(self.cfg)
         except Exception as e: self.err(str(e))
 
+    def _self_update(self):
+        import urllib.request
+        url = "https://raw.githubusercontent.com/kabarbaik-xyz/termux-ai/main/ai"
+        self.info("Checking for updates...")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                new_code = r.read().decode('utf-8')
+            
+            current_file = Path(__file__).resolve()
+            old_code = current_file.read_text(encoding='utf-8')
+            
+            if old_code.strip() == new_code.strip():
+                self.info("You are already running the latest version.")
+                return
+            
+            backup_file = current_file.with_suffix('.bak')
+            backup_file.write_text(old_code, encoding='utf-8')
+            
+            current_file.write_text(new_code, encoding='utf-8')
+            os.chmod(current_file, 0o755)
+            self.info(f"Updated successfully! Backup saved to {backup_file.name}.")
+            self.warn("Please restart the AI to apply the update.")
+            
+        except Exception as e:
+            self.err(f"Failed to update: {e}")
+
     def setup_rl(self):
         if not HAVE_READLINE: return
         try: readline.read_history_file(str(HIST_FILE))
-        except: pass
+        except Exception: pass
         readline.set_history_length(1000)
         self._default_completer = readline.get_completer()
         try:
@@ -832,7 +962,7 @@ class App:
             readline.set_completer(self._completer)
             readline.parse_and_bind("tab: complete")
             readline.parse_and_bind("set enable-bracketed-paste on")
-        except: pass
+        except Exception: pass
         atexit.register(self._save_history)
 
     def _completer(self, text, state):
@@ -852,7 +982,7 @@ class App:
                 try:
                     convs = self.db.list_convs(limit=50)
                     matches = [str(c["id"]) + " " for c in convs if str(c["id"]).startswith(text)]
-                except: matches = []
+                except Exception: matches = []
             elif cmd == "/backend":
                 backends = list(self.cfg.get("backends", {}).keys()) + ["anthropic", "claude"]
                 matches = [b + " " for b in backends if b.startswith(text)]
@@ -865,7 +995,7 @@ class App:
     def _save_history(self):
         if not HAVE_READLINE: return
         try: CONFIG_DIR.mkdir(parents=True, exist_ok=True); readline.write_history_file(str(HIST_FILE))
-        except: pass
+        except Exception: pass
 
     def _current_model(self):
         name, profile = self.cfg.active_profile()
@@ -904,7 +1034,7 @@ class App:
 
     def _check_ollama(self):
         try: urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1); return True
-        except: return False
+        except Exception: return False
 
     def prompt(self):
         name, _ = self.cfg.active_profile()
@@ -941,6 +1071,7 @@ class App:
 
 {C.BOLD}─ MODEL & BACKEND ─────────────────────────────────────{C.RESET}
   {C.YELLOW}/setup{C.RESET}                      run the setup wizard
+  {C.YELLOW}/update{C.RESET}                     update the script to the latest version
   {C.YELLOW}/backends{C.RESET}                  list configured profiles
   {C.YELLOW}/backend{C.RESET} {C.DIM}<name>{C.RESET}            switch active profile
   {C.YELLOW}/model{C.RESET} {C.DIM}<name>{C.RESET}              change model on active profile
@@ -975,6 +1106,7 @@ class App:
         if cmd in ("/exit", "/quit"): sys.exit(0)
         elif cmd == "/help": print(self.HELP_TEXT)
         elif cmd == "/setup": self._run_setup(arg)
+        elif cmd == "/update": self._self_update()
         elif cmd == "/backend":
             if not arg: self.info(f"Active backend: {self.cfg.get('backend')}"); return True
             if arg not in self.cfg.get("backends", {}) and arg not in ("anthropic", "claude"):
@@ -1004,7 +1136,7 @@ class App:
             state = "build" if self.cfg.get("tools_enabled") else "plan"
             color = C.GREEN if state == "build" else C.YELLOW
             self.info(f"Tools: {color}{state}{C.RESET}")
-            if state == "build": self.hint("AI can read/write files & run any shell commands (with confirmation)")
+            if state == "build": self.hint("AI can read/write files & run any shell commands (with batch confirmation)")
             else: self.hint("AI can read files & run safe commands, but cannot write/modify")
         elif cmd == "/multi":
             if arg in ("on", "off"): self.cfg.set("multi_line", arg == "on"); self.multi_line = arg == "on"
@@ -1043,7 +1175,7 @@ class App:
             if not conv: self.err(f"Conversation #{cid} not found."); return True
             try: 
                 confirm = input(f"  \001{C.YELLOW}\002Delete '#{cid}' '{conv['title']}'? [y/N] \001{C.RESET}\002").strip().lower()
-            except: confirm = ""
+            except Exception: confirm = ""
             if confirm in ("y", "yes"):
                 self.db.del_conv(cid)
                 if self.cid == cid: self.cid = None
@@ -1131,7 +1263,7 @@ class App:
             self.info(f"Set backends.{key} = {display}")
             if key.split(".")[0] == self.cfg.get("backend"):
                 try: self.backend = get_backend(self.cfg)
-                except: pass
+                except Exception: pass
         elif sub[0] == "show" and len(sub) > 1:
             p = self.cfg.get("backends", {}).get(sub[1])
             if not p: self.err(f"No such profile: {sub[1]}"); return
@@ -1150,7 +1282,7 @@ class App:
             display = mask(str(val)) if "api_key" in key else val
             self.info(f"Set {key} = {display}")
             try: self.backend = get_backend(self.cfg)
-            except: pass
+            except Exception: pass
         else: print(json.dumps(self.cfg.masked_dict(), indent=2))
 
     def _show_status(self):
@@ -1266,13 +1398,15 @@ class App:
     def _extract_files(self, text):
         if not self.cfg.get("attach_files", True): return text
         attached = []
-        tokens = re.findall(r'(?:(?:\./|~/|/)?(?:[\w.\-]+/)*[\w.\-]+\.\w{2,5})', text)
+        # Refined regex: match paths that contain dots or slashes, but explicitly exclude URLs
+        tokens = re.findall(r'(?<!\w)(\.{1,2}/|~/)?([\w.\-]+/)*[\w.\-]+\.\w{2,5}(?!\w)', text)
         if "this folder" in text.lower() or "current directory" in text.lower() or "this directory" in text.lower():
-            tokens.append(".")
+            tokens.append((".", "", ""))
             
         for token in tokens:
-            if "://" in token: continue
-            path_str = token.strip("\"'.,")
+            # token is a tuple because of capture groups, join them
+            path_str = "".join(token).strip("\"'.,")
+            if "://" in path_str: continue
             path = os.path.expanduser(path_str)
             if not os.path.exists(path): continue 
                 
@@ -1300,39 +1434,58 @@ class App:
                 files = sorted([f for f in os.listdir(cwd) if not f.startswith('.')])
                 tree = ", ".join(files[:30]) if files else "(empty)"
                 sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}\nFiles visible here: {tree}"
-            except: sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
-        if self.cfg.get("tools_enabled"): sys_prompt += "\n\n[Tools] You are in BUILD mode. You can read, write, and modify files, and execute any shell commands. Ensure you use exact paths."
+            except Exception: sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
+        if self.cfg.get("tools_enabled"): sys_prompt += "\n\n[Tools] You are in BUILD mode. You can read, write, and modify files, and execute any shell commands. Ensure you use exact paths. If you have multiple independent actions to take, output all tool calls at once in a single response."
         else: sys_prompt += "\n\n[Tools] You are in PLAN mode. You can read files and run safe inspection commands (ls, cat, grep), but you must NOT modify, write, or delete anything. Write attempts will be blocked."
         return sys_prompt
 
-    def _confirm_tool(self, name, args):
-        # Hard stop spinner and clear line to prevent y/N garbled bug
-        if self.spinner:
-            self.spinner.stop()
+    def _confirm_batch(self, calls):
+        if self.spinner: self.spinner.stop()
         sys.stdout.write("\r" + " " * 40 + "\r")
         sys.stdout.flush()
 
-        if name == "run_command":
-            print(f"  {C.DIM}Command: {C.CYAN}{args.get('command', '')}{C.RESET}")
-            try:
-                confirm = input(f"  \001{C.YELLOW}\002Execute? [y/N] \001{C.RESET}\002").strip().lower()
-                approved = confirm in ("y", "yes")
-            except: approved = False
-            if approved:
-                self.spinner = Spinner("executing")
+        # Only prompt if in build mode and there are dangerous tools
+        dangerous = [c for c in calls if c["name"] in ("run_command", "write_file")]
+        if not dangerous or not self.cfg.get("tools_enabled"):
+            self.spinner = Spinner("executing")
+            self.spinner.start()
+            return True
+            
+        print(f"\n  {C.YELLOW}⚠ AI wants to perform {len(calls)} action(s):{C.RESET}")
+        for i, c in enumerate(calls, 1):
+            name = c["name"]
+            args = c["args"]
+            if name == "run_command": print(f"  {C.DIM}{i}.{C.RESET} Run: {C.CYAN}{args.get('command', '')}{C.RESET}")
+            elif name == "write_file": print(f"  {C.DIM}{i}.{C.RESET} Write: {C.CYAN}{args.get('path', '')}{C.RESET}")
+            elif name == "read_file": print(f"  {C.DIM}{i}.{C.RESET} Read: {C.CYAN}{args.get('path', '')}{C.RESET}")
+            elif name == "list_files": print(f"  {C.DIM}{i}.{C.RESET} List: {C.CYAN}{args.get('path', '.')}{C.RESET}")
+            elif name == "search_files": print(f"  {C.DIM}{i}.{C.RESET} Search: {C.CYAN}{args.get('query', '')}{C.RESET}")
+
+        try:
+            confirm = input(f"  \001{C.YELLOW}\002Approve all? [y/N] \001{C.RESET}\002").strip().lower()
+            approved = confirm in ("y", "yes")
+        except Exception: approved = False
+        
+        if approved:
+            self.spinner = Spinner("executing")
+            self.spinner.start()
+        return approved
+
+    def _prompt_continue(self, iterations):
+        if self.spinner: self.spinner.stop()
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        sys.stdout.flush()
+        print(f"\n  {C.YELLOW}⚠ AI has made {iterations} tool calls.{C.RESET}")
+        try:
+            ans = input(f"  \001{C.YELLOW}\002Continue working? [Y/n] \001{C.RESET}\002").strip().lower()
+        except Exception:
+            ans = "n"
+        if ans in ("y", "yes", ""):
+            if self.spinner:
+                self.spinner = Spinner("thinking")
                 self.spinner.start()
-            return approved
-        elif name == "write_file":
-            print(f"  {C.DIM}--- Content ---\n{args.get('content', '')[:1000]}\n--- End ---{C.RESET}")
-            try:
-                confirm = input(f"  \001{C.YELLOW}\002Apply? [y/N] \001{C.RESET}\002").strip().lower()
-                approved = confirm in ("y", "yes")
-            except: approved = False
-            if approved:
-                self.spinner = Spinner("executing")
-                self.spinner.start()
-            return approved
-        return True
+            return True
+        return False
 
     def chat(self, txt, model_override=None):
         if not self.backend: self.err("No working backend. Use /profile add or /backend to configure one."); return
@@ -1347,7 +1500,7 @@ class App:
             original_model = self.cfg.get("backends", {}).get(name, {}).get("model")
             self.cfg.set_path(f"backends.{name}.model", model_override, save=False)
             try: self.backend = get_backend(self.cfg)
-            except: pass
+            except Exception: pass
 
         txt = self._extract_files(txt)
         name, _ = self.cfg.active_profile()
@@ -1374,73 +1527,91 @@ class App:
 
         resp, formatter = "", MarkdownFormatter()
         success = False
-
-        try:
-            for event in self.backend.chat_with_tools(msgs, confirm_fn=self._confirm_tool):
-                if event["type"] == "tool_call":
-                    if self.spinner: self.spinner.stop()
-                    name, args = event["name"], event["args"]
-                    if name == "read_file": print(f"\n  {C.MAGENTA}📄 AI is reading file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
-                    elif name == "list_files": print(f"\n  {C.MAGENTA}📁 AI is listing files in:{C.RESET} {C.CYAN}{args.get('path', '.')}{C.RESET}")
-                    elif name == "search_files": print(f"\n  {C.MAGENTA}🔍 AI is searching for '{args.get('query', '')}' in {args.get('path', '.')}{C.RESET}")
-                    elif name == "run_command": print(f"\n  {C.MAGENTA}⚙ AI wants to run:{C.RESET} {C.CYAN}{args.get('command', '')}{C.RESET}")
-                    elif name == "write_file": print(f"\n  {C.MAGENTA}✍️  AI wants to write to file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
-                    
-                    if name not in ("run_command", "write_file") or not self.cfg.get("tools_enabled"):
+        
+        # Fix #4: Auto-router iterative fallback (No recursion)
+        tried_backends = set()
+        original_backend = self.cfg.get("backend")
+        
+        while True:
+            try:
+                for event in self.backend.chat_with_tools(msgs, confirm_batch_fn=self._confirm_batch, continue_fn=self._prompt_continue):
+                    if event["type"] == "tool_progress":
+                        if self.spinner: self.spinner.stop()
+                        current, total = event["current"], event["total"]
+                        name, args = event["name"], event["args"]
+                        prefix = f"  {C.DIM}[{current}/{total}]{C.RESET}"
+                        
+                        if name == "read_file": print(f"\n{prefix} {C.MAGENTA}📄 AI is reading file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
+                        elif name == "list_files": print(f"\n{prefix} {C.MAGENTA}📁 AI is listing files in:{C.RESET} {C.CYAN}{args.get('path', '.')}{C.RESET}")
+                        elif name == "search_files": print(f"\n{prefix} {C.MAGENTA}🔍 AI is searching for '{args.get('query', '')}' in {args.get('path', '.')}{C.RESET}")
+                        elif name == "run_command": print(f"\n{prefix} {C.MAGENTA}⚙ AI is running:{C.RESET} {C.CYAN}{args.get('command', '')}{C.RESET}")
+                        elif name == "write_file": print(f"\n{prefix} {C.MAGENTA}✍️  AI is writing to:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
+                        
                         self.spinner = Spinner("executing")
                         self.spinner.start()
 
-                elif event["type"] == "tool_result":
-                    if self.spinner: self.spinner.stop()
-                    print(f"  {C.DIM}└ Done.{C.RESET}\n")
-                    self.spinner = Spinner("thinking")
-                    self.spinner.start()
-                elif event["type"] == "text":
-                    if self.spinner: self.spinner.stop()
-                    resp += event["content"]
-                    formatter.feed(event["content"])
-                    formatter.flush()
-                    sys.stdout.flush()
-                    # Don't start spinner here, backend will yield next event immediately
-            success = True
-            
-        except KeyboardInterrupt:
-            if self.spinner: self.spinner.stop()
-            formatter.flush()
-            print(f"\n  {C.YELLOW}[interrupted — partial reply saved]{C.RESET}")
-            if resp:
-                self.db.save_msg(self.cid, "assistant", resp, self._current_model(), est_tok(resp))
-                self.last_reply = resp
-        except Exception as e:
-            if self.spinner: self.spinner.stop()
-            formatter.flush()
-            self.err(f"Error with {self.cfg.get('backend')}: {e}")
-            
-            if self.cfg.get("auto_router", False) and len(self.cfg.get("backends", {})) > 1:
-                current_backend = self.cfg.get("backend")
-                for b in self.cfg.get("backends", {}):
-                    if b != current_backend:
-                        self.warn(f"Auto-Router: Falling back to {b}...")
-                        self.cfg.set("backend", b, save=False)
+                    elif event["type"] == "tool_result":
+                        if self.spinner: self.spinner.stop()
+                        print(f"  {C.DIM}└ Done.{C.RESET}")
+                        self.spinner = Spinner("thinking")
+                        self.spinner.start()
+                    elif event["type"] == "text":
+                        if self.spinner: self.spinner.stop()
+                        resp += event["content"]
+                        formatter.feed(event["content"])
+                        formatter.flush()
+                        sys.stdout.flush()
+                success = True
+                break # Break the router loop on success
+                
+            except KeyboardInterrupt:
+                if self.spinner: self.spinner.stop()
+                formatter.flush()
+                print(f"\n  {C.YELLOW}[interrupted — partial reply saved]{C.RESET}")
+                if resp:
+                    self.db.save_msg(self.cid, "assistant", resp, self._current_model(), est_tok(resp))
+                    self.last_reply = resp
+                break
+            except Exception as e:
+                if self.spinner: self.spinner.stop()
+                formatter.flush()
+                self.err(f"Error with {self.cfg.get('backend')}: {e}")
+                
+                if self.cfg.get("auto_router", False) and len(self.cfg.get("backends", {})) > 1:
+                    tried_backends.add(self.cfg.get("backend"))
+                    next_backend = None
+                    for b in self.cfg.get("backends", {}):
+                        if b not in tried_backends:
+                            next_backend = b
+                            break
+                    
+                    if next_backend:
+                        self.warn(f"Auto-Router: Falling back to {next_backend}...")
+                        self.cfg.set("backend", next_backend, save=False)
                         try:
                             self.backend = get_backend(self.cfg)
                             self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
                             self.db.conn.commit()
-                            self.chat(txt)
-                            return
+                            # Loop repeats with the new backend
+                            continue 
                         except Exception as fallback_e:
-                            self.err(f"Fallback to {b} failed: {fallback_e}")
-                self.err("All backends failed.")
-            
-            self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
-            self.db.conn.commit()
+                            self.err(f"Fallback to {next_backend} failed: {fallback_e}")
+                            tried_backends.add(next_backend)
+                            continue
+                
+                self.err("All backends failed or router disabled.")
+                self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
+                self.db.conn.commit()
+                break
 
+        # Restore original settings
         self.cfg.cfg["max_tokens"] = original_max_tokens
+        self.cfg.set("backend", original_backend, save=False)
         if original_model:
             name = self.cfg.get("backend")
             self.cfg.set_path(f"backends.{name}.model", original_model, save=False)
             try: self.backend = get_backend(self.cfg)
-            except: pass
+            except Exception: pass
 
         if success:
             print()
@@ -1499,6 +1670,7 @@ def main():
                 if prompt_text: prompt_text += "\n\n" + stdin_text
                 else: prompt_text = stdin_text
 
+        # Use App logic for extraction
         prompt_text = App()._extract_files(prompt_text)
         
         if args.cmd:
@@ -1511,7 +1683,7 @@ def main():
                 files = sorted([f for f in os.listdir(cwd) if not f.startswith('.')])
                 tree = ", ".join(files[:30]) if files else "(empty)"
                 sys_msg += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}\nFiles visible here: {tree}"
-            except: sys_msg += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
+            except Exception: sys_msg += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
             payload = prompt_text
 
         msgs = [{"role": "system", "content": sys_msg}, {"role": "user", "content": payload}]
@@ -1532,7 +1704,7 @@ def main():
                         if confirm in ("y", "yes"):
                             import shlex
                             subprocess.run(shlex.split(cmd_str))
-                    except: pass
+                    except Exception: pass
             else:
                 if args.json:
                     print(json.dumps({"response": resp}))
