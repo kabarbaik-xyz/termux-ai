@@ -14,15 +14,20 @@ A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — an
 - **Multi-backend support** — Ollama (local/free), OpenAI, Anthropic Claude, Groq, OpenRouter, or any OpenAI-compatible API
 - **Streaming responses** with animated terminal spinner
 - **Chat history** stored in SQLite — resume, search, rename, export, delete
-- **Tool system (BUILD/PLAN modes)** — AI can read files, list directories, search code, and optionally write files & run shell commands (with confirmation)
+- **Tool system (BUILD/PLAN modes)** — AI can read files, list directories, search code, and optionally write files & run shell commands (with batch confirmation)
+- **Batch tool confirmation** — all tool calls in a single AI response are grouped; read-only tools (read, list, search) auto-execute without prompting, while dangerous actions (write, run_command) require one collective y/N
+- **Loop detection** — automatically stops the AI if it repeats the same tool calls 3 times in a row
+- **Iteration safety limit** — prompts "Continue working?" after every 10 tool-call iterations
 - **File attachments** — automatically detects `./path` references in your prompt and attaches file contents
 - **Directory scanning** — reference a folder and the AI reads all relevant source files
 - **Office document reading** — reads `.docx`, `.pptx`, `.xlsx` natively (no dependencies)
 - **PDF reading** — via `pdftotext` (optional, `pkg install poppler`)
 - **Markdown rendering** — colored headings, bold, italic, inline code, code blocks, lists
-- **Auto-compact** — summarizes long conversations to save tokens
+- **Auto-compact** — summarizes long conversations (>3000 tokens) to save context
 - **Auto-router** — falls back to another backend if the primary fails
 - **Cost estimation** — tracks token usage and estimates spend
+- **Tab completion** — auto-completes slash commands, backend names, and conversation IDs
+- **Self-update** — update to the latest version from inside the CLI (`/update`)
 - **Multi-line input** — toggle with `/multi`
 - **Termux API integration** — clipboard copy/paste, TTS speech, Android share sheet
 - **Ollama server management** — start/stop from inside the CLI
@@ -166,6 +171,7 @@ docker ps | ai "which container has port 8080?"
 | Command | Description |
 |---|---|
 | `/setup` | Run the interactive setup wizard |
+| `/update` | Update the script to the latest version from GitHub |
 | `/backends` | List configured profiles |
 | `/backend <name>` | Switch active profile |
 | `/model <name>` | Change model on active profile |
@@ -205,15 +211,25 @@ docker ps | ai "which container has port 8080?"
 
 ### PLAN mode (default)
 
-The AI can **read** files, list directories, search code, and run safe inspection commands (`ls`, `cat`, `grep`). It **cannot** write, modify, or delete anything.
+The AI can **read** files, list directories, search code, and run safe inspection commands (`ls`, `cat`, `grep`, `head`, etc.). It **cannot** write, modify, or delete anything.
+
+In PLAN mode, the following command patterns are **automatically blocked** to prevent accidental modification:
+
+`rm`, `mv`, `cp`, `touch`, `mkdir`, `chmod`, `chown`, `dd`, `tee`, `pip install`, `apt`, `pkg`, `npm`, `yarn`, output redirection (`>`, `>>`), and interpreter execution (`python3 -c`, `bash -c`, `node`, `perl`, `ruby`, `php`, etc.).
 
 ### BUILD mode
 
-```bash
+```
 /tools on
 ```
 
-The AI can also **write files** and **run shell commands**. Every write and command execution requires your explicit confirmation (y/N).
+The AI can also **write files** and **run any shell command**. Key behaviors:
+
+- **Batch confirmation** — all tool calls in one response are shown together; you approve or decline the entire batch with a single y/N
+- **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`) execute automatically without prompting
+- **CWD sandbox** — `write_file` is restricted to the current working directory for safety
+- **Loop detection** — if the AI repeats the same tool call 3 consecutive times, execution stops automatically
+- **Iteration cap** — after every 10 tool-call iterations, you're prompted to continue or stop
 
 ---
 
@@ -224,15 +240,17 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | Key | Default | Description |
 |---|---|---|
 | `backend` | `ollama` | Active backend profile name |
+| `system_prompt` | _(see below)_ | System prompt for the AI |
+| `system_instruction` | `""` | If set, overrides `system_prompt` |
 | `temperature` | `0.7` | Sampling temperature |
-| `max_tokens` | `4096` | Max response tokens |
+| `max_tokens` | `4096` | Max response tokens (auto-reduced to 1024 for short non-code prompts) |
 | `stream` | `true` | Stream responses |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |
 | `tts_replies` | `false` | Auto-speak all replies |
 | `multi_line` | `false` | Multi-line input mode |
-| `auto_compact` | `true` | Auto-summarize long chats |
-| `auto_router` | `false` | Fallback to other backends |
+| `auto_compact` | `true` | Auto-summarize when chat exceeds ~3000 tokens |
+| `auto_router` | `false` | Fallback to other backends on failure |
 | `max_file_chars` | `12000` | Max chars when attaching files |
 | `attach_files` | `true` | Auto-detect file references |
 
@@ -241,6 +259,7 @@ Change any setting from inside the CLI:
 ```
 /config set temperature 0.9
 /config set max_tokens 8192
+/config set system_instruction "You are a Python expert"
 ```
 
 ---
@@ -255,7 +274,9 @@ Review this folder for bugs
 What's in ~/project/config.yaml?
 ```
 
-Supported file types for reading: `.py`, `.js`, `.ts`, `.c`, `.cpp`, `.java`, `.go`, `.rs`, `.rb`, `.php`, `.sh`, `.css`, `.html`, `.json`, `.md`, `.txt`, `.csv`, `.xml`, `.yaml`, `.toml`, `.pdf`, `.docx`, `.pptx`, `.xlsx`
+**Supported file types** (for both attachment and directory scanning):
+
+`.py`, `.js`, `.ts`, `.tsx`, `.jsx`, `.java`, `.c`, `.cpp`, `.h`, `.cs`, `.go`, `.rs`, `.rb`, `.php`, `.swift`, `.kt`, `.sh`, `.bash`, `.css`, `.scss`, `.html`, `.json`, `.md`, `.txt`, `.csv`, `.xml`, `.yaml`, `.yml`, `.toml`, `.ini`, `.cfg`, `.pdf`, `.docx`, `.pptx`, `.xlsx`
 
 ---
 
