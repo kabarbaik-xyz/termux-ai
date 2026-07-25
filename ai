@@ -8,7 +8,7 @@ import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit,
 import zipfile
 from pathlib import Path
 
-__version__ = "6.0.1"
+__version__ = "6.0.5"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -32,6 +32,12 @@ try:
 except ImportError:
     def est_tok(t): return len(t) // 4
 
+# Rough pricing per 1K tokens (in USD) for cost estimation
+PRICING = {
+    "gpt-4o": 0.005, "gpt-4o-mini": 0.00015, "gpt-3.5-turbo": 0.0005,
+    "claude-3-5-sonnet": 0.003, "claude-3-opus": 0.015,
+    "llama3.2": 0.0, "llama3": 0.0, "glm-4.6": 0.001, "big-pickle": 0.001
+}
 
 # ---------------------------------------------------------------------------
 # Colours & display helpers
@@ -84,21 +90,21 @@ def fmt_time(ts):
 # ---------------------------------------------------------------------------
 class FileReader:
     @staticmethod
-    def read(path):
+    def read(path, max_chars=12000):
         p = os.path.expanduser(path)
         if not os.path.exists(p): return None
         ext = os.path.splitext(p)[1].lower()
         try:
             if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".py", ".sh", ".js", ".ts", ".c", ".cpp", ".java", ".go", ".rs", ".rb", ".php", ".css", ".scss"):
-                with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()
+                with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()[:max_chars]
             elif ext == ".pdf":
                 if shutil.which("pdftotext"):
                     r = subprocess.run(["pdftotext", "-layout", p, "-"], capture_output=True, text=True, timeout=15)
-                    return r.stdout if r.returncode == 0 else "[Error reading PDF]"
+                    return r.stdout[:max_chars] if r.returncode == 0 else "[Error reading PDF]"
                 return "[Error: pdftotext not found. Run: pkg install poppler]"
-            elif ext == ".docx": return FileReader._read_docx(p)
-            elif ext == ".pptx": return FileReader._read_pptx(p)
-            elif ext == ".xlsx": return FileReader._read_xlsx(p)
+            elif ext == ".docx": return FileReader._read_docx(p)[:max_chars]
+            elif ext == ".pptx": return FileReader._read_pptx(p)[:max_chars]
+            elif ext == ".xlsx": return FileReader._read_xlsx(p)[:max_chars]
             else: return f"[Unsupported file type: {ext}]"
         except Exception as e: return f"[Error reading {p}: {e}]"
 
@@ -341,8 +347,8 @@ class Database:
         self.conn.commit()
         return cur.lastrowid
 
-    def save_msg(self, cid, role, content, model=""):
-        self.conn.execute("INSERT INTO messages (conversation_id, role, content, model) VALUES (?,?,?,?)", (cid, role, content, model))
+    def save_msg(self, cid, role, content, model="", tokens=0):
+        self.conn.execute("INSERT INTO messages (conversation_id, role, content, model, tokens) VALUES (?,?,?,?,?)", (cid, role, content, model, tokens))
         self.conn.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (cid,))
         self.conn.commit()
 
@@ -353,6 +359,12 @@ class Database:
     def list_convs(self, limit=20):
         return self.conn.execute(
             "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    def search_convs(self, query):
+        return self.conn.execute(
+            "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
+            (f"%{query}%", f"%{query}%")
         ).fetchall()
 
     def del_conv(self, cid):
@@ -370,6 +382,27 @@ class Database:
     def clear_conv_msgs(self, cid):
         self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
         self.conn.commit()
+
+    def undo_last_msg_pair(self, cid):
+        self.conn.execute("""
+            DELETE FROM messages WHERE conversation_id = ? AND id IN (
+                SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1
+            )
+        """, (cid, cid))
+        self.conn.execute("""
+            DELETE FROM messages WHERE conversation_id = ? AND id IN (
+                SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1
+            )
+        """, (cid, cid))
+        self.conn.commit()
+
+    def get_total_tokens(self):
+        row = self.conn.execute("SELECT SUM(tokens) as t FROM messages").fetchone()
+        return row["t"] if row and row["t"] else 0
+
+    def get_conv_tokens(self, cid):
+        row = self.conn.execute("SELECT SUM(tokens) as t FROM messages WHERE conversation_id = ?", (cid,)).fetchone()
+        return row["t"] if row and row["t"] else 0
 
     def close(self):
         self.conn.close()
@@ -390,6 +423,10 @@ class Config:
         "tools_enabled": False,
         "tts_replies": False,
         "multi_line": False,
+        "auto_compact": True,
+        "auto_router": False,
+        "max_file_chars": 12000,
+        "attach_files": True,
         "api_keys": {"anthropic": ""},
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
     }
@@ -409,15 +446,19 @@ class Config:
 
     def save(self): CONFIG_FILE.write_text(json.dumps(self.cfg, indent=2))
     def get(self, k, d=None): return self.cfg.get(k, d)
-    def set(self, k, v): self.cfg[k] = v; self.save()
-    def set_path(self, dotted_key, v):
+    
+    def set(self, k, v, save=True): 
+        self.cfg[k] = v
+        if save: self.save()
+
+    def set_path(self, dotted_key, v, save=True):
         parts = dotted_key.split(".")
         node = self.cfg
         for p in parts[:-1]:
             if p not in node or not isinstance(node[p], dict): node[p] = {}
             node = node[p]
         node[parts[-1]] = v
-        self.save()
+        if save: self.save()
 
     def system_prompt(self): return self.get("system_instruction") or self.get("system_prompt") or ""
     def active_profile(self): return self.get("backend", "ollama"), self.get("backends", {}).get(self.get("backend", "ollama"))
@@ -450,25 +491,36 @@ class Tools:
         return [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in Tools.get_schemas(build_mode)]
 
     @staticmethod
-    def run(name, args, build_mode=False):
+    def run(name, args, build_mode=False, confirm_fn=None):
         try:
             if name == "read_file":
                 p = os.path.expanduser(args.get("path", ""))
+                if not p: return "Error: Path is missing."
                 return Path(p).read_text(errors="ignore") if os.path.exists(p) else "Error: Not found"
             elif name == "write_file":
                 if not build_mode: return "Error: Write access is disabled in Plan mode."
                 p = os.path.expanduser(args.get("path", ""))
+                if not p: return "Error: Path is missing."
+                content = args.get("content", "")
+                
                 cwd = os.getcwd()
                 if not os.path.abspath(p).startswith(cwd):
                     return f"Error: Cannot write files outside current working directory ({cwd})."
+                
+                if confirm_fn:
+                    approved = confirm_fn("write_file", args)
+                    if not approved:
+                        return "Error: User declined to write this file."
+                        
                 Path(p).parent.mkdir(parents=True, exist_ok=True)
-                Path(p).write_text(args.get("content", ""))
+                Path(p).write_text(content)
                 return f"Written to {p}"
             elif name == "list_files":
                 p = os.path.expanduser(args.get("path", "."))
                 return "\n".join(sorted(e for e in os.listdir(p) if not e.startswith(".")))
             elif name == "run_command":
                 cmd_str = args.get("command", "")
+                if not cmd_str: return "Error: Command is missing."
                 if not build_mode:
                     block_patterns = [
                         r'\brm\b', r'\bmv\b', r'\bcp\b', r'\btouch\b', r'\bmkdir\b', r'\bchmod\b', r'\bchown\b', r'\bdd\b', r'\btee\b',
@@ -477,6 +529,12 @@ class Tools:
                     ]
                     if any(re.search(p, cmd_str, re.IGNORECASE) for p in block_patterns):
                         return "Error: Plan mode active. Command blocked because it may modify the system or run an interpreter."
+                
+                if confirm_fn:
+                    approved = confirm_fn("run_command", args)
+                    if not approved:
+                        return "Error: User declined to run this command."
+
                 try:
                     cmd_list = shlex.split(cmd_str)
                     if not cmd_list: return "Error: Empty command."
@@ -548,7 +606,7 @@ class OpenAICompatible(Backend):
 
     def chat(self, msgs, stream=True):
         self._check_api_key()
-        d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream}
+        d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream, "max_tokens": self.c.get("max_tokens", 4096)}
         h = self._headers()
         if stream:
             for chunk in self._sse_lines(self._req(self._url(), d, h)):
@@ -556,28 +614,61 @@ class OpenAICompatible(Backend):
                 if t := choices[0].get("delta", {}).get("content", ""): yield t
         else: yield json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"]
 
-    def chat_with_tools(self, msgs):
+    def chat_with_tools(self, msgs, confirm_fn=None):
         self._check_api_key()
         h = self._headers()
         build_mode = self.c.get("tools_enabled", False)
-        for _ in range(5):
-            d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": False, "tools": Tools.get_schemas(build_mode)}
-            obj = json.loads(self._req(self._url(), d, h).read())
-            msg = obj["choices"][0]["message"]
-            calls = msg.get("tool_calls") or []
+        for _ in range(15):  # Increased to 15 iterations to prevent stopping prematurely
+            d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
+            resp = self._req(self._url(), d, h)
+            
+            content_buf = ""
+            tool_calls_buf = {}
+            
+            for chunk in self._sse_lines(resp):
+                if not chunk.get("choices"): continue
+                delta = chunk["choices"][0].get("delta", {})
+                if delta.get("content"):
+                    content_buf += delta["content"]
+                if delta.get("tool_calls"):
+                    for tc in delta["tool_calls"]:
+                        idx = tc.get("index", 0)
+                        if idx not in tool_calls_buf:
+                            tool_calls_buf[idx] = {"id": tc.get("id", ""), "type": "function", "function": {"name": "", "arguments": ""}}
+                        
+                        for k, v in tc.items():
+                            if k not in ("index", "function"):
+                                tool_calls_buf[idx][k] = v
+                                
+                        if tc.get("function"):
+                            for fk, fv in tc["function"].items():
+                                if fk == "name":
+                                    tool_calls_buf[idx]["function"]["name"] += fv
+                                elif fk == "arguments":
+                                    tool_calls_buf[idx]["function"]["arguments"] += fv
+                                else:
+                                    tool_calls_buf[idx]["function"][fk] = fv
+            
+            calls = list(tool_calls_buf.values())
+            
+            # Yield intermediate text BEFORE running tools
+            if content_buf:
+                yield {"type": "text", "content": content_buf}
+                
             if not calls:
-                yield {"type": "text", "content": msg.get("content", "") or ""}
                 return
+            
+            msg = {"role": "assistant", "content": content_buf, "tool_calls": calls}
             msgs.append(msg)
             for call in calls:
                 fn = call["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except: args = {}
                 yield {"type": "tool_call", "name": fn["name"], "args": args}
-                result = Tools.run(fn["name"], args, build_mode)
+                result = Tools.run(fn["name"], args, build_mode, confirm_fn)
                 yield {"type": "tool_result", "name": fn["name"], "result": result}
                 msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-        yield {"type": "text", "content": "(stopped after 5 tool iterations)"}
+        yield {"type": "text", "content": "(stopped after 15 tool iterations)"}
 
 class AnthropicBackend(Backend):
     def __init__(self, cfg):
@@ -611,30 +702,35 @@ class AnthropicBackend(Backend):
                     if t := chunk.get("delta", {}).get("text", ""): yield t
         else: yield json.loads(self._req(url, d, h).read())["content"][0]["text"]
 
-    def chat_with_tools(self, msgs):
+    def chat_with_tools(self, msgs, confirm_fn=None):
         sys_prompt, payload = self._split_system(msgs)
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
         build_mode = self.c.get("tools_enabled", False)
-        for _ in range(5):
+        for _ in range(15):  # Increased to 15 iterations
             d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode)}
             if sys_prompt: d["system"] = sys_prompt
             obj = json.loads(self._req(url, d, h).read())
             blocks = obj.get("content", [])
+            
+            text_block = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+            if text_block:
+                yield {"type": "text", "content": text_block}
+                
             tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
             if not tool_uses:
-                yield {"type": "text", "content": "".join(b.get("text", "") for b in blocks if b.get("type") == "text")}
                 return
+                
             payload.append({"role": "assistant", "content": blocks})
             results = []
             for tu in tool_uses:
                 args = tu.get("input", {}) or {}
                 yield {"type": "tool_call", "name": tu["name"], "args": args}
-                result = Tools.run(tu["name"], args, build_mode)
+                result = Tools.run(tu["name"], args, build_mode, confirm_fn)
                 yield {"type": "tool_result", "name": tu["name"], "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
             payload.append({"role": "user", "content": results})
-        yield {"type": "text", "content": "(stopped after 5 tool iterations)"}
+        yield {"type": "text", "content": "(stopped after 15 tool iterations)"}
 
 def get_backend(cfg):
     name, profile = cfg.active_profile()
@@ -649,7 +745,7 @@ def get_backend(cfg):
 # Main App
 # ---------------------------------------------------------------------------
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/export", "/compact", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -663,14 +759,67 @@ class App:
         self.multi_line = self.cfg.get("multi_line", False)
         self._validate_config()
         self.setup_rl()
+        self._ctrl_c_pressed = False
+        self.spinner = None
 
     def _validate_config(self):
         name, prof = self.cfg.active_profile()
-        if not prof: return
+        if not prof: 
+            self.warn(f"Backend '{name}' is not configured.")
+            self._run_setup("")
+            return
         base = prof.get("base_url", "")
         if not base.startswith("http"): self.warn(f"Backend '{name}' URL looks invalid: {base}")
         if "localhost" not in base and "127.0.0.1" not in base and not prof.get("api_key"):
-            self.warn(f"Backend '{name}' is remote but has no API key.")
+            self.warn(f"Backend '{name}' is remote but has no API key. Run /setup")
+
+    def _get_ollama_models(self):
+        try:
+            r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+            data = json.loads(r.read().decode("utf-8"))
+            return [m["name"] for m in data.get("models", [])]
+        except: return []
+
+    def _run_setup(self, arg):
+        print(f"\n{C.BOLD}{C.CYAN}=== Termux AI Setup Wizard ==={C.RESET}")
+        print("Choose a backend to configure:")
+        print("  1) Ollama (Local)")
+        print("  2) OpenAI / Custom (OpenAI-compatible)")
+        print("  3) Anthropic (Claude)")
+        choice = input("Enter choice [1]: ").strip() or "1"
+        
+        if choice == "1":
+            models = self._get_ollama_models()
+            if models:
+                print(f"\n{C.GREEN}Detected installed Ollama models:{C.RESET}")
+                for i, m in enumerate(models, 1): print(f"  {i}) {m}")
+                m_idx = input(f"Choose model [1]: ").strip() or "1"
+                try: model = models[int(m_idx)-1]
+                except: model = "llama3.2"
+            else:
+                model = input("Enter model name (e.g., llama3.2): ").strip() or "llama3.2"
+            self.cfg.set_path("backends.ollama", {"base_url": "http://localhost:11434/v1", "model": model, "api_key": "ollama"})
+            self.cfg.set("backend", "ollama")
+            self.info("Ollama configured!")
+            
+        elif choice == "2":
+            name = input("Enter profile name [openai]: ").strip() or "openai"
+            base = input("Enter Base URL [https://api.openai.com/v1]: ").strip() or "https://api.openai.com/v1"
+            model = input("Enter Model ID [gpt-4o-mini]: ").strip() or "gpt-4o-mini"
+            key = input("Enter API Key: ").strip()
+            self.cfg.set_path(f"backends.{name}", {"base_url": base, "model": model, "api_key": key})
+            self.cfg.set("backend", name)
+            self.info(f"Profile '{name}' configured!")
+            
+        elif choice == "3":
+            key = input("Enter Anthropic API Key: ").strip()
+            model = input("Enter Model ID [claude-3-5-sonnet-20241022]: ").strip() or "claude-3-5-sonnet-20241022"
+            self.cfg.set_path("backends.anthropic", {"base_url": "https://api.anthropic.com/v1", "model": model, "api_key": key})
+            self.cfg.set("backend", "anthropic")
+            self.info("Anthropic configured!")
+        
+        try: self.backend = get_backend(self.cfg)
+        except Exception as e: self.err(str(e))
 
     def setup_rl(self):
         if not HAVE_READLINE: return
@@ -682,6 +831,7 @@ class App:
             readline.set_completer_delims(" \t\n")
             readline.set_completer(self._completer)
             readline.parse_and_bind("tab: complete")
+            readline.parse_and_bind("set enable-bracketed-paste on")
         except: pass
         atexit.register(self._save_history)
 
@@ -759,11 +909,14 @@ class App:
     def prompt(self):
         name, _ = self.cfg.active_profile()
         model = self._current_model()
-        # \001 and \002 tell readline to ignore ANSI color codes when calculating prompt width
-        # This completely fixes the line-wrapping overlap bug when typing long messages.
+        tok_count = 0
+        if self.cid:
+            tok_count = self.db.get_conv_tokens(self.cid)
+        tok_str = f" \001{C.DIM}\002[{tok_count} tok]\001{C.RESET}\002" if tok_count > 0 else ""
+        
         conv = f"\001{C.DIM}\002#{self.cid}\001{C.RESET}\002" if self.cid else ""
         ml = f"\001{C.MAGENTA}\002↵\001{C.RESET}\002" if self.multi_line else ""
-        return f"\001{C.GREEN}\002{name[:10]}\001{C.RESET}\002 \001{C.DIM}\002{model[:20]}\001{C.RESET}\002{conv}{ml} \001{C.BOLD}\002❯\001{C.RESET}\002 "
+        return f"\001{C.GREEN}\002{name[:10]}\001{C.RESET}\002 \001{C.DIM}\002{model[:20]}\001{C.RESET}\002{conv}{ml}{tok_str} \001{C.BOLD}\002❯\001{C.RESET}\002 "
 
     def info(self, msg, color=C.GREEN): print(f"  {color}✓ {msg}{C.RESET}")
     def warn(self, msg): print(f"  {C.YELLOW}⚠ {msg}{C.RESET}")
@@ -775,28 +928,30 @@ class App:
   {C.YELLOW}/new{C.RESET}                       start a fresh conversation
   {C.YELLOW}/show{C.RESET}                      show messages in current chat
   {C.YELLOW}/history{C.RESET}                   list past conversations
+  {C.YELLOW}/search{C.RESET} {C.DIM}<keyword>{C.RESET}           search conversations by content
   {C.YELLOW}/load{C.RESET} {C.DIM}<id>{C.RESET}                load a conversation
   {C.YELLOW}/rename{C.RESET} {C.DIM}<title>{C.RESET}            rename current conversation
   {C.YELLOW}/delete{C.RESET} {C.DIM}[id]{C.RESET}               delete a conversation
+  {C.YELLOW}/undo{C.RESET}                      undo last user+assistant message pair
   {C.YELLOW}/regen{C.RESET}                     regenerate last response
+  {C.YELLOW}/retry{C.RESET} {C.DIM}<model>{C.RESET}             retry last response with a different model
+  {C.YELLOW}/diff{C.RESET}                       show uncommitted git changes
   {C.YELLOW}/compact{C.RESET}                   summarize chat to save tokens
   {C.YELLOW}/export{C.RESET} {C.DIM}[file]{C.RESET}             export chat to markdown
 
 {C.BOLD}─ MODEL & BACKEND ─────────────────────────────────────{C.RESET}
+  {C.YELLOW}/setup{C.RESET}                      run the setup wizard
   {C.YELLOW}/backends{C.RESET}                  list configured profiles
   {C.YELLOW}/backend{C.RESET} {C.DIM}<name>{C.RESET}            switch active profile
   {C.YELLOW}/model{C.RESET} {C.DIM}<name>{C.RESET}              change model on active profile
   {C.YELLOW}/profile add{C.RESET} {C.DIM}<n> <url> <model> [key]{C.RESET}
-  {C.YELLOW}/profile set{C.RESET} {C.DIM}<n>.<field> <value>{C.RESET}
-  {C.YELLOW}/profile show{C.RESET} {C.DIM}<name>{C.RESET}       show profile (key masked)
 
-{C.BOLD}─ SETTINGS ────────────────────────────────────────────{C.RESET}
+{C.BOLD}─ SETTINGS & COST ─────────────────────────────────────{C.RESET}
   {C.YELLOW}/system{C.RESET} {C.DIM}[prompt]{C.RESET}           view/set system prompt
   {C.YELLOW}/config{C.RESET} {C.DIM}set <key> <val>{C.RESET}    set any config value
-  {C.YELLOW}/config{C.RESET}                    show full config (masked)
   {C.YELLOW}/tools{C.RESET} {C.DIM}[on|off]{C.RESET}            on=build (read/write), off=plan (read-only)
-  {C.YELLOW}/multi{C.RESET} {C.DIM}[on|off]{C.RESET}            toggle multi-line input
-  {C.YELLOW}/tokens{C.RESET}                    show token usage
+  {C.YELLOW}/cost{C.RESET}                       estimate token cost spent
+  {C.YELLOW}/tokens{C.RESET}                    show token usage for current chat
   {C.YELLOW}/status{C.RESET}                    show current settings
 
 {C.BOLD}─ TERMUX-API & SERVER ─────────────────────────────────{C.RESET}
@@ -806,16 +961,10 @@ class App:
   {C.YELLOW}/share{C.RESET}                      share last reply via Android
   {C.YELLOW}/server{C.RESET} {C.DIM}start|stop|status{C.RESET} manage local ollama server
 
-{C.BOLD}─ FILES & FOLDERS ─────────────────────────────────────{C.RESET}
-  The AI automatically knows your {C.YELLOW}cwd{C.RESET} and sees local files.
-  Mention a file {C.DIM}(report.pdf){C.RESET} or folder {C.DIM}(./src){C.RESET}
-  in your message to attach it!
-  Supports: {C.CYAN}txt, md, csv, pdf, docx, pptx, xlsx, code{C.RESET}
-
 {C.BOLD}─ OTHER ───────────────────────────────────────────────{C.RESET}
   {C.YELLOW}/clear{C.RESET}                      clear the screen
   {C.YELLOW}/help{C.RESET}                       show this help
-  {C.YELLOW}/exit{C.RESET}                       quit ({C.DIM}Ctrl-D also works{C.RESET})
+  {C.YELLOW}/exit{C.RESET}                       quit ({C.DIM}Ctrl-C also works{C.RESET})
 """
 
     def run_cmd(self, txt):
@@ -825,6 +974,7 @@ class App:
 
         if cmd in ("/exit", "/quit"): sys.exit(0)
         elif cmd == "/help": print(self.HELP_TEXT)
+        elif cmd == "/setup": self._run_setup(arg)
         elif cmd == "/backend":
             if not arg: self.info(f"Active backend: {self.cfg.get('backend')}"); return True
             if arg not in self.cfg.get("backends", {}) and arg not in ("anthropic", "claude"):
@@ -854,7 +1004,7 @@ class App:
             state = "build" if self.cfg.get("tools_enabled") else "plan"
             color = C.GREEN if state == "build" else C.YELLOW
             self.info(f"Tools: {color}{state}{C.RESET}")
-            if state == "build": self.hint("AI can read/write files & run any shell commands")
+            if state == "build": self.hint("AI can read/write files & run any shell commands (with confirmation)")
             else: self.hint("AI can read files & run safe commands, but cannot write/modify")
         elif cmd == "/multi":
             if arg in ("on", "off"): self.cfg.set("multi_line", arg == "on"); self.multi_line = arg == "on"
@@ -868,6 +1018,14 @@ class App:
         elif cmd == "/new":
             self.cid = None; self.last_reply = ""; self.info("Started a new conversation.")
         elif cmd == "/history": self._show_history()
+        elif cmd == "/search":
+            if not arg: self.warn("Usage: /search <keyword>"); return True
+            rows = self.db.search_convs(arg)
+            if not rows: self.warn("No matching conversations found."); return True
+            print(f"\n  {C.BOLD}Found {len(rows)} matches:{C.RESET}")
+            for r in rows:
+                print(f"  {C.CYAN}#{r['id']}{C.RESET} - {r['title']} ({r['model']})")
+            print()
         elif cmd == "/load":
             if not arg.isdigit(): self.warn("Usage: /load <id>"); return True
             cid = int(arg)
@@ -891,6 +1049,10 @@ class App:
                 if self.cid == cid: self.cid = None
                 self.info(f"Deleted #{cid}.")
             else: self.hint("Cancelled.")
+        elif cmd == "/undo":
+            if not self.cid: self.warn("No active conversation."); return True
+            self.db.undo_last_msg_pair(self.cid)
+            self.info("Undid last message pair.")
         elif cmd == "/show":
             if not self.cid: self.warn("No active conversation."); return True
             self._show_conversation(self.cid, limit=50)
@@ -900,14 +1062,33 @@ class App:
             if not fname.endswith((".md", ".txt")): fname += ".md"
             self._export(self.cid, fname)
         elif cmd == "/regen": self._regenerate()
+        elif cmd == "/retry":
+            if not arg: self.warn("Usage: /retry <model_name>"); return True
+            self._regenerate(model_override=arg)
+        elif cmd == "/diff":
+            if not shutil.which("git"): self.warn("Git is not installed. Cannot show diff."); return True
+            r = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True)
+            if r.stdout:
+                print(r.stdout[:2000])
+            else:
+                self.info("No uncommitted changes found.")
         elif cmd == "/compact": self._compact()
+        elif cmd == "/cost":
+            total_tokens = self.db.get_total_tokens()
+            model = self._current_model()
+            cost_per_1k = PRICING.get(model, 0.002) # Default fallback price
+            cost = (total_tokens / 1000) * cost_per_1k
+            print(f"  {C.BOLD}── Cost Estimate ──{C.RESET}")
+            print(f"  {C.DIM}Total tokens used : {C.RESET}{total_tokens}")
+            print(f"  {C.DIM}Active model      : {C.RESET}{model}")
+            print(f"  {C.DIM}Estimated cost    : {C.RESET}${cost:.4f}")
+            print()
         elif cmd == "/config": self._cmd_config(arg)
         elif cmd == "/clear": print("\033c", end="")
         elif cmd == "/tokens":
             if not self.cid: self.warn("No active conversation."); return True
-            msgs = self.db.get_msgs(self.cid)
-            total = sum(est_tok(m["content"]) for m in msgs)
-            self.info(f"Conversation: ~{total} tokens ({len(msgs)} messages)")
+            total = self.db.get_conv_tokens(self.cid)
+            self.info(f"Conversation: ~{total} tokens")
         elif cmd == "/copy":
             if not self.last_reply: self.warn("Nothing to copy yet."); return True
             self.info("Copied to clipboard." if TermuxAPI.copy(self.last_reply) else "termux-api not available.")
@@ -981,6 +1162,8 @@ class App:
         print(f"  {C.DIM}chat       {C.RESET}{'#'+str(self.cid) if self.cid else 'new'}")
         print(f"  {C.DIM}tools      {C.RESET}{'build' if self.cfg.get('tools_enabled') else 'plan'}")
         print(f"  {C.DIM}multi-line {C.RESET}{'on' if self.multi_line else 'off'}")
+        print(f"  {C.DIM}auto-compact{C.RESET} {'on' if self.cfg.get('auto_compact', True) else 'off'}")
+        print(f"  {C.DIM}auto-router{C.RESET} {'on' if self.cfg.get('auto_router', False) else 'off'}")
         print(f"  {C.DIM}stream     {C.RESET}{'on' if self.cfg.get('stream') else 'off'}")
         print(f"  {C.DIM}temperature{C.RESET} {self.cfg.get('temperature')}")
         print(f"  {C.DIM}max_tokens {C.RESET} {self.cfg.get('max_tokens')}")
@@ -1022,11 +1205,11 @@ class App:
         try: Path(fname).write_text("\n".join(lines)); self.info(f"Exported to: {fname}")
         except Exception as e: self.err(str(e))
 
-    def _regenerate(self):
+    def _regenerate(self, model_override=None):
         if not self.cid or not self.last_user_msg: self.warn("Nothing to regenerate."); return
         self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'assistant' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'assistant')", (self.cid, self.cid))
         self.db.conn.commit()
-        self.chat(self.last_user_msg)
+        self.chat(self.last_user_msg, model_override=model_override)
 
     def _compact(self):
         if not self.cid: self.warn("No active conversation to compact."); return
@@ -1039,7 +1222,7 @@ class App:
             resp = ""
             for t in self.backend.chat([{"role":"user", "content":prompt}], stream=True): resp += t
             self.db.clear_conv_msgs(self.cid)
-            self.db.save_msg(self.cid, "assistant", f"[Summary of previous messages]:\n{resp}")
+            self.db.save_msg(self.cid, "assistant", f"[Summary of previous messages]:\n{resp}", self._current_model(), est_tok(resp))
             self.info("Conversation compacted successfully.")
         except Exception as e: self.err(str(e))
 
@@ -1056,6 +1239,7 @@ class App:
 
     def _read_directory(self, dir_path, dir_name):
         files_content = []
+        max_chars = self.cfg.get("max_file_chars", 12000)
         total_chars, max_files, max_total_chars = 0, 15, 12000
         valid_exts = ('.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.c', '.cpp', '.h', '.cs', '.go', '.rb', '.php', '.swift', '.kt', '.rs', '.txt', '.md', '.csv', '.json', '.xml', '.html', '.css', '.scss', '.sh', '.bash', '.yml', '.yaml', '.toml', '.ini', '.cfg')
         files_scanned, stop_walk = 0, False
@@ -1070,7 +1254,7 @@ class App:
                 if ext in valid_exts:
                     file_path = os.path.join(root, f)
                     rel_path = os.path.relpath(file_path, dir_path)
-                    content = FileReader.read(file_path)
+                    content = FileReader.read(file_path, max_chars)
                     if content and not content.startswith("[Error") and not content.startswith("[Unsupported"):
                         files_scanned += 1
                         snippet = content[:2000]
@@ -1080,6 +1264,7 @@ class App:
         return f"[Contents of directory '{dir_name}']:\n" + "\n\n".join(files_content)
 
     def _extract_files(self, text):
+        if not self.cfg.get("attach_files", True): return text
         attached = []
         tokens = re.findall(r'(?:(?:\./|~/|/)?(?:[\w.\-]+/)*[\w.\-]+\.\w{2,5})', text)
         if "this folder" in text.lower() or "current directory" in text.lower() or "this directory" in text.lower():
@@ -1092,9 +1277,9 @@ class App:
             if not os.path.exists(path): continue 
                 
             if os.path.isfile(path):
-                content = FileReader.read(path)
+                max_len = self.cfg.get("max_file_chars", 12000)
+                content = FileReader.read(path, max_len)
                 if content:
-                    max_len = 12000
                     snippet = content[:max_len]
                     if len(content) > max_len: snippet += "\n... [truncated]"
                     attached.append(f"[Content of file '{path_str}']:\n{snippet}")
@@ -1109,85 +1294,188 @@ class App:
 
     def _build_sys_prompt(self):
         sys_prompt = self.cfg.system_prompt()
-        cwd = os.getcwd()
-        try:
-            files = sorted([f for f in os.listdir(cwd) if not f.startswith('.')])
-            tree = ", ".join(files[:30]) if files else "(empty)"
-            sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}\nFiles visible here: {tree}"
-        except: sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
+        if self.cfg.get("attach_files", True):
+            cwd = os.getcwd()
+            try:
+                files = sorted([f for f in os.listdir(cwd) if not f.startswith('.')])
+                tree = ", ".join(files[:30]) if files else "(empty)"
+                sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}\nFiles visible here: {tree}"
+            except: sys_prompt += f"\n\n[Context] The user is running this in a terminal. Current working directory: {cwd}"
         if self.cfg.get("tools_enabled"): sys_prompt += "\n\n[Tools] You are in BUILD mode. You can read, write, and modify files, and execute any shell commands. Ensure you use exact paths."
         else: sys_prompt += "\n\n[Tools] You are in PLAN mode. You can read files and run safe inspection commands (ls, cat, grep), but you must NOT modify, write, or delete anything. Write attempts will be blocked."
         return sys_prompt
 
-    def chat(self, txt):
+    def _confirm_tool(self, name, args):
+        # Hard stop spinner and clear line to prevent y/N garbled bug
+        if self.spinner:
+            self.spinner.stop()
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        sys.stdout.flush()
+
+        if name == "run_command":
+            print(f"  {C.DIM}Command: {C.CYAN}{args.get('command', '')}{C.RESET}")
+            try:
+                confirm = input(f"  \001{C.YELLOW}\002Execute? [y/N] \001{C.RESET}\002").strip().lower()
+                approved = confirm in ("y", "yes")
+            except: approved = False
+            if approved:
+                self.spinner = Spinner("executing")
+                self.spinner.start()
+            return approved
+        elif name == "write_file":
+            print(f"  {C.DIM}--- Content ---\n{args.get('content', '')[:1000]}\n--- End ---{C.RESET}")
+            try:
+                confirm = input(f"  \001{C.YELLOW}\002Apply? [y/N] \001{C.RESET}\002").strip().lower()
+                approved = confirm in ("y", "yes")
+            except: approved = False
+            if approved:
+                self.spinner = Spinner("executing")
+                self.spinner.start()
+            return approved
+        return True
+
+    def chat(self, txt, model_override=None):
         if not self.backend: self.err("No working backend. Use /profile add or /backend to configure one."); return
+        
+        original_max_tokens = self.cfg.get("max_tokens", 4096)
+        if len(txt) < 100 and "code" not in txt.lower() and "write" not in txt.lower():
+            self.cfg.cfg["max_tokens"] = 1024
+
+        original_model = None
+        if model_override:
+            name = self.cfg.get("backend")
+            original_model = self.cfg.get("backends", {}).get(name, {}).get("model")
+            self.cfg.set_path(f"backends.{name}.model", model_override, save=False)
+            try: self.backend = get_backend(self.cfg)
+            except: pass
+
         txt = self._extract_files(txt)
         name, _ = self.cfg.active_profile()
         if not self.cid: self.cid = self.db.new_conv(title=txt[:50], model=self._current_model(), backend=name)
-        self.db.save_msg(self.cid, "user", txt)
+        
+        user_tokens = est_tok(txt)
+        self.db.save_msg(self.cid, "user", txt, self._current_model(), user_tokens)
         self.last_user_msg = txt
         
         sys_prompt = self._build_sys_prompt()
         msgs = [{"role": "system", "content": sys_prompt}] + self.db.get_msgs(self.cid)
 
+        if self.cfg.get("auto_compact", True):
+            total_tokens = sum(est_tok(m["content"]) for m in msgs)
+            if total_tokens > 3000:
+                self.warn(f"Context is large (~{total_tokens} tokens). Auto-compacting...")
+                self._compact()
+                msgs = [{"role": "system", "content": sys_prompt}] + self.db.get_msgs(self.cid)
+
         sys.stdout.write(f"\n  {C.CYAN}AI{C.RESET}  ")
         sys.stdout.flush()
-        spinner = Spinner("thinking")
-        spinner.start()
+        self.spinner = Spinner("thinking")
+        self.spinner.start()
 
         resp, formatter = "", MarkdownFormatter()
+        success = False
+
         try:
-            for event in self.backend.chat_with_tools(msgs):
+            for event in self.backend.chat_with_tools(msgs, confirm_fn=self._confirm_tool):
                 if event["type"] == "tool_call":
-                    spinner.stop()
+                    if self.spinner: self.spinner.stop()
                     name, args = event["name"], event["args"]
-                    if name == "run_command": print(f"\n  {C.MAGENTA}⚙ AI is running command:{C.RESET} {C.CYAN}{args.get('command', '')}{C.RESET}")
-                    elif name == "read_file": print(f"\n  {C.MAGENTA}📄 AI is reading file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
-                    elif name == "write_file": print(f"\n  {C.MAGENTA}✍️  AI is writing to file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
+                    if name == "read_file": print(f"\n  {C.MAGENTA}📄 AI is reading file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
                     elif name == "list_files": print(f"\n  {C.MAGENTA}📁 AI is listing files in:{C.RESET} {C.CYAN}{args.get('path', '.')}{C.RESET}")
                     elif name == "search_files": print(f"\n  {C.MAGENTA}🔍 AI is searching for '{args.get('query', '')}' in {args.get('path', '.')}{C.RESET}")
-                    spinner = Spinner("executing"); spinner.start()
+                    elif name == "run_command": print(f"\n  {C.MAGENTA}⚙ AI wants to run:{C.RESET} {C.CYAN}{args.get('command', '')}{C.RESET}")
+                    elif name == "write_file": print(f"\n  {C.MAGENTA}✍️  AI wants to write to file:{C.RESET} {C.CYAN}{args.get('path', '')}{C.RESET}")
+                    
+                    if name not in ("run_command", "write_file") or not self.cfg.get("tools_enabled"):
+                        self.spinner = Spinner("executing")
+                        self.spinner.start()
+
                 elif event["type"] == "tool_result":
-                    spinner.stop()
+                    if self.spinner: self.spinner.stop()
                     print(f"  {C.DIM}└ Done.{C.RESET}\n")
-                    spinner = Spinner("thinking"); spinner.start()
+                    self.spinner = Spinner("thinking")
+                    self.spinner.start()
                 elif event["type"] == "text":
-                    spinner.stop()
+                    if self.spinner: self.spinner.stop()
                     resp += event["content"]
                     formatter.feed(event["content"])
                     formatter.flush()
                     sys.stdout.flush()
+                    # Don't start spinner here, backend will yield next event immediately
+            success = True
+            
         except KeyboardInterrupt:
-            spinner.stop(); formatter.flush()
+            if self.spinner: self.spinner.stop()
+            formatter.flush()
             print(f"\n  {C.YELLOW}[interrupted — partial reply saved]{C.RESET}")
             if resp:
-                self.db.save_msg(self.cid, "assistant", resp)
+                self.db.save_msg(self.cid, "assistant", resp, self._current_model(), est_tok(resp))
                 self.last_reply = resp
-                return
         except Exception as e:
-            spinner.stop(); formatter.flush()
-            print(f"\n  {C.RED}✗ {e}{C.RESET}")
+            if self.spinner: self.spinner.stop()
+            formatter.flush()
+            self.err(f"Error with {self.cfg.get('backend')}: {e}")
+            
+            if self.cfg.get("auto_router", False) and len(self.cfg.get("backends", {})) > 1:
+                current_backend = self.cfg.get("backend")
+                for b in self.cfg.get("backends", {}):
+                    if b != current_backend:
+                        self.warn(f"Auto-Router: Falling back to {b}...")
+                        self.cfg.set("backend", b, save=False)
+                        try:
+                            self.backend = get_backend(self.cfg)
+                            self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
+                            self.db.conn.commit()
+                            self.chat(txt)
+                            return
+                        except Exception as fallback_e:
+                            self.err(f"Fallback to {b} failed: {fallback_e}")
+                self.err("All backends failed.")
+            
             self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
             self.db.conn.commit()
-            return
 
-        print()
-        if self.cfg.get("show_tokens") and resp: print(f"  {C.DIM}~{est_tok(resp)} tokens{C.RESET}")
-        if resp:
-            self.db.save_msg(self.cid, "assistant", resp)
-            self.last_reply = resp
-            if self.cfg.get("tts_replies"): TermuxAPI.speak(resp)
+        self.cfg.cfg["max_tokens"] = original_max_tokens
+        if original_model:
+            name = self.cfg.get("backend")
+            self.cfg.set_path(f"backends.{name}.model", original_model, save=False)
+            try: self.backend = get_backend(self.cfg)
+            except: pass
+
+        if success:
+            print()
+            if self.cfg.get("show_tokens") and resp:
+                tokens = est_tok(resp)
+                print(f"  {C.DIM}~{tokens} tokens{C.RESET}")
+                self.db.conn.execute("UPDATE messages SET tokens = ? WHERE id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'assistant')", (tokens, self.cid))
+                self.db.conn.commit()
+            if resp:
+                self.last_reply = resp
+                if self.cfg.get("tts_replies"): TermuxAPI.speak(resp)
 
     def run(self):
         self.banner()
         while True:
             try:
                 i = self._read_multi_line() if self.multi_line else input(self.prompt()).strip()
-                if not i: continue
-                if i.startswith("/"): self.run_cmd(i); continue
+                self._ctrl_c_pressed = False
+                if not i:
+                    print(f"  {C.DIM}1) History  2) Settings  3) Help  4) Exit{C.RESET}")
+                    continue
+                if i.startswith("/"):
+                    self.run_cmd(i)
+                    continue
                 self.chat(i)
-            except EOFError: print(f"\n  {C.DIM}Bye!{C.RESET}"); break
-            except KeyboardInterrupt: print(f"\n  {C.DIM}Ctrl-C again or /exit to quit{C.RESET}")
+            except EOFError:
+                print(f"\n  {C.DIM}Bye!{C.RESET}")
+                sys.exit(0)
+            except KeyboardInterrupt:
+                if self._ctrl_c_pressed:
+                    print(f"\n  {C.DIM}Bye!{C.RESET}")
+                    sys.exit(0)
+                else:
+                    self._ctrl_c_pressed = True
+                    print(f"\n  {C.YELLOW}⚠ Press Ctrl+C again to exit the CLI.{C.RESET}")
 
 
 def main():
@@ -1205,6 +1493,12 @@ def main():
         except Exception as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
         
         prompt_text = " ".join(args.prompt)
+        if not sys.stdin.isatty():
+            stdin_text = sys.stdin.read().strip()
+            if stdin_text:
+                if prompt_text: prompt_text += "\n\n" + stdin_text
+                else: prompt_text = stdin_text
+
         prompt_text = App()._extract_files(prompt_text)
         
         if args.cmd:
@@ -1252,7 +1546,10 @@ def main():
             else: print(f"\nError: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        App().run()
+        try:
+            App().run()
+        except KeyboardInterrupt:
+            print(f"\n  {C.DIM}Bye!{C.RESET}")
 
 if __name__ == "__main__":
     main()
