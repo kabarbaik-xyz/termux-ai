@@ -1350,7 +1350,12 @@ class App:
         print(f"  {C.DIM}temperature{C.RESET} {self.cfg.get('temperature')}")
         print(f"  {C.DIM}max_tokens {C.RESET} {self.cfg.get('max_tokens')}")
         print(f"  {C.DIM}show_tokens{C.RESET} {'on' if self.cfg.get('show_tokens') else 'off'}")
-        print(f"  {C.DIM}system     {C.RESET}{C.ITALIC}{self.cfg.system_prompt()[:70]}{C.RESET}")
+        sp = self.cfg.system_prompt()
+        sp_lines = sp.split("\n") if sp else [""]
+        label = f"  {C.DIM}system     {C.RESET}"
+        cont = "  " + " " * len("system     ")
+        for i, ln in enumerate(sp_lines):
+            print(f"{label if i == 0 else cont}{C.ITALIC}{ln}{C.RESET}")
         if IS_TERMUX:
             parts = [k for k, v in api.items() if v]
             print(f"  {C.DIM}termux-api {C.RESET}{', '.join(parts) if parts else 'not installed'}")
