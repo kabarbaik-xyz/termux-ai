@@ -1,0 +1,1403 @@
+#!/usr/bin/env python3
+"""termux-ai: A friendly AI chat CLI for Termux and any terminal.
+
+Single-file, zero-dependency (stdlib only). Talks to any OpenAI-compatible
+endpoint, or natively to Anthropic's Messages API.
+"""
+import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit, shutil, time, threading, re, html, shlex, signal
+import zipfile
+from pathlib import Path
+
+__version__ = "1.0.0"
+
+CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
+CONFIG_FILE = CONFIG_DIR / "config.json"
+DB_FILE = CONFIG_DIR / "ai_history.db"
+HIST_FILE = CONFIG_DIR / "history"
+PID_FILE = CONFIG_DIR / "server.pid"
+
+def _secure_dir(path, mode=0o700):
+    try: os.chmod(path, mode)
+    except OSError: pass
+
+def _secure_file(path, mode=0o600):
+    try: os.chmod(path, mode)
+    except OSError: pass
+
+IS_TERMUX = "com.termux" in os.environ.get("PREFIX", "")
+IS_TTY = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+try:
+    import readline
+    HAVE_READLINE = True
+except ImportError:
+    HAVE_READLINE = False
+
+try:
+    import tiktoken
+    _ENC = tiktoken.get_encoding("cl100k_base")
+    def est_tok(t): return len(_ENC.encode(t))
+except ImportError:
+    def est_tok(t): return len(t) // 4
+
+PRICING = {
+    "gpt-4o": 0.005, "gpt-4o-mini": 0.00015, "gpt-3.5-turbo": 0.0005,
+    "claude-3-5-sonnet": 0.003, "claude-3-opus": 0.015,
+    "llama3.2": 0.0, "llama3": 0.0, "glm-4.6": 0.001, "big-pickle": 0.001
+}
+
+class C:
+    RESET, BOLD, DIM, ITALIC, UNDER = "\033[0m", "\033[1m", "\033[2m", "\033[3m", "\033[4m"
+    RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE, GRAY = (
+        "\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m", "\033[37m", "\033[90m"
+    )
+
+if not IS_TTY:
+    for a in dir(C):
+        if not a.startswith("_") and a != "RESET":
+            setattr(C, a, "")
+
+_ANSI_RE = re.compile(r"\001?\033\[[0-9;]*m\002?")
+
+def vlen(s): return len(_ANSI_RE.sub("", s))
+def pad(s, width): return s + " " * max(0, width - vlen(s))
+def mask(key): return "" if not key else "*" * len(key) if len(key) <= 8 else key[:4] + "…" + key[-4:]
+
+def parse_value(v):
+    v = v.strip()
+    low = v.lower()
+    if low in ("true", "on", "yes"): return True
+    if low in ("false", "off", "no"): return False
+    try: return int(v)
+    except ValueError: pass
+    try: return float(v)
+    except ValueError: pass
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'): return v[1:-1]
+    return v
+
+def fmt_time(ts):
+    if not ts: return ""
+    try:
+        from datetime import datetime
+        dt = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        delta = now - dt
+        if delta.days == 0: return dt.strftime("today %H:%M")
+        if delta.days == 1: return dt.strftime("yest %H:%M")
+        if delta.days < 7: return f"{delta.days}d ago"
+        return dt.strftime("%m-%d %H:%M")
+    except Exception: return ts[:16]
+
+
+class FileReader:
+    @staticmethod
+    def read(path, max_chars=20000):
+        p = os.path.expanduser(path)
+        if not os.path.exists(p): return None
+        ext = os.path.splitext(p)[1].lower()
+        try:
+            if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".py", ".sh", ".bash", ".js", ".jsx", ".ts", ".tsx", ".c", ".cpp", ".h", ".cs", ".java", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".css", ".scss", ".yaml", ".yml", ".toml", ".ini", ".cfg"):
+                with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()[:max_chars]
+            elif ext == ".pdf":
+                if shutil.which("pdftotext"):
+                    r = subprocess.run(["pdftotext", "-layout", p, "-"], capture_output=True, text=True, timeout=15)
+                    return r.stdout[:max_chars] if r.returncode == 0 else "[Error reading PDF]"
+                return "[Error: pdftotext not found. Run: pkg install poppler]"
+            elif ext == ".docx": return FileReader._read_docx(p)[:max_chars]
+            elif ext == ".pptx": return FileReader._read_pptx(p)[:max_chars]
+            elif ext == ".xlsx": return FileReader._read_xlsx(p)[:max_chars]
+            else: return f"[Unsupported file type: {ext}]"
+        except Exception as e: return f"[Error reading {p}: {e}]"
+
+    @staticmethod
+    def _read_docx(path):
+        with zipfile.ZipFile(path) as z: xml = z.read("word/document.xml").decode("utf-8")
+        xml = xml.replace("</w:p>", "\n").replace("<w:br/>", "\n")
+        return html.unescape("".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", xml, re.DOTALL))).strip()
+
+    @staticmethod
+    def _read_pptx(path):
+        texts = []
+        with zipfile.ZipFile(path) as z:
+            slides = sorted([n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")], key=lambda x: int(re.search(r"slide(\d+)", x).group(1)))
+            for slide in slides:
+                xml = z.read(slide).decode("utf-8").replace("</a:p>", "\n")
+                t = "".join(re.findall(r"<a:t[^>]*>(.*?)</a:t>", xml, re.DOTALL))
+                if t: texts.append(f"--- Slide {re.search(r'slide(\d+)', slide).group(1)} ---\n" + html.unescape(t))
+        return "\n\n".join(texts).strip()
+
+    @staticmethod
+    def _read_xlsx(path):
+        texts = []
+        with zipfile.ZipFile(path) as z:
+            if "xl/sharedStrings.xml" not in z.namelist(): return "[No text data found in xlsx]"
+            xml = z.read("xl/sharedStrings.xml").decode("utf-8")
+            for s in re.findall(r"<si>(.*?)</si>", xml, re.DOTALL):
+                texts.append(html.unescape("".join(re.findall(r"<t[^>]*>(.*?)</t>", s, re.DOTALL))))
+        return "\n".join(texts).strip()
+
+
+class MarkdownFormatter:
+    def __init__(self, indent="      "):
+        self.buffer = ""
+        self.in_code_block = False
+        self.first_line = True
+        self.indent = indent
+
+    def feed(self, text):
+        self.buffer += text.replace("\r\n", "\n").replace("\r", "")
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            self._print_line(line + "\n")
+
+    def flush(self):
+        if self.buffer:
+            self._print_line(self.buffer)
+            self.buffer = ""
+
+    def _print_line(self, line):
+        prefix = "" if self.first_line else self.indent
+        self.first_line = False
+        if line.strip().startswith("```"):
+            self.in_code_block = not self.in_code_block
+            print(f"{prefix}{C.DIM}{line}{C.RESET}", end="")
+            return
+        if self.in_code_block:
+            print(f"{prefix}{C.CYAN}{line}{C.RESET}", end="")
+            return
+        if re.match(r"^#{1,6}\s", line):
+            line = f"{C.BOLD}{C.MAGENTA}{line}{C.RESET}"
+        else:
+            parts = re.split(r"(`[^`]+`)", line)
+            for i, part in enumerate(parts):
+                if part.startswith("`") and part.endswith("`") and len(part) > 1:
+                    parts[i] = f"{C.CYAN}{part[1:-1]}{C.RESET}"
+                else:
+                    part = re.sub(r"\*\*(.+?)\*\*", f"{C.BOLD}\\1{C.RESET}", part)
+                    part = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", f"{C.ITALIC}\\1{C.RESET}", part)
+                    parts[i] = re.sub(r"(?<!\_)_(?!\s)(.+?)(?<!\s)_(?!\_)", f"{C.ITALIC}\\1{C.RESET}", part)
+            line = "".join(parts)
+            line = re.sub(r"^(\s*)([-*])\s", f"\\1{C.CYAN}\\2{C.RESET} ", line)
+            line = re.sub(r"^(\s*)(\d+\.)\s", f"\\1{C.CYAN}\\2{C.RESET} ", line)
+        print(f"{prefix}{line}", end="")
+
+
+class Spinner:
+    CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    def __init__(self, msg="thinking"):
+        self.msg = msg
+        self._stop = False
+        self._t = None
+        self._started = False
+        self._atexit_registered = False
+
+    def start(self):
+        self._started = True
+        if not IS_TTY:
+            sys.stdout.write(f"{C.DIM}… {self.msg}{C.RESET}"); sys.stdout.flush(); return
+        self._stop = False
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+        if not self._atexit_registered:
+            atexit.register(self.stop)
+            self._atexit_registered = True
+
+    def _run(self):
+        i = 0
+        while not self._stop:
+            sys.stdout.write(f"\r{C.CYAN}{self.CHARS[i % len(self.CHARS)]}{C.RESET} {C.DIM}{self.msg}{C.RESET}")
+            sys.stdout.flush(); time.sleep(0.08); i += 1
+
+    def stop(self):
+        if not self._started: return
+        self._started = False
+        if not IS_TTY:
+            sys.stdout.write("\r" + " " * 20 + "\r"); sys.stdout.flush(); return
+        self._stop = True
+        if self._t: self._t.join(timeout=0.3)
+        sys.stdout.write("\r" + " " * 30 + "\r"); sys.stdout.flush()
+
+    def __del__(self):
+        self.stop()
+
+
+class TermuxAPI:
+    @staticmethod
+    def available(cmd): return shutil.which(cmd) is not None
+
+    @staticmethod
+    def speak(text):
+        if TermuxAPI.available("termux-tts-speak"):
+            try: subprocess.run(["termux-tts-speak", text[:1000]], timeout=15); return True
+            except Exception: return False
+        return False
+
+    @staticmethod
+    def copy(text):
+        if TermuxAPI.available("termux-clipboard-set"):
+            try: subprocess.run(["termux-clipboard-set"], input=text, text=True, timeout=5); return True
+            except Exception: return False
+        return False
+
+    @staticmethod
+    def paste():
+        if TermuxAPI.available("termux-clipboard-get"):
+            try:
+                r = subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, timeout=5)
+                return r.stdout
+            except Exception: return None
+        return None
+
+    @staticmethod
+    def share(text):
+        if TermuxAPI.available("termux-share"):
+            try: subprocess.run(["termux-share", "-a", "send"], input=text, text=True, timeout=10); return True
+            except Exception: return False
+        return False
+
+    @staticmethod
+    def status():
+        return {
+            "tts": TermuxAPI.available("termux-tts-speak"),
+            "clipboard": TermuxAPI.available("termux-clipboard-set"),
+            "share": TermuxAPI.available("termux-share"),
+        }
+
+class ServerManager:
+    @staticmethod
+    def manage(action, engine="ollama"):
+        if action == "start":
+            if PID_FILE.exists(): print(f"{C.YELLOW}Server PID file already exists. Check status or stop it first.{C.RESET}"); return
+            if engine == "ollama": cmd = ["ollama", "serve"]
+            else: print(f"{C.RED}Invalid engine. Use 'ollama'.{C.RESET}"); return
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
+                PID_FILE.write_text(f"{proc.pid},{engine}")
+                _secure_file(PID_FILE)
+                print(f"{C.GREEN}Started {engine} server in background (PID: {proc.pid}).{C.RESET}")
+            except Exception as e: print(f"{C.RED}Failed to start server: {e}{C.RESET}")
+        elif action == "stop":
+            if not PID_FILE.exists(): print(f"{C.YELLOW}No running server process found.{C.RESET}"); return
+            try:
+                content = PID_FILE.read_text().strip().split(",")
+                pid, eng = int(content[0]), content[1]
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                print(f"{C.GREEN}Stopped background {eng} server (PID: {pid}).{C.RESET}")
+            except Exception as e: print(f"{C.RED}Error stopping server: {e}{C.RESET}")
+            finally:
+                if PID_FILE.exists(): PID_FILE.unlink()
+        elif action == "status":
+            if not PID_FILE.exists(): print(f"{C.YELLOW}Local server status: Stopped{C.RESET}"); return
+            try:
+                content = PID_FILE.read_text().strip().split(",")
+                pid, eng = int(content[0]), content[1]
+                os.kill(pid, 0)
+                print(f"{C.GREEN}Local server status: Running ({eng}, PID: {pid}){C.RESET}")
+            except OSError:
+                print(f"{C.RED}Local server status: Dead. Cleaning PID file.{C.RESET}")
+                PID_FILE.unlink()
+
+
+class Database:
+    def __init__(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _secure_dir(CONFIG_DIR)
+        self.conn = sqlite3.connect(str(DB_FILE), timeout=10)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=10000")
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._migrate_schema()
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
+                content TEXT, model TEXT, tokens INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id));
+        """)
+        self.conn.commit()
+        _secure_file(DB_FILE)
+
+    def _table_cols(self, table):
+        try: return {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        except sqlite3.Error: return set()
+
+    def _migrate_schema(self):
+        try:
+            self.conn.execute("BEGIN")
+            conv_cols = self._table_cols("conversations")
+            if conv_cols:
+                if "title" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
+                if "model" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT")
+                if "backend" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN backend TEXT")
+                if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+            msg_cols = self._table_cols("messages")
+            if msg_cols:
+                if "conversation_id" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN conversation_id INTEGER")
+                if "role" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN role TEXT")
+                if "content" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN content TEXT")
+                if "model" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
+                if "tokens" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN tokens INTEGER DEFAULT 0")
+                if "created_at" not in msg_cols: self.conn.execute("ALTER TABLE messages ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+            self.conn.execute("COMMIT")
+        except Exception as e:
+            self.conn.execute("ROLLBACK")
+            raise e
+
+    def new_conv(self, title="New Chat", model="", backend=""):
+        cur = self.conn.execute("INSERT INTO conversations (title, model, backend) VALUES (?,?,?)", (title, model, backend))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def save_msg(self, cid, role, content, model="", tokens=0):
+        self.conn.execute("INSERT INTO messages (conversation_id, role, content, model, tokens) VALUES (?,?,?,?,?)", (cid, role, content, model, tokens))
+        self.conn.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (cid,))
+        self.conn.commit()
+
+    def get_msgs(self, cid, limit=200):
+        rows = self.conn.execute("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?", (cid, limit)).fetchall()
+        return [{"role": r["role"], "content": r["content"]} for r in rows][::-1]
+
+    def list_convs(self, limit=20):
+        return self.conn.execute(
+            "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    def search_convs(self, query):
+        return self.conn.execute(
+            "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
+            (f"%{query}%", f"%{query}%")
+        ).fetchall()
+
+    def del_conv(self, cid):
+        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+        self.conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+        self.conn.commit()
+
+    def rename_conv(self, cid, title):
+        self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+        self.conn.commit()
+
+    def get_conv(self, cid):
+        return self.conn.execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
+
+    def clear_conv_msgs(self, cid):
+        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+        self.conn.commit()
+
+    def undo_last_msg_pair(self, cid):
+        self.conn.execute("""
+            DELETE FROM messages WHERE conversation_id = ? AND id IN (
+                SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1
+            )
+        """, (cid, cid))
+        self.conn.execute("""
+            DELETE FROM messages WHERE conversation_id = ? AND id IN (
+                SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1
+            )
+        """, (cid, cid))
+        self.conn.commit()
+
+    def get_total_tokens(self):
+        row = self.conn.execute("SELECT SUM(tokens) as t FROM messages").fetchone()
+        return row["t"] if row and row["t"] else 0
+
+    def get_conv_tokens(self, cid):
+        row = self.conn.execute("SELECT SUM(tokens) as t FROM messages WHERE conversation_id = ?", (cid,)).fetchone()
+        return row["t"] if row and row["t"] else 0
+
+    def close(self):
+        self.conn.close()
+
+
+class Config:
+    DEFAULTS = {
+        "backend": "ollama",
+        "system_prompt": "You are a helpful assistant. Be concise and clear. When using tools: (1) Batch independent file reads into a single response when possible. (2) Do not re-read files you have already read. (3) Complete tasks in the minimum number of steps. (4) Only use tools when necessary.",
+        "system_instruction": "",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "stream": True,
+        "show_tokens": True,
+        "tools_enabled": False,
+        "tts_replies": False,
+        "multi_line": False,
+        "auto_compact": True,
+        "auto_router": False,
+        "max_file_chars": 20000,
+        "max_tool_result": 10000,
+        "attach_files": True,
+        "api_keys": {"anthropic": ""},
+        "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
+    }
+
+    def __init__(self):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _secure_dir(CONFIG_DIR)
+        self.cfg = json.loads(json.dumps(self.DEFAULTS))
+        if CONFIG_FILE.exists():
+            try: self._deep_update(self.cfg, json.loads(CONFIG_FILE.read_text()))
+            except Exception: pass
+        _secure_file(CONFIG_FILE)
+
+    @staticmethod
+    def _deep_update(base, new):
+        for k, v in new.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict): Config._deep_update(base[k], v)
+            else: base[k] = v
+
+    def save(self):
+        CONFIG_FILE.write_text(json.dumps(self.cfg, indent=2))
+        _secure_file(CONFIG_FILE)
+    def get(self, k, d=None): return self.cfg.get(k, d)
+
+    def set(self, k, v, save=True):
+        self.cfg[k] = v
+        if save: self.save()
+
+    def set_path(self, dotted_key, v, save=True):
+        parts = dotted_key.split(".")
+        node = self.cfg
+        for p in parts[:-1]:
+            if p not in node or not isinstance(node[p], dict): node[p] = {}
+            node = node[p]
+        node[parts[-1]] = v
+        if save: self.save()
+
+    def system_prompt(self): return self.get("system_instruction") or self.get("system_prompt") or ""
+    def active_profile(self): return self.get("backend", "ollama"), self.get("backends", {}).get(self.get("backend", "ollama"))
+
+    def masked_dict(self):
+        def scrub(node):
+            if isinstance(node, dict): return {k: (mask(v) if k == "api_key" and isinstance(v, str) else scrub(v)) for k, v in node.items()}
+            return node
+        return scrub(self.cfg)
+
+
+class Tools:
+    SAFE_TOOLS = {"read_file", "list_files", "search_files"}
+    _cache = {}
+
+    TOOLS = [
+        {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        {"type": "function", "function": {"name": "write_file", "description": "Write content to file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+        {"type": "function", "function": {"name": "list_files", "description": "List files in directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
+        {"type": "function", "function": {"name": "run_command", "description": "Execute a safe shell command and return stdout/stderr", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
+    ]
+    PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
+    PLAN_ALLOW = {
+        "ls", "cat", "head", "tail", "grep", "rg", "find", "file", "stat", "du", "df", "wc",
+        "sort", "uniq", "cut", "tr", "comm", "diff", "echo", "printf", "date", "pwd",
+        "which", "type", "ps", "printenv", "sed", "awk", "perl", "git",
+    }
+    PLAN_GIT_RO = {"status", "diff", "log", "show", "branch", "ls-files", "ls-tree", "rev-parse", "tag", "remote", "blame", "grep", "help", "version"}
+    PLAN_FIND_BLOCKED = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
+
+    @staticmethod
+    def _plan_safe(cmd_str):
+        if re.search(r'\$\(|`|;|\|\||&&|>>|>|\{', cmd_str): return False
+        if re.search(r'\b(busybox|toybox|env|sudo|doas|su|xargs|timeout|sh|bash|zsh|dash|fish|python3?|ruby|php)\b', cmd_str): return False
+        for segment in cmd_str.split("|"):
+            tokens = shlex.split(segment)
+            if not tokens: return False
+            prog = os.path.basename(tokens[0])
+            if prog not in Tools.PLAN_ALLOW: return False
+            if prog == "git" and (len(tokens) < 2 or tokens[1] not in Tools.PLAN_GIT_RO): return False
+            if prog == "find" and any(t in Tools.PLAN_FIND_BLOCKED for t in tokens): return False
+            if prog in ("sed", "awk", "perl") and any(t in ("-i", "-I") for t in tokens): return False
+        return True
+
+    @staticmethod
+    def get_schemas(build_mode: bool): return Tools.TOOLS if build_mode else Tools.PLAN_TOOLS
+
+    @staticmethod
+    def to_anthropic_schema(build_mode: bool):
+        return [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in Tools.get_schemas(build_mode)]
+
+    @staticmethod
+    def run(name, args, build_mode=False, max_result=10000):
+        if name in Tools.SAFE_TOOLS:
+            cache_key = (name, json.dumps(args, sort_keys=True))
+            if cache_key in Tools._cache:
+                return Tools._cache[cache_key] + "\n[cached result]"
+        
+        result = Tools._run_impl(name, args, build_mode)
+        if len(result) > max_result: result = result[:max_result] + "\n…[truncated]"
+        
+        if name in Tools.SAFE_TOOLS:
+            Tools._cache[cache_key] = result
+            
+        return result
+
+    @staticmethod
+    def _run_impl(name, args, build_mode=False):
+        try:
+            if name == "read_file":
+                p = os.path.expanduser(args.get("path", ""))
+                if not p: return "Error: Path is missing."
+                if not os.path.exists(p): return "Error: Not found"
+                if os.path.isdir(p): return "Error: Is a directory"
+                return FileReader.read(p)
+            elif name == "write_file":
+                if not build_mode: return "Error: Write access is disabled in Plan mode."
+                p = os.path.expanduser(args.get("path", ""))
+                if not p: return "Error: Path is missing."
+                content = args.get("content", "")
+
+                cwd = os.getcwd()
+                try:
+                    inside_cwd = os.path.commonpath([os.path.abspath(p), cwd]) == cwd
+                except ValueError:
+                    inside_cwd = False
+                if not inside_cwd:
+                    return f"Error: Cannot write files outside current working directory ({cwd})."
+
+                Path(p).parent.mkdir(parents=True, exist_ok=True)
+                Path(p).write_text(content)
+                return f"Written to {p}"
+            elif name == "list_files":
+                p = os.path.expanduser(args.get("path", "."))
+                return "\n".join(sorted(e for e in os.listdir(p) if not e.startswith(".")))
+            elif name == "run_command":
+                cmd_str = args.get("command", "")
+                if not cmd_str: return "Error: Command is missing."
+                if not build_mode and not Tools._plan_safe(cmd_str):
+                    return "Error: Plan mode active. Command blocked because it may modify the system or run an interpreter. Only read-only commands are allowed."
+
+                try:
+                    cmd_list = shlex.split(cmd_str)
+                    if not cmd_list: return "Error: Empty command."
+                    r = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30, preexec_fn=os.setsid)
+                    return (r.stdout + r.stderr)
+                except Exception as e:
+                    return f"Error executing command: {e}"
+            elif name == "search_files":
+                path = args.get("path", ".")
+                r = subprocess.run(["grep", "-rn", "--", args.get("query", ""), path], capture_output=True, text=True, timeout=15)
+                return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
+            return "Unknown tool"
+        except Exception as e: return f"Error: {e}"
+
+
+class Backend:
+    def __init__(self, cfg): self.c = cfg
+    API_KEY_ENV = "OPENAI_API_KEY"
+    def _api_key(self):
+        k = (self.profile.get("api_key") or "").strip()
+        if k and k.lower() not in ("ollama", "placeholder"): return k
+        for env in ("TERMUX_AI_API_KEY", self.API_KEY_ENV):
+            v = (os.environ.get(env) or "").strip()
+            if v: return v
+        return ""
+    def _req(self, url, data, headers, timeout=120):
+        body = json.dumps(data).encode()
+        for attempt in range(3):
+            r = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            try:
+                return urllib.request.urlopen(r, timeout=timeout)
+            except urllib.error.HTTPError as e:
+                err_body = ""
+                try: err_body = e.read().decode()[:300]
+                except Exception: pass
+                if e.code in (408, 429, 500, 502, 503, 504) and attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                raise Exception(f"HTTP {e.code}: {err_body}")
+            except urllib.error.URLError as e:
+                if isinstance(e.reason, TimeoutError):
+                    if attempt < 2:
+                        time.sleep(0.5 * (2 ** attempt))
+                        continue
+                    raise Exception("Request timed out.")
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                raise Exception(f"Connection failed: {e.reason}")
+            except TimeoutError:
+                if attempt < 2:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                raise Exception("Request timed out.")
+
+    def _sse_lines(self, resp, idle_timeout=120):
+        buf = b""
+        last_byte = time.monotonic()
+        while True:
+            if time.monotonic() - last_byte > idle_timeout:
+                raise Exception("Stream idle for too long. Aborting.")
+            chunk = resp.read(4096)
+            if not chunk: break
+            buf += chunk
+            last_byte = time.monotonic()
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.decode("utf-8", "replace").rstrip("\r")
+                if not line.startswith("data:"): continue
+                d = line[5:].strip()
+                if d == "[DONE]": return
+                try: yield json.loads(d)
+                except Exception: pass
+
+    @staticmethod
+    def _trim_iteration_history(msgs, budget=3000):
+        while sum(est_tok(str(m.get("content", ""))) for m in msgs) > budget and len(msgs) >= 4:
+            for i in range(1, len(msgs)):
+                m = msgs[i]
+                is_group_start = m.get("role") == "assistant" and (
+                    m.get("tool_calls")
+                    or (isinstance(m.get("content"), list)
+                        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"]))
+                )
+                if not is_group_start:
+                    continue
+                j = i + 1
+                while j < len(msgs):
+                    nxt = msgs[j]
+                    if nxt["role"] == "tool":
+                        j += 1; continue
+                    if nxt["role"] == "user" and isinstance(nxt.get("content"), list) \
+                            and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in nxt["content"]):
+                        j += 1; continue
+                    break
+                msgs[i:j] = [{"role": "assistant", "content": "[Previous tool results trimmed to save context. Do not re-read these files.]"}]
+                break
+            else:
+                return
+
+class OpenAICompatible(Backend):
+    def __init__(self, cfg, profile_name, profile):
+        super().__init__(cfg)
+        self.name = profile_name
+        self.profile = profile or {}
+
+    def _headers(self):
+        k = self._api_key()
+        h = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+        if k: h["Authorization"] = f"Bearer {k}"
+        return h
+
+    def _url(self):
+        base = (self.profile.get("base_url") or "").rstrip("/")
+        if not base: raise Exception(f"Profile '{self.name}' has no base_url.\n  Fix: /profile set {self.name}.base_url <url>")
+        return f"{base}/chat/completions"
+
+    def _model(self):
+        m = self.profile.get("model")
+        if not m: raise Exception(f"Profile '{self.name}' has no model set.\n  Fix: /profile set {self.name}.model <name>")
+        return m
+
+    def _check_api_key(self):
+        base = self.profile.get("base_url", "")
+        if not self._api_key() and "localhost" not in base and "127.0.0.1" not in base:
+            raise Exception(f"Profile '{self.name}' has no api_key set.\n  Fix: /profile set {self.name}.api_key YOUR_KEY")
+
+    def chat(self, msgs, stream=True):
+        self._check_api_key()
+        d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream, "max_tokens": self.c.get("max_tokens", 4096)}
+        h = self._headers()
+        if stream:
+            for chunk in self._sse_lines(self._req(self._url(), d, h)):
+                choices = chunk.get("choices") or [{}]
+                if t := choices[0].get("delta", {}).get("content", ""): yield t
+        else: yield json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"]
+
+    def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
+        self._check_api_key()
+        h = self._headers()
+        build_mode = self.c.get("tools_enabled", False)
+        max_res = self.c.get("max_tool_result", 10000)
+
+        iterations = 0
+        total_calls = 0
+        loop_history = []
+
+        while True:
+            iterations += 1
+            if iterations % 25 == 0:
+                if not continue_fn(iterations, total_calls):
+                    yield {"type": "notice", "content": "[Task stopped by user]", "fatal": True}
+                    return
+
+            self._trim_iteration_history(msgs)
+            temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
+            d = {"model": self._model(), "messages": msgs, "temperature": temp, "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
+            resp = self._req(self._url(), d, h)
+
+            content_buf = ""
+            tool_calls_buf = {}
+
+            for chunk in self._sse_lines(resp):
+                if not chunk.get("choices"): continue
+                delta = chunk["choices"][0].get("delta", {})
+                if delta.get("content"):
+                    content_buf += delta["content"]
+                if delta.get("tool_calls"):
+                    for tc in delta["tool_calls"]:
+                        idx = tc.get("index", 0)
+                        if idx not in tool_calls_buf:
+                            tool_calls_buf[idx] = {"id": tc.get("id", ""), "type": "function", "function": {"name": "", "arguments": ""}}
+
+                        for k, v in tc.items():
+                            if k not in ("index", "function"):
+                                tool_calls_buf[idx][k] = v
+
+                        if tc.get("function"):
+                            for fk, fv in tc["function"].items():
+                                if fk == "name":
+                                    tool_calls_buf[idx]["function"]["name"] += fv
+                                elif fk == "arguments":
+                                    tool_calls_buf[idx]["function"]["arguments"] += fv
+                                else:
+                                    tool_calls_buf[idx]["function"][fk] = fv
+
+            calls = list(tool_calls_buf.values())
+
+            if content_buf:
+                yield {"type": "text", "content": content_buf}
+
+            if not calls:
+                return
+
+            def _norm(c):
+                if isinstance(c, dict) and "function" in c:
+                    return (c["function"]["name"], c["function"]["arguments"])
+                return str(c)
+            normalized = tuple(_norm(c) for c in calls)
+            loop_history.append(normalized)
+            if len(loop_history) > 3:
+                loop_history.pop(0)
+                if len(set(loop_history)) == 1:
+                    yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
+                    return
+
+            total_calls += len(calls)
+
+            norm_calls = []
+            for c in calls:
+                fn = c["function"]
+                try: args = json.loads(fn.get("arguments") or "{}")
+                except Exception: args = {}
+                norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
+
+            if not confirm_batch_fn(norm_calls):
+                msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
+                for c in calls:
+                    msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": "Error: User declined to execute this batch."})
+                yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
+                continue
+
+            msg = {"role": "assistant", "content": content_buf, "tool_calls": calls}
+            msgs.append(msg)
+
+            total = len(calls)
+            for i, c in enumerate(calls):
+                fn = c["function"]
+                try: args = json.loads(fn.get("arguments") or "{}")
+                except Exception: args = {}
+
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": fn["name"], "args": args}
+
+                result = Tools.run(fn["name"], args, build_mode, max_res)
+                yield {"type": "tool_result", "name": fn["name"], "result": result}
+                msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+
+class AnthropicBackend(Backend):
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.profile = cfg.get("backends", {}).get("anthropic", {})
+    API_KEY_ENV = "ANTHROPIC_API_KEY"
+
+    def _headers(self):
+        k = self._api_key() or self.c.get("api_keys", {}).get("anthropic", "")
+        if not k: raise Exception("Anthropic key missing.\n  Fix: /profile set anthropic.api_key KEY")
+        return {"Content-Type": "application/json", "x-api-key": k, "anthropic-version": "2023-06-01"}
+
+    def _model(self): return self.profile.get("model") or "claude-3-5-sonnet-20241022"
+
+    @staticmethod
+    def _split_system(msgs):
+        sys_prompt, payload = "", []
+        for m in msgs:
+            if m["role"] == "system": sys_prompt = m["content"]
+            else: payload.append(m)
+        return sys_prompt, payload
+
+    def chat(self, msgs, stream=True):
+        sys_prompt, payload = self._split_system(msgs)
+        d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "stream": stream}
+        if sys_prompt: d["system"] = sys_prompt
+        h = self._headers()
+        url = "https://api.anthropic.com/v1/messages"
+        if stream:
+            for chunk in self._sse_lines(self._req(url, d, h)):
+                if chunk.get("type") == "content_block_delta":
+                    if t := chunk.get("delta", {}).get("text", ""): yield t
+        else: yield json.loads(self._req(url, d, h).read())["content"][0]["text"]
+
+    def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
+        sys_prompt, payload = self._split_system(msgs)
+        h = self._headers()
+        url = "https://api.anthropic.com/v1/messages"
+        build_mode = self.c.get("tools_enabled", False)
+        max_res = self.c.get("max_tool_result", 10000)
+
+        iterations = 0
+        total_calls = 0
+        loop_history = []
+
+        while True:
+            iterations += 1
+            if iterations % 25 == 0:
+                if not continue_fn(iterations, total_calls):
+                    yield {"type": "notice", "content": "[Task stopped by user]", "fatal": True}
+                    return
+
+            self._trim_iteration_history(payload)
+            temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
+            d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode), "stream": True, "temperature": temp}
+            if sys_prompt: d["system"] = sys_prompt
+
+            resp = self._req(url, d, h)
+
+            content_blocks = {}
+            text_block = ""
+
+            for chunk in self._sse_lines(resp):
+                evt_type = chunk.get("type")
+                if evt_type == "content_block_start":
+                    idx = chunk.get("index")
+                    block = chunk.get("content_block", {})
+                    content_blocks[idx] = block
+                    if block.get("type") == "tool_use":
+                        content_blocks[idx]["input"] = ""
+                elif evt_type == "content_block_delta":
+                    idx = chunk.get("index")
+                    delta = chunk.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        content_blocks[idx]["text"] += text
+                        text_block += text
+                    elif delta.get("type") == "input_json_delta":
+                        content_blocks[idx]["input"] += delta.get("partial_json", "")
+
+            blocks = [content_blocks[k] for k in sorted(content_blocks.keys())]
+            tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+
+            for tu in tool_uses:
+                try: tu["input"] = json.loads(tu.get("input", "{}") or "{}")
+                except Exception: tu["input"] = {}
+
+            if text_block:
+                yield {"type": "text", "content": text_block}
+
+            if not tool_uses:
+                return
+
+            def _norm(tu):
+                return (tu.get("name"), json.dumps(tu.get("input", {}), sort_keys=True))
+            normalized = tuple(_norm(tu) for tu in tool_uses)
+            loop_history.append(normalized)
+            if len(loop_history) > 3:
+                loop_history.pop(0)
+                if len(set(loop_history)) == 1:
+                    yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
+                    return
+
+            total_calls += len(tool_uses)
+
+            norm_calls = []
+            for tu in tool_uses:
+                norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
+
+            if not confirm_batch_fn(norm_calls):
+                results = []
+                for tu in tool_uses:
+                    results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": "Error: User declined to execute this batch."})
+                payload.append({"role": "assistant", "content": blocks})
+                payload.append({"role": "user", "content": results})
+                yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
+                continue
+
+            payload.append({"role": "assistant", "content": blocks})
+            results = []
+
+            total = len(tool_uses)
+            for i, tu in enumerate(tool_uses):
+                args = tu.get("input", {}) or {}
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
+
+                result = Tools.run(tu["name"], args, build_mode, max_res)
+                yield {"type": "tool_result", "name": tu["name"], "result": result}
+                results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
+
+            payload.append({"role": "user", "content": results})
+
+def get_backend(cfg):
+    name, profile = cfg.active_profile()
+    if name in ("anthropic", "claude"): return AnthropicBackend(cfg)
+    if profile is None:
+        available = ", ".join(cfg.get("backends", {}).keys()) or "(none)"
+        raise Exception(f"Backend '{name}' not found in config.backends.\n  Available: {available}\n  Fix: /profile add {name} <base_url> <model> [api_key]")
+    return OpenAICompatible(cfg, name, profile)
+
+
+class App:
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+
+    def __init__(self):
+        self.cfg = Config()
+        self.db = Database()
+        atexit.register(self.db.close)
+        try: self.backend = get_backend(self.cfg)
+        except Exception as e: print(f"{C.RED}Backend error: {e}{C.RESET}"); self.backend = None
+        self.cid = None
+        self.last_reply = ""
+        self.last_user_msg = ""
+        self.multi_line = self.cfg.get("multi_line", False)
+        self._validate_config()
+        self.setup_rl()
+        self._ctrl_c_pressed = False
+        self.spinner = None
+        self._auto_approve_all = False
+
+    def _validate_config(self):
+        name, prof = self.cfg.active_profile()
+        if not prof:
+            self.warn(f"Backend '{name}' is not configured.")
+            self._run_setup("")
+            return
+        base = prof.get("base_url", "")
+        if not base.startswith("http"): self.warn(f"Backend '{name}' URL looks invalid: {base}")
+        if "localhost" not in base and "127.0.0.1" not in base and not prof.get("api_key"):
+            self.warn(f"Backend '{name}' is remote but has no API key. Run /setup")
+
+    def _get_ollama_models(self):
+        try:
+            r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+            data = json.loads(r.read().decode("utf-8"))
+            return [m["name"] for m in data.get("models", [])]
+        except Exception: return []
+
+    def _run_setup(self, arg):
+        print(f"\n{C.BOLD}{C.CYAN}=== Termux AI Setup Wizard ==={C.RESET}")
+        print("Choose a backend to configure:")
+        print("  1) Ollama (Local)")
+        print("  2) OpenAI / Custom (OpenAI-compatible)")
+        print("  3) Anthropic (Claude)")
+        choice = input("Enter choice [1]: ").strip() or "1"
+
+        if choice == "1":
+            models = self._get_ollama_models()
+            if models:
+                print(f"\n{C.GREEN}Detected installed Ollama models:{C.RESET}")
+                for i, m in enumerate(models, 1): print(f"  {i}) {m}")
+                m_idx = input(f"Choose model [1]: ").strip() or "1"
+                try: model = models[int(m_idx)-1]
+                except Exception: model = "llama3.2"
+            else:
+                model = input("Enter model name (e.g., llama3.2): ").strip() or "llama3.2"
+            self.cfg.set_path("backends.ollama", {"base_url": "http://localhost:11434/v1", "model": model, "api_key": "ollama"})
+            self.cfg.set("backend", "ollama")
+            self.info("Ollama configured!")
+
+        elif choice == "2":
+            name = input("Enter profile name [openai]: ").strip() or "openai"
+            base = input("Enter Base URL [https://api.openai.com/v1]: ").strip() or "https://api.openai.com/v1"
+            model = input("Enter Model ID [gpt-4o-mini]: ").strip() or "gpt-4o-mini"
+            key = input("Enter API Key: ").strip()
+            self.cfg.set_path(f"backends.{name}", {"base_url": base, "model": model, "api_key": key})
+            self.cfg.set("backend", name)
+            self.info(f"Profile '{name}' configured!")
+
+        elif choice == "3":
+            key = input("Enter Anthropic API Key: ").strip()
+            model = input("Enter Model ID [claude-3-5-sonnet-20241022]: ").strip() or "claude-3-5-sonnet-20241022"
+            self.cfg.set_path("backends.anthropic", {"base_url": "https://api.anthropic.com/v1", "model": model, "api_key": key})
+            self.cfg.set("backend", "anthropic")
+            self.info("Anthropic configured!")
+
+        try: self.backend = get_backend(self.cfg)
+        except Exception as e: self.err(str(e))
+
+    def _self_update(self):
+        import urllib.request
+        url = "https://raw.githubusercontent.com/kabarbaik-xyz/termux-ai/main/ai"
+        self.info("Checking for updates...")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                new_code = r.read().decode('utf-8')
+
+            m = re.search(r'__version__\s*=\s*"([^"]+)"', new_code)
+            if not m or len(new_code) < 10000:
+                self.err("Downloaded file looks invalid; update aborted.")
+                return
+
+            current_file = Path(__file__).resolve()
+            old_code = current_file.read_text(encoding='utf-8')
+            
+            if new_code == old_code:
+                self.info("Already up to date.")
+                return
+                
+            backup = current_file.with_suffix('.bak')
+            shutil.copy2(current_file, backup)
+            current_file.write_text(new_code, encoding='utf-8')
+            os.chmod(current_file, 0o755)
+            self.success(f"Updated to v{m.group(1)}! Backup saved to {backup.name}. Please restart.")
+        except Exception as e:
+            self.err(f"Update failed: {e}")
+
+    def setup_rl(self):
+        if HAVE_READLINE:
+            try:
+                HIST_FILE.touch(exist_ok=True)
+                readline.read_history_file(str(HIST_FILE))
+                readline.set_history_length(1000)
+                
+                def completer(text, state):
+                    cmds = [c for c in self.COMMANDS if c.startswith(text)]
+                    if state < len(cmds):
+                        return cmds[state]
+                    return None
+                readline.set_completer(completer)
+                readline.set_completer_delims(' \t\n')
+                readline.parse_and_bind("tab: complete")
+            except Exception: pass
+
+    def info(self, msg): print(f"{C.CYAN}[i] {msg}{C.RESET}")
+    def warn(self, msg): print(f"{C.YELLOW}[!] {msg}{C.RESET}")
+    def err(self, msg): print(f"{C.RED}[x] {msg}{C.RESET}")
+    def success(self, msg): print(f"{C.GREEN}[✓] {msg}{C.RESET}")
+
+    def print_help(self):
+        print(f"\n{C.BOLD}{C.CYAN}Termux AI Help{C.RESET}")
+        print(f"{C.DIM}Version: {__version__}{C.RESET}\n")
+        
+        cats = {
+            "Chat": [("/new", "Start new chat"), ("/regen", "Regenerate last reply"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line input")],
+            "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/search <q>", "Search chats"), ("/export", "Export chat to md"), ("/delete <id>", "Delete chat")],
+            "Config": [("/setup", "Run setup wizard"), ("/backend <name>", "Switch backend"), ("/model <name>", "Set model"), ("/tools", "Toggle tool use mode"), ("/system <p>", "Set system prompt"), ("/config", "View config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
+            "Utils": [("/status", "Show system & API status"), ("/copy", "Copy last reply"), ("/paste", "Paste from clipboard"), ("/speak", "TTS last reply"), ("/share", "Share last reply"), ("/server", "Manage local AI server"), ("/cost", "Show token usage"), ("/clear", "Clear screen"), ("/exit", "Quit")]
+        }
+        
+        for cat, cmds in cats.items():
+            print(f"{C.BOLD}{C.MAGENTA}{cat}{C.RESET}")
+            for cmd, desc in cmds:
+                print(f"  {C.CYAN}{cmd.ljust(15)}{C.RESET} {desc}")
+            print()
+
+    def _attach_files(self, text):
+        if not self.cfg.get("attach_files", True): return text
+        pattern = re.compile(r'@([^\s]+)')
+        def replacer(match):
+            path = match.group(1)
+            content = FileReader.read(path, self.cfg.get("max_file_chars", 20000))
+            if content and not content.startswith("[Error"):
+                ext = os.path.splitext(path)[1].lstrip('.')
+                return f"\n\n--- File: {path} ---\n```{ext}\n{content}\n```\n--- End File ---\n"
+            return match.group(0)
+        return pattern.sub(replacer, text)
+
+    def _confirm_batch(self, calls):
+        if all(c["name"] in Tools.SAFE_TOOLS for c in calls):
+            return True
+        
+        if self._auto_approve_all:
+            return True
+        
+        print(f"\n{C.YELLOW}Approval needed for {len(calls)} action(s):{C.RESET}")
+        for c in calls:
+            args_str = json.dumps(c['args'])
+            if len(args_str) > 100: args_str = args_str[:100] + "..."
+            print(f"  • {C.BOLD}{c['name']}{C.RESET}: {args_str}")
+        
+        print(f"\n{C.DIM}[y] Yes  [a] Yes to all remaining  [n] No{C.RESET}")
+        choice = input("> ").strip().lower()
+        if choice == 'a':
+            self._auto_approve_all = True
+            return True
+        return choice in ('y', '')
+
+    def _continue_fn(self, iters, calls):
+        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls. Continue? [Y/n]{C.RESET}")
+        return input("> ").strip().lower() in ('y', '')
+
+    def _stream_chat(self, msgs):
+        self.spinner = Spinner("thinking")
+        self.spinner.start()
+        fmt = MarkdownFormatter()
+        full_reply = ""
+        try:
+            for chunk in self.backend.chat(msgs, stream=self.cfg.get("stream", True)):
+                if self.spinner: self.spinner.stop(); self.spinner = None
+                fmt.feed(chunk)
+                full_reply += chunk
+            fmt.flush()
+            print()
+            return full_reply
+        except Exception as e:
+            if self.spinner: self.spinner.stop(); self.spinner = None
+            err_msg = str(e)
+            if "Connection refused" in err_msg:
+                err_msg += "\n  Tip: Is your local AI server running? Try /server start"
+            self.err(f"Chat error: {err_msg}")
+            return ""
+
+    def _stream_tool_chat(self, msgs):
+        self.spinner = Spinner("thinking")
+        self.spinner.start()
+        fmt = MarkdownFormatter()
+        full_reply = ""
+        try:
+            for event in self.backend.chat_with_tools(msgs, self._confirm_batch, self._continue_fn):
+                if event["type"] == "text":
+                    if self.spinner: self.spinner.stop(); self.spinner = None
+                    fmt.feed(event["content"])
+                    full_reply += event["content"]
+                elif event["type"] == "tool_progress":
+                    if self.spinner: self.spinner.stop(); self.spinner = None
+                    print(f"\n{C.GRAY}[Tool {event['current']}/{event['total']}] {event['name']}({json.dumps(event['args'])}){C.RESET}")
+                elif event["type"] == "tool_result":
+                    res = event['result']
+                    if len(res) > 200: res = res[:200] + "..."
+                    print(f"{C.DIM}{res}{C.RESET}\n")
+                elif event["type"] == "notice":
+                    if self.spinner: self.spinner.stop(); self.spinner = None
+                    print(f"{C.YELLOW}{event['content']}{C.RESET}")
+                    if event.get("fatal"): break
+            fmt.flush()
+            print()
+            return full_reply
+        except Exception as e:
+            if self.spinner: self.spinner.stop(); self.spinner = None
+            self.err(f"Tool chat error: {e}")
+            return ""
+
+    def _chat(self, user_input):
+        if not self.backend:
+            self.err("No backend configured. Run /setup")
+            return
+
+        user_input = self._attach_files(user_input)
+        if not self.cid:
+            self.cid = self.db.new_conv("New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""))
+            self.db.rename_conv(self.cid, user_input[:30] + ("..." if len(user_input) > 30 else ""))
+
+        self.db.save_msg(self.cid, "user", user_input)
+        self.last_user_msg = user_input
+
+        msgs = [{"role": "system", "content": self.cfg.system_prompt()}]
+        msgs.extend(self.db.get_msgs(self.cid))
+
+        if self.cfg.get("tools_enabled", False):
+            reply = self._stream_tool_chat(msgs)
+        else:
+            reply = self._stream_chat(msgs)
+
+        if reply:
+            self.db.save_msg(self.cid, "assistant", reply, self.backend.profile.get("model", ""))
+            self.last_reply = reply
+            if self.cfg.get("tts_replies", False): TermuxAPI.speak(reply)
+
+    def _execute_command(self, cmd_str):
+        parts = shlex.split(cmd_str)
+        cmd = parts[0].lower()
+        args = parts[1:]
+
+        if cmd in ("/exit", "/quit"):
+            sys.exit(0)
+        elif cmd == "/help":
+            self.print_help()
+        elif cmd == "/new":
+            self.cid = None
+            self.success("Started new chat.")
+        elif cmd == "/tools":
+            v = not self.cfg.get("tools_enabled", False)
+            self.cfg.set("tools_enabled", v)
+            self.success(f"Tool mode {'enabled' if v else 'disabled'}.")
+        elif cmd == "/multi":
+            v = not self.multi_line
+            self.multi_line = v
+            self.cfg.set("multi_line", v)
+            self.success(f"Multi-line input {'enabled' if v else 'disabled'}.")
+        elif cmd == "/history":
+            convs = self.db.list_convs()
+            if not convs: self.info("No history."); return
+            for c in convs:
+                print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
+        elif cmd == "/load" and args:
+            try: cid = int(args[0])
+            except ValueError: self.err("Invalid ID."); return
+            conv = self.db.get_conv(cid)
+            if conv:
+                self.cid = cid
+                self.success(f"Loaded chat: {conv['title']}")
+            else: self.err("Chat not found.")
+        elif cmd == "/delete" and args:
+            try: cid = int(args[0])
+            except ValueError: self.err("Invalid ID."); return
+            self.db.del_conv(cid)
+            if self.cid == cid: self.cid = None
+            self.success("Chat deleted.")
+        elif cmd == "/search" and args:
+            query = " ".join(args)
+            results = self.db.search_convs(query)
+            if not results: self.info("No matches found.")
+            for r in results:
+                print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
+        elif cmd == "/export":
+            if not self.cid: self.warn("No active chat to export."); return
+            conv = self.db.get_conv(self.cid)
+            msgs = self.db.get_msgs(self.cid)
+            filename = f"chat_{self.cid}_{conv['title'].replace(' ', '_')}.md"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"# {conv['title']}\n\n")
+                for m in msgs:
+                    f.write(f"**{m['role'].capitalize()}:** {m['content']}\n\n")
+            self.success(f"Exported chat to {filename}")
+        elif cmd == "/model":
+            name, prof = self.cfg.active_profile()
+            if not args:
+                self.info(f"Current model: {prof.get('model', 'N/A')}")
+            else:
+                self.cfg.set_path(f"backends.{name}.model", args[0])
+                self.success(f"Model set to {args[0]}")
+                self.backend = get_backend(self.cfg)
+        elif cmd == "/backend":
+            if not args:
+                backends = self.cfg.get("backends", {})
+                active = self.cfg.get("backend", "ollama")
+                for b in backends:
+                    marker = "*" if b == active else " "
+                    print(f"  {marker} {b}")
+                self.info("Use '/backend <name>' to switch.")
+            else:
+                name = args[0]
+                if name in self.cfg.get("backends", {}):
+                    self.cfg.set("backend", name)
+                    self.backend = get_backend(self.cfg)
+                    self.success(f"Switched to backend: {name}")
+                else:
+                    self.err(f"Backend '{name}' not found. Use /setup to configure.")
+        elif cmd == "/profile":
+            if not args:
+                self.info("Usage: /profile <set|add|list>")
+                self.info("  /profile list")
+                self.info("  /profile set <name>.<key> <value>")
+                self.info("  /profile add <name> <base_url> <model> [api_key]")
+            elif args[0] == "list":
+                print(json.dumps(self.cfg.masked_dict().get("backends", {}), indent=2))
+            elif args[0] == "set" and len(args) >= 3:
+                key, val = args[1], " ".join(args[2:])
+                self.cfg.set_path(f"backends.{key}", parse_value(val))
+                self.success(f"Set {key} = {val}")
+                self.backend = get_backend(self.cfg)
+            elif args[0] == "add" and len(args) >= 4:
+                name, base, model = args[1], args[2], args[3]
+                key = args[4] if len(args) > 4 else ""
+                self.cfg.set_path(f"backends.{name}", {"base_url": base, "model": model, "api_key": key})
+                self.success(f"Added profile '{name}'.")
+            else:
+                self.warn("Invalid profile command.")
+        elif cmd == "/status":
+            st = TermuxAPI.status()
+            print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
+            name, prof = self.cfg.active_profile()
+            print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
+            print(f"{C.BOLD}Tools:{C.RESET} {'Enabled' if self.cfg.get('tools_enabled') else 'Disabled'}")
+        elif cmd == "/copy":
+            if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")
+            else: self.warn("Nothing to copy.")
+        elif cmd == "/paste":
+            text = TermuxAPI.paste()
+            if text: self._chat(text)
+            else: self.warn("Clipboard empty.")
+        elif cmd == "/speak":
+            if self.last_reply: TermuxAPI.speak(self.last_reply)
+            else: self.warn("Nothing to speak.")
+        elif cmd == "/share":
+            if self.last_reply: TermuxAPI.share(self.last_reply)
+            else: self.warn("Nothing to share.")
+        elif cmd == "/clear":
+            os.system('clear' if os.name != 'nt' else 'cls')
+        elif cmd == "/setup":
+            self._run_setup("")
+        elif cmd == "/update":
+            self._self_update()
+        elif cmd == "/config":
+            print(json.dumps(self.cfg.masked_dict(), indent=2))
+        elif cmd == "/system" and args:
+            self.cfg.set("system_instruction", " ".join(args))
+            self.success("System prompt updated.")
+        elif cmd == "/server":
+            if not args:
+                self.warn("Usage: /server <start|stop|status>")
+            else:
+                ServerManager.manage(args[0])
+        elif cmd == "/cost":
+            tot = self.db.get_total_tokens()
+            self.info(f"Total tokens used: {tot}")
+        elif cmd == "/undo":
+            if self.cid:
+                self.db.undo_last_msg_pair(self.cid)
+                self.success("Undid last message pair.")
+            else: self.warn("No active chat.")
+        elif cmd in ("/regen", "/retry"):
+            if self.cid and self.last_user_msg:
+                self.db.undo_last_msg_pair(self.cid)
+                self._chat(self.last_user_msg)
+            else: self.warn("Nothing to regenerate.")
+        else:
+            self.warn(f"Unknown command: {cmd}. Type /help for options.")
+
+    def main_loop(self):
+        print(f"{C.BOLD}{C.CYAN}Termux AI v{__version__}{C.RESET}")
+        if not self.backend: self.warn("Run /setup to configure a backend.")
+        if not IS_TTY: self.warn("Output is piped, UI disabled.")
+        
+        last_ctrl_c = 0.0
+        
+        while True:
+            try:
+                prefix = f"{C.GREEN}┌─{C.RESET}\n{C.GREEN}└─▸{C.RESET} " if self.multi_line else f"{C.GREEN}▸{C.RESET} "
+                user_input = input(prefix).strip()
+                if not user_input: continue
+                
+                if self.multi_line:
+                    buf = user_input + "\n"
+                    while True:
+                        line = input("   ")
+                        if not line.strip(): break
+                        buf += line + "\n"
+                    user_input = buf.strip()
+
+                if user_input.startswith("/"):
+                    self._execute_command(user_input)
+                else:
+                    self._chat(user_input)
+
+            except KeyboardInterrupt:
+                now = time.time()
+                if now - last_ctrl_c < 2.0:
+                    print("\nExiting...")
+                    sys.exit(0)
+                else:
+                    last_ctrl_c = now
+                    print(f"\n{C.YELLOW}Press Ctrl+C again to exit.{C.RESET}")
+                    if self.spinner: self.spinner.stop(); self.spinner = None
+            except EOFError:
+                print("\nGoodbye!")
+                sys.exit(0)
+            except Exception as e:
+                self.err(f"Error: {e}")
+
+if __name__ == "__main__":
+    app = App()
+    app.main_loop()
