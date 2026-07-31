@@ -493,7 +493,6 @@ class Tools:
     ]
     PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
     
-    # Daftar Hitam (Blacklist) untuk Mode Aman (Plan Mode)
     BLOCKED_WRITE_CMDS = {
         "rm", "rmdir", "mv", "cp", "mkdir", "chmod", "chown", "touch",
         "dd", "mkfs", "mount", "umount", "kill", "pkill", "killall",
@@ -505,12 +504,9 @@ class Tools:
 
     @staticmethod
     def _plan_safe(cmd_str):
-        # 1. Blokir manipulasi shell/injection
         if re.search(r'\$\(|`|;|\|\||&&|>>|>|\{', cmd_str): return False
-        # 2. Blokir interpreter yang bisa menjalankan kode berbahaya
         if re.search(r'\b(busybox|toybox|env|sudo|doas|su|xargs|timeout|sh|bash|zsh|dash|fish|python3?|ruby|php)\b', cmd_str): return False
         
-        # 3. Izinkan perintah apa pun kecuali yang ada di Daftar Hitam
         for segment in cmd_str.split("|"):
             tokens = shlex.split(segment)
             if not tokens: return False
@@ -1111,7 +1107,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/regen", "Regenerate last reply"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line input")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/search <q>", "Search chats"), ("/export", "Export chat to md"), ("/delete <id>", "Delete chat")],
-            "Config": [("/setup", "Run setup wizard"), ("/backend <name>", "Switch backend"), ("/model <name>", "Set model"), ("/tools", "Toggle tool use mode"), ("/system <p>", "Set system prompt"), ("/config", "View config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
+            "Config": [("/setup", "Run setup wizard"), ("/backends", "List available backends"), ("/backend <name>", "Switch active backend"), ("/model <name>", "Set model"), ("/tools", "Toggle tool use mode"), ("/system <p>", "Set system prompt"), ("/config", "View config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "Show system & API status"), ("/copy", "Copy last reply"), ("/paste", "Paste from clipboard"), ("/speak", "TTS last reply"), ("/share", "Share last reply"), ("/server", "Manage local AI server"), ("/cost", "Show token usage"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
         
@@ -1299,7 +1295,7 @@ class App:
                 self.cfg.set_path(f"backends.{name}.model", args[0])
                 self.success(f"Model set to {args[0]}")
                 self.backend = get_backend(self.cfg)
-        elif cmd in ("/backend", "/backends"):
+        elif cmd == "/backends":
             backends = self.cfg.get("backends", {})
             active = self.cfg.get("backend", "ollama")
             self.info("Available backends:")
@@ -1307,17 +1303,18 @@ class App:
                 marker = f"{C.GREEN}*{C.RESET}" if b == active else " "
                 b_model = backends[b].get("model", "N/A")
                 print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
-            
-            if cmd == "/backend" and args:
+        elif cmd == "/backend":
+            if not args:
+                self.warn("Usage: /backend <name> to switch active backend.")
+            else:
                 name = args[0]
+                backends = self.cfg.get("backends", {})
                 if name in backends:
                     self.cfg.set("backend", name)
                     self.backend = get_backend(self.cfg)
                     self.success(f"Switched to backend: {name}")
                 else:
-                    self.err(f"Backend '{name}' not found. Use /setup to configure.")
-            elif not args:
-                self.info("Use '/backend <name>' to switch active backend.")
+                    self.err(f"Backend '{name}' not found. Use /backends to see available options.")
         elif cmd == "/profile":
             if not args:
                 self.info("Usage: /profile <set|add|list>")
