@@ -93,7 +93,7 @@ class FileReader:
     @staticmethod
     def read(path, max_chars=20000):
         p = os.path.expanduser(path)
-        if not os.path.exists(p): return None
+        if not os.path.exists(p): return f"Error: File not found at path '{p}'"
         ext = os.path.splitext(p)[1].lower()
         try:
             if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".py", ".sh", ".bash", ".js", ".jsx", ".ts", ".tsx", ".c", ".cpp", ".h", ".cs", ".java", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".css", ".scss", ".yaml", ".yml", ".toml", ".ini", ".cfg"):
@@ -492,26 +492,39 @@ class Tools:
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
     ]
     PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
-    PLAN_ALLOW = {
-        "ls", "cat", "head", "tail", "grep", "rg", "find", "file", "stat", "du", "df", "wc",
-        "sort", "uniq", "cut", "tr", "comm", "diff", "echo", "printf", "date", "pwd",
-        "which", "type", "ps", "printenv", "sed", "awk", "perl", "git",
+    
+    # Daftar Hitam (Blacklist) untuk Mode Aman (Plan Mode)
+    BLOCKED_WRITE_CMDS = {
+        "rm", "rmdir", "mv", "cp", "mkdir", "chmod", "chown", "touch",
+        "dd", "mkfs", "mount", "umount", "kill", "pkill", "killall",
+        "shutdown", "reboot", "halt", "poweroff", "apt", "pkg", "dpkg",
+        "pip", "npm", "yarn", "brew", "snap", "flatpak", "tee"
     }
     PLAN_GIT_RO = {"status", "diff", "log", "show", "branch", "ls-files", "ls-tree", "rev-parse", "tag", "remote", "blame", "grep", "help", "version"}
     PLAN_FIND_BLOCKED = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
 
     @staticmethod
     def _plan_safe(cmd_str):
+        # 1. Blokir manipulasi shell/injection
         if re.search(r'\$\(|`|;|\|\||&&|>>|>|\{', cmd_str): return False
+        # 2. Blokir interpreter yang bisa menjalankan kode berbahaya
         if re.search(r'\b(busybox|toybox|env|sudo|doas|su|xargs|timeout|sh|bash|zsh|dash|fish|python3?|ruby|php)\b', cmd_str): return False
+        
+        # 3. Izinkan perintah apa pun kecuali yang ada di Daftar Hitam
         for segment in cmd_str.split("|"):
             tokens = shlex.split(segment)
             if not tokens: return False
             prog = os.path.basename(tokens[0])
-            if prog not in Tools.PLAN_ALLOW: return False
-            if prog == "git" and (len(tokens) < 2 or tokens[1] not in Tools.PLAN_GIT_RO): return False
-            if prog == "find" and any(t in Tools.PLAN_FIND_BLOCKED for t in tokens): return False
-            if prog in ("sed", "awk", "perl") and any(t in ("-i", "-I") for t in tokens): return False
+            
+            if prog in Tools.BLOCKED_WRITE_CMDS:
+                return False
+            if prog == "git" and (len(tokens) < 2 or tokens[1] not in Tools.PLAN_GIT_RO):
+                return False
+            if prog == "find" and any(t in Tools.PLAN_FIND_BLOCKED for t in tokens):
+                return False
+            if prog in ("sed", "awk", "perl") and any(t in ("-i", "-I") for t in tokens):
+                return False
+                
         return True
 
     @staticmethod
@@ -529,6 +542,8 @@ class Tools:
                 return Tools._cache[cache_key] + "\n[cached result]"
         
         result = Tools._run_impl(name, args, build_mode)
+        if result is None:
+            result = "Error: Tool returned no output."
         if len(result) > max_result: result = result[:max_result] + "\n…[truncated]"
         
         if name in Tools.SAFE_TOOLS:
@@ -542,7 +557,7 @@ class Tools:
             if name == "read_file":
                 p = os.path.expanduser(args.get("path", ""))
                 if not p: return "Error: Path is missing."
-                if not os.path.exists(p): return "Error: Not found"
+                if not os.path.exists(p): return f"Error: Not found at {p}"
                 if os.path.isdir(p): return "Error: Is a directory"
                 return FileReader.read(p)
             elif name == "write_file":
@@ -647,29 +662,23 @@ class Backend:
 
     @staticmethod
     def _trim_iteration_history(msgs, budget=3000):
-        while sum(est_tok(str(m.get("content", ""))) for m in msgs) > budget and len(msgs) >= 4:
-            for i in range(1, len(msgs)):
-                m = msgs[i]
-                is_group_start = m.get("role") == "assistant" and (
-                    m.get("tool_calls")
-                    or (isinstance(m.get("content"), list)
-                        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"]))
-                )
-                if not is_group_start:
-                    continue
-                j = i + 1
-                while j < len(msgs):
-                    nxt = msgs[j]
-                    if nxt["role"] == "tool":
-                        j += 1; continue
-                    if nxt["role"] == "user" and isinstance(nxt.get("content"), list) \
-                            and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in nxt["content"]):
-                        j += 1; continue
-                    break
-                msgs[i:j] = [{"role": "assistant", "content": "[Previous tool results trimmed to save context. Do not re-read these files.]"}]
+        current_tokens = sum(est_tok(str(m.get("content", ""))) for m in msgs)
+        if current_tokens <= budget:
+            return
+        
+        for m in msgs:
+            if current_tokens <= budget:
                 break
-            else:
-                return
+            if m.get("role") == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > 200:
+                old_len = est_tok(m["content"])
+                m["content"] = "[Old tool result trimmed to save context]"
+                current_tokens -= (old_len - est_tok(m["content"]))
+            elif m.get("role") == "user" and isinstance(m.get("content"), list):
+                for block in m["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("content"), str) and len(block["content"]) > 200:
+                        old_len = est_tok(block["content"])
+                        block["content"] = "[Old tool result trimmed to save context]"
+                        current_tokens -= (old_len - est_tok(block["content"]))
 
 class OpenAICompatible(Backend):
     def __init__(self, cfg, profile_name, profile):
@@ -771,9 +780,8 @@ class OpenAICompatible(Backend):
                 return str(c)
             normalized = tuple(_norm(c) for c in calls)
             loop_history.append(normalized)
-            if len(loop_history) > 3:
-                loop_history.pop(0)
-                if len(set(loop_history)) == 1:
+            if len(loop_history) >= 3:
+                if len(set(loop_history[-3:])) == 1:
                     yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
                     return
 
@@ -904,9 +912,8 @@ class AnthropicBackend(Backend):
                 return (tu.get("name"), json.dumps(tu.get("input", {}), sort_keys=True))
             normalized = tuple(_norm(tu) for tu in tool_uses)
             loop_history.append(normalized)
-            if len(loop_history) > 3:
-                loop_history.pop(0)
-                if len(set(loop_history)) == 1:
+            if len(loop_history) >= 3:
+                if len(set(loop_history[-3:])) == 1:
                     yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
                     return
 
@@ -1229,7 +1236,8 @@ class App:
 
     def _execute_command(self, cmd_str):
         parts = shlex.split(cmd_str)
-        cmd = parts[0].lower()
+        if not parts: return
+        cmd = parts[0].lower().rstrip(".,;:!?")
         args = parts[1:]
 
         if cmd in ("/exit", "/quit"):
@@ -1291,22 +1299,25 @@ class App:
                 self.cfg.set_path(f"backends.{name}.model", args[0])
                 self.success(f"Model set to {args[0]}")
                 self.backend = get_backend(self.cfg)
-        elif cmd == "/backend":
-            if not args:
-                backends = self.cfg.get("backends", {})
-                active = self.cfg.get("backend", "ollama")
-                for b in backends:
-                    marker = "*" if b == active else " "
-                    print(f"  {marker} {b}")
-                self.info("Use '/backend <name>' to switch.")
-            else:
+        elif cmd in ("/backend", "/backends"):
+            backends = self.cfg.get("backends", {})
+            active = self.cfg.get("backend", "ollama")
+            self.info("Available backends:")
+            for b in backends:
+                marker = f"{C.GREEN}*{C.RESET}" if b == active else " "
+                b_model = backends[b].get("model", "N/A")
+                print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
+            
+            if cmd == "/backend" and args:
                 name = args[0]
-                if name in self.cfg.get("backends", {}):
+                if name in backends:
                     self.cfg.set("backend", name)
                     self.backend = get_backend(self.cfg)
                     self.success(f"Switched to backend: {name}")
                 else:
                     self.err(f"Backend '{name}' not found. Use /setup to configure.")
+            elif not args:
+                self.info("Use '/backend <name>' to switch active backend.")
         elif cmd == "/profile":
             if not args:
                 self.info("Usage: /profile <set|add|list>")
@@ -1385,7 +1396,6 @@ class App:
         
         while True:
             try:
-                # Dynamic prompt info
                 try:
                     b_name, b_prof = self.cfg.active_profile()
                     b_model = b_prof.get("model", "N/A")[:12] if b_prof else "N/A"
