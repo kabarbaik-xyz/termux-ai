@@ -8,7 +8,7 @@ import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit,
 import zipfile
 from pathlib import Path
 
-__version__ = "6.1.0"
+__version__ = "6.2.0"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -95,7 +95,7 @@ class FileReader:
         if not os.path.exists(p): return None
         ext = os.path.splitext(p)[1].lower()
         try:
-            if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".py", ".sh", ".js", ".ts", ".c", ".cpp", ".java", ".go", ".rs", ".rb", ".php", ".css", ".scss"):
+            if ext in (".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".py", ".sh", ".bash", ".js", ".jsx", ".ts", ".tsx", ".c", ".cpp", ".h", ".cs", ".java", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".css", ".scss", ".yaml", ".yml", ".toml", ".ini", ".cfg"):
                 with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()[:max_chars]
             elif ext == ".pdf":
                 if shutil.which("pdftotext"):
@@ -194,6 +194,7 @@ class Spinner:
         self._stop = False
         self._t = None
         self._started = False
+        self._atexit_registered = False
 
     def start(self):
         self._started = True
@@ -202,8 +203,10 @@ class Spinner:
         self._stop = False
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()
-        # Register cleanup to prevent orphaned spinners on crash
-        atexit.register(self.stop)
+        # Register cleanup once to prevent orphaned spinners on crash
+        if not self._atexit_registered:
+            atexit.register(self.stop)
+            self._atexit_registered = True
 
     def _run(self):
         i = 0
@@ -507,7 +510,9 @@ class Tools:
             if name == "read_file":
                 p = os.path.expanduser(args.get("path", ""))
                 if not p: return "Error: Path is missing."
-                return Path(p).read_text(errors="ignore") if os.path.exists(p) else "Error: Not found"
+                if not os.path.exists(p): return "Error: Not found"
+                if os.path.isdir(p): return "Error: Is a directory"
+                return FileReader.read(p)
             elif name == "write_file":
                 if not build_mode: return "Error: Write access is disabled in Plan mode."
                 p = os.path.expanduser(args.get("path", ""))
@@ -515,7 +520,11 @@ class Tools:
                 content = args.get("content", "")
                 
                 cwd = os.getcwd()
-                if not os.path.abspath(p).startswith(cwd):
+                try:
+                    inside_cwd = os.path.commonpath([os.path.abspath(p), cwd]) == cwd
+                except ValueError:
+                    inside_cwd = False
+                if not inside_cwd:
                     return f"Error: Cannot write files outside current working directory ({cwd})."
                     
                 Path(p).parent.mkdir(parents=True, exist_ok=True)
@@ -530,6 +539,10 @@ class Tools:
                 if not build_mode:
                     block_patterns = [
                         r'\brm\b', r'\bmv\b', r'\bcp\b', r'\btouch\b', r'\bmkdir\b', r'\bchmod\b', r'\bchown\b', r'\bdd\b', r'\btee\b',
+                        r'\bln\b', r'\brmdir\b', r'\btruncate\b', r'\bchattr\b', r'\bunlink\b', r'\binstall\b',
+                        r'sed\s+-i', r'[ag]?awk\s+-i', r'perl\s+-i',
+                        r'find\b.*\s(-delete|-exec\b|-ok\b)',
+                        r'git\s+(rm\b|clean\b|reset\s+--hard\b)',
                         r'pip\sinstall', r'\bapt\b', r'\bpkg\b', r'\bnpm\b', r'\byarn\b', r'>', r'>>',
                         r'python3?\s+-c', r'python3?\s+-m', r'\bperl\b', r'\bnode\b', r'\bruby\b', r'\bphp\b', r'bash\s+-c', r'sh\s+-c'
                     ]
@@ -579,6 +592,32 @@ class Backend:
                     try: yield json.loads(d)
                     except Exception: pass
 
+    @staticmethod
+    def _trim_iteration_history(msgs, budget=3000):
+        while sum(est_tok(str(m.get("content", ""))) for m in msgs) > budget and len(msgs) >= 4:
+            for i in range(1, len(msgs)):
+                m = msgs[i]
+                is_group_start = m.get("role") == "assistant" and (
+                    m.get("tool_calls")
+                    or (isinstance(m.get("content"), list)
+                        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"]))
+                )
+                if not is_group_start:
+                    continue
+                j = i + 1
+                while j < len(msgs):
+                    nxt = msgs[j]
+                    if nxt["role"] == "tool":
+                        j += 1; continue
+                    if nxt["role"] == "user" and isinstance(nxt.get("content"), list) \
+                            and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in nxt["content"]):
+                        j += 1; continue
+                    break
+                del msgs[i:j]
+                break
+            else:
+                return
+
 class OpenAICompatible(Backend):
     def __init__(self, cfg, profile_name, profile):
         super().__init__(cfg)
@@ -622,15 +661,17 @@ class OpenAICompatible(Backend):
         build_mode = self.c.get("tools_enabled", False)
         
         iterations = 0
+        total_calls = 0
         loop_history = []
         
         while True:
             iterations += 1
             if iterations % 10 == 0:
-                if not continue_fn(iterations):
-                    yield {"type": "text", "content": "[Task stopped by user]"}
+                if not continue_fn(iterations, total_calls):
+                    yield {"type": "notice", "content": "[Task stopped by user]", "fatal": True}
                     return
-                    
+
+            self._trim_iteration_history(msgs)
             d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
             resp = self._req(self._url(), d, h)
             
@@ -675,8 +716,10 @@ class OpenAICompatible(Backend):
             if len(loop_history) > 3:
                 loop_history.pop(0)
                 if len(set(loop_history)) == 1:
-                    yield {"type": "text", "content": "[Stopped: AI is stuck in a loop repeating the same action.]"}
+                    yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
                     return
+
+            total_calls += len(calls)
 
             # Normalize calls for the batch confirmation UI
             norm_calls = []
@@ -688,9 +731,10 @@ class OpenAICompatible(Backend):
             
             # Ask the user to approve the entire batch of actions
             if not confirm_batch_fn(norm_calls):
+                msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
                 for c in calls:
                     msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": "Error: User declined to execute this batch."})
-                yield {"type": "text", "content": "\n[User declined the proposed actions. Please try a different approach.]"}
+                yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
                 continue
 
             msg = {"role": "assistant", "content": content_buf, "tool_calls": calls}
@@ -706,6 +750,7 @@ class OpenAICompatible(Backend):
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": fn["name"], "args": args}
                 
                 result = Tools.run(fn["name"], args, build_mode)
+                if len(result) > 2000: result = result[:2000] + "\n…[truncated]"
                 yield {"type": "tool_result", "name": fn["name"], "result": result}
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
 
@@ -748,15 +793,17 @@ class AnthropicBackend(Backend):
         build_mode = self.c.get("tools_enabled", False)
         
         iterations = 0
+        total_calls = 0
         loop_history = []
         
         while True:
             iterations += 1
             if iterations % 10 == 0:
-                if not continue_fn(iterations):
-                    yield {"type": "text", "content": "[Task stopped by user]"}
+                if not continue_fn(iterations, total_calls):
+                    yield {"type": "notice", "content": "[Task stopped by user]", "fatal": True}
                     return
-                    
+
+            self._trim_iteration_history(payload)
             d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if sys_prompt: d["system"] = sys_prompt
             
@@ -804,8 +851,10 @@ class AnthropicBackend(Backend):
             if len(loop_history) > 3:
                 loop_history.pop(0)
                 if len(set(loop_history)) == 1:
-                    yield {"type": "text", "content": "[Stopped: AI is stuck in a loop repeating the same action.]"}
+                    yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
                     return
+
+            total_calls += len(tool_uses)
 
             # Normalize calls for batch confirmation
             norm_calls = []
@@ -818,7 +867,7 @@ class AnthropicBackend(Backend):
                     results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": "Error: User declined to execute this batch."})
                 payload.append({"role": "assistant", "content": blocks})
                 payload.append({"role": "user", "content": results})
-                yield {"type": "text", "content": "\n[User declined the proposed actions. Please try a different approach.]"}
+                yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
                 continue
                 
             payload.append({"role": "assistant", "content": blocks})
@@ -830,6 +879,7 @@ class AnthropicBackend(Backend):
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
                 
                 result = Tools.run(tu["name"], args, build_mode)
+                if len(result) > 2000: result = result[:2000] + "\n…[truncated]"
                 yield {"type": "tool_result", "name": tu["name"], "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
                 
@@ -1341,19 +1391,24 @@ class App:
         if not self.cid or not self.last_user_msg: self.warn("Nothing to regenerate."); return
         self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'assistant' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'assistant')", (self.cid, self.cid))
         self.db.conn.commit()
-        self.chat(self.last_user_msg, model_override=model_override)
+        self.chat(self.last_user_msg, model_override=model_override, save_user=False, skip_extract=True)
 
     def _compact(self):
         if not self.cid: self.warn("No active conversation to compact."); return
         msgs = self.db.get_msgs(self.cid, limit=100)
         if len(msgs) < 4: self.warn("Not enough messages to compact."); return
         self.info("Compacting conversation...")
+        pending_user = None
+        if msgs and msgs[-1]["role"] == "user":
+            pending_user = msgs.pop()
         transcript = "\n\n".join([f"{m['role']}: {m['content'][:500]}" for m in msgs])
         prompt = f"Summarize the following conversation into a concise context block. Preserve key facts, code snippets, and decisions:\n\n{transcript}"
         try:
             resp = ""
             for t in self.backend.chat([{"role":"user", "content":prompt}], stream=True): resp += t
             self.db.clear_conv_msgs(self.cid)
+            if pending_user:
+                self.db.save_msg(self.cid, pending_user["role"], pending_user["content"], self._current_model(), est_tok(pending_user["content"]))
             self.db.save_msg(self.cid, "assistant", f"[Summary of previous messages]:\n{resp}", self._current_model(), est_tok(resp))
             self.info("Conversation compacted successfully.")
         except Exception as e: self.err(str(e))
@@ -1398,14 +1453,15 @@ class App:
     def _extract_files(self, text):
         if not self.cfg.get("attach_files", True): return text
         attached = []
-        # Refined regex: match paths that contain dots or slashes, but explicitly exclude URLs
-        tokens = re.findall(r'(?<!\w)(\.{1,2}/|~/)?([\w.\-]+/)*[\w.\-]+\.\w{2,5}(?!\w)', text)
+        # Refined regex: require an explicit path prefix (./ ../ ~/ /) or a
+        # directory component, so bare tokens like "config.json" in prose do not
+        # auto-attach an unintended local file. URLs are excluded explicitly.
+        tokens = re.findall(r'(?<!\w)((?:(?:\.{1,2}/|~/|/)(?:[\w.\-]+/)*|(?:[\w.\-]+/)+)[\w.\-]+\.\w{2,5})(?!\w)', text)
         if "this folder" in text.lower() or "current directory" in text.lower() or "this directory" in text.lower():
-            tokens.append((".", "", ""))
+            tokens.append(".")
             
         for token in tokens:
-            # token is a tuple because of capture groups, join them
-            path_str = "".join(token).strip("\"'.,")
+            path_str = token if token == "." else token.rstrip("\"'.,")
             if "://" in path_str: continue
             path = os.path.expanduser(path_str)
             if not os.path.exists(path): continue 
@@ -1447,8 +1503,6 @@ class App:
         # Only prompt if in build mode and there are dangerous tools
         dangerous = [c for c in calls if c["name"] in ("run_command", "write_file")]
         if not dangerous or not self.cfg.get("tools_enabled"):
-            self.spinner = Spinner("executing")
-            self.spinner.start()
             return True
             
         print(f"\n  {C.YELLOW}⚠ AI wants to perform {len(calls)} action(s):{C.RESET}")
@@ -1466,32 +1520,28 @@ class App:
             approved = confirm in ("y", "yes")
         except Exception: approved = False
         
-        if approved:
-            self.spinner = Spinner("executing")
-            self.spinner.start()
         return approved
 
-    def _prompt_continue(self, iterations):
+    def _prompt_continue(self, iterations, total_calls=None):
         if self.spinner: self.spinner.stop()
         sys.stdout.write("\r" + " " * 40 + "\r")
         sys.stdout.flush()
-        print(f"\n  {C.YELLOW}⚠ AI has made {iterations} tool calls.{C.RESET}")
+        print(f"\n  {C.YELLOW}⚠ AI has made {total_calls or iterations} tool calls.{C.RESET}")
         try:
             ans = input(f"  \001{C.YELLOW}\002Continue working? [Y/n] \001{C.RESET}\002").strip().lower()
         except Exception:
             ans = "n"
         if ans in ("y", "yes", ""):
-            if self.spinner:
-                self.spinner = Spinner("thinking")
-                self.spinner.start()
+            self.spinner = Spinner("thinking")
+            self.spinner.start()
             return True
         return False
 
-    def chat(self, txt, model_override=None):
+    def chat(self, txt, model_override=None, save_user=True, skip_extract=False):
         if not self.backend: self.err("No working backend. Use /profile add or /backend to configure one."); return
         
         original_max_tokens = self.cfg.get("max_tokens", 4096)
-        if len(txt) < 100 and "code" not in txt.lower() and "write" not in txt.lower():
+        if not self.cfg.get("tools_enabled") and len(txt) < 100 and "code" not in txt.lower() and "write" not in txt.lower():
             self.cfg.cfg["max_tokens"] = 1024
 
         original_model = None
@@ -1502,12 +1552,14 @@ class App:
             try: self.backend = get_backend(self.cfg)
             except Exception: pass
 
-        txt = self._extract_files(txt)
+        if not skip_extract:
+            txt = self._extract_files(txt)
         name, _ = self.cfg.active_profile()
         if not self.cid: self.cid = self.db.new_conv(title=txt[:50], model=self._current_model(), backend=name)
         
         user_tokens = est_tok(txt)
-        self.db.save_msg(self.cid, "user", txt, self._current_model(), user_tokens)
+        if save_user:
+            self.db.save_msg(self.cid, "user", txt, self._current_model(), user_tokens)
         self.last_user_msg = txt
         
         sys_prompt = self._build_sys_prompt()
@@ -1527,6 +1579,7 @@ class App:
 
         resp, formatter = "", MarkdownFormatter()
         success = False
+        stopped = False
         
         # Fix #4: Auto-router iterative fallback (No recursion)
         tried_backends = set()
@@ -1555,6 +1608,12 @@ class App:
                         print(f"  {C.DIM}└ Done.{C.RESET}")
                         self.spinner = Spinner("thinking")
                         self.spinner.start()
+                        resp = ""
+                    elif event["type"] == "notice":
+                        if self.spinner: self.spinner.stop()
+                        print(f"\n  {C.YELLOW}{event['content']}{C.RESET}")
+                        if event.get("fatal"):
+                            stopped = True
                     elif event["type"] == "text":
                         if self.spinner: self.spinner.stop()
                         resp += event["content"]
@@ -1590,8 +1649,6 @@ class App:
                         self.cfg.set("backend", next_backend, save=False)
                         try:
                             self.backend = get_backend(self.cfg)
-                            self.db.conn.execute("DELETE FROM messages WHERE conversation_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'user')", (self.cid, self.cid))
-                            self.db.conn.commit()
                             # Loop repeats with the new backend
                             continue 
                         except Exception as fallback_e:
@@ -1613,14 +1670,15 @@ class App:
             try: self.backend = get_backend(self.cfg)
             except Exception: pass
 
-        if success:
+        if self.spinner: self.spinner.stop()
+
+        if success and not stopped:
             print()
-            if self.cfg.get("show_tokens") and resp:
-                tokens = est_tok(resp)
-                print(f"  {C.DIM}~{tokens} tokens{C.RESET}")
-                self.db.conn.execute("UPDATE messages SET tokens = ? WHERE id = (SELECT MAX(id) FROM messages WHERE conversation_id = ? AND role = 'assistant')", (tokens, self.cid))
-                self.db.conn.commit()
             if resp:
+                tokens = est_tok(resp)
+                self.db.save_msg(self.cid, "assistant", resp, self._current_model(), tokens)
+                if self.cfg.get("show_tokens"):
+                    print(f"  {C.DIM}~{tokens} tokens{C.RESET}")
                 self.last_reply = resp
                 if self.cfg.get("tts_replies"): TermuxAPI.speak(resp)
 
@@ -1658,17 +1716,19 @@ def main():
     parser.add_argument("-m", "--model", help="Override model")
     args = parser.parse_args()
 
-    if args.prompt or args.cmd:
+    stdin_text = ""
+    if not sys.stdin.isatty():
+        stdin_text = sys.stdin.read().strip()
+
+    if args.prompt or args.cmd or stdin_text:
         cfg = Config()
         try: backend = get_backend(cfg)
         except Exception as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
         
         prompt_text = " ".join(args.prompt)
-        if not sys.stdin.isatty():
-            stdin_text = sys.stdin.read().strip()
-            if stdin_text:
-                if prompt_text: prompt_text += "\n\n" + stdin_text
-                else: prompt_text = stdin_text
+        if stdin_text:
+            if prompt_text: prompt_text += "\n\n" + stdin_text
+            else: prompt_text = stdin_text
 
         # Use App logic for extraction
         prompt_text = App()._extract_files(prompt_text)

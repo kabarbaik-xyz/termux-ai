@@ -7,7 +7,7 @@ REPO="kabarbaik-xyz/termux-ai"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 INSTALL_DIR="${HOME}/.local/bin"
 SCRIPT_PATH="${INSTALL_DIR}/ai"
-VERSION="6.1.0"
+VERSION="6.2.0"
 
 echo "🔍 Termux AI Installer v${VERSION}"
 echo ""
@@ -68,7 +68,9 @@ if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
     # Remove any old Termux AI PATH entries to avoid duplicates
     if grep -q "# Termux AI" ~/.bashrc 2>/dev/null; then
         sed -i '/# Termux AI/d' ~/.bashrc
-        sed -i '\|$INSTALL_DIR|d' ~/.bashrc
+        ESC_DIR=$(printf '%s' "$INSTALL_DIR" | sed 's/[][\.|$(){}?+*^]/\\&/g')
+        ESC_HOME_DIR=$(printf '%s' "${INSTALL_DIR/#$HOME/\$HOME}" | sed 's/[][\.|$(){}?+*^]/\\&/g')
+        sed -i -e "\|$ESC_DIR|d" -e "\|$ESC_HOME_DIR|d" ~/.bashrc
     fi
 
     echo "" >> ~/.bashrc

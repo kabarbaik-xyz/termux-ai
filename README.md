@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-6.1.0-green)
+![version](https://img.shields.io/badge/version-6.2.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -215,7 +215,7 @@ The AI can **read** files, list directories, search code, and run safe inspectio
 
 In PLAN mode, the following command patterns are **automatically blocked** to prevent accidental modification:
 
-`rm`, `mv`, `cp`, `touch`, `mkdir`, `chmod`, `chown`, `dd`, `tee`, `pip install`, `apt`, `pkg`, `npm`, `yarn`, output redirection (`>`, `>>`), and interpreter execution (`python3 -c`, `bash -c`, `node`, `perl`, `ruby`, `php`, etc.).
+`rm`, `mv`, `cp`, `touch`, `mkdir`, `chmod`, `chown`, `dd`, `tee`, `ln`, `rmdir`, `truncate`, `chattr`, `unlink`, `install`, `pip install`, `apt`, `pkg`, `npm`, `yarn`, `sed -i`, `awk -i`, `perl -i`, `find -delete` / `-exec` / `-ok`, `git rm` / `git clean` / `git reset --hard`, output redirection (`>`, `>>`), and interpreter execution (`python3 -c` / `-m`, `bash -c`, `sh -c`, `node`, `perl`, `ruby`, `php`, etc.).
 
 ### BUILD mode
 
@@ -229,7 +229,9 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 - **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`) execute automatically without prompting
 - **CWD sandbox** — `write_file` is restricted to the current working directory for safety
 - **Loop detection** — if the AI repeats the same tool call 3 consecutive times, execution stops automatically
-- **Iteration cap** — after every 10 tool-call iterations, you're prompted to continue or stop
+- **Iteration cap** — after every 10 tool-call iterations (counting actual tool calls), you're prompted to continue or stop; if you stop (or decline a batch), nothing is saved to history
+- **Bounded context** — long tool outputs are truncated (~2000 chars) and older tool iterations are trimmed out in-loop, so requests stay within budget even on long multi-step sessions
+- **Final answer only** — mid-loop narration streams live to the terminal, but only the final answer is saved to chat history
 
 ---
 
@@ -243,7 +245,7 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `system_prompt` | _(see below)_ | System prompt for the AI |
 | `system_instruction` | `""` | If set, overrides `system_prompt` |
 | `temperature` | `0.7` | Sampling temperature |
-| `max_tokens` | `4096` | Max response tokens (auto-reduced to 1024 for short non-code prompts) |
+| `max_tokens` | `4096` | Max response tokens (auto-reduced to 1024 for short non-code prompts — PLAN mode only) |
 | `stream` | `true` | Stream responses |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |
