@@ -64,13 +64,19 @@
         if not self.cid: self.warn("No active chat to export."); return
         conv = self.db.get_conv(self.cid)
         msgs = self.db.get_msgs(self.cid)
-        safe_title = re.sub(r"[^\w\-.]", "_", conv['title'].strip()) or "chat"
-        filename = f"chat_{self.cid}_{safe_title}.md"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(f"# {conv['title']}\n\n")
-            for m in msgs:
-                f.write(f"**{m['role'].capitalize()}:** {m['content']}\n\n")
-        self.success(f"Exported chat to {filename}")
+        if args:
+            filename = os.path.expanduser(" ".join(args))   # /export <path>
+        else:
+            safe_title = re.sub(r"[^\w\-.]", "_", conv['title'].strip()) or "chat"
+            filename = f"chat_{self.cid}_{safe_title}.md"
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"# {conv['title']}\n\n")
+                for m in msgs:
+                    f.write(f"**{m['role'].capitalize()}:** {m['content']}\n\n")
+            self.success(f"Exported chat to {filename}")
+        except OSError as e:
+            self.err(f"Could not write {filename}: {e}")
 
     def _cmd_model(self, args):
         name, prof = self.cfg.active_profile()

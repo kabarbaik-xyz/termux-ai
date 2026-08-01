@@ -43,7 +43,11 @@ try:
     _ENC = tiktoken.get_encoding("cl100k_base")
     def est_tok(t): return len(_ENC.encode(t))
 except ImportError:
-    def est_tok(t): return len(t) // 4
+    _TOK_RE = re.compile(r"\w+|[^\w\s]")
+    def est_tok(t):
+        # No tiktoken: approximate tokens. chars/4 undercounts symbol-heavy
+        # code; word+symbol counting undercounts long words. Take the larger.
+        return max(len(t) // 4, len(_TOK_RE.findall(t)))
 
 # Rough blended USD per 1,000 tokens, for /cost estimates. Local models are free.
 # Real spend varies by vendor and input/output split; treat as an order-of-magnitude.
@@ -1291,6 +1295,14 @@ def get_backend(cfg):
 
 # ══ termux_ai.app ══ (fragment; merged by build.py)
 # ══ termux_ai.app ══ (fragment; merged by build.py)
+def _dbg_exc(e):
+    """Print a full traceback when AI_DEBUG is set; otherwise stay quiet (the
+    caller still shows a one-line error). Set AI_DEBUG=1 to debug crashes."""
+    if os.environ.get("AI_DEBUG"):
+        import traceback
+        traceback.print_exc()
+
+
 class App:
     COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
@@ -1615,6 +1627,7 @@ class App:
         except Exception as e:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
+            _dbg_exc(e)
             if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(f"Tool chat error: {e}")
             return ""
@@ -1781,6 +1794,7 @@ class App:
         except Exception as e:
             if spinner: spinner.stop(); spinner = None
             self._errored = True
+            _dbg_exc(e)
             if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(str(e))
         return reply
@@ -1914,6 +1928,7 @@ class App:
                 print("\nGoodbye!")
                 sys.exit(0)
             except Exception as e:
+                _dbg_exc(e)
                 self.err(f"Error: {e}")
 
 
@@ -1984,13 +1999,19 @@ class App:
         if not self.cid: self.warn("No active chat to export."); return
         conv = self.db.get_conv(self.cid)
         msgs = self.db.get_msgs(self.cid)
-        safe_title = re.sub(r"[^\w\-.]", "_", conv['title'].strip()) or "chat"
-        filename = f"chat_{self.cid}_{safe_title}.md"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(f"# {conv['title']}\n\n")
-            for m in msgs:
-                f.write(f"**{m['role'].capitalize()}:** {m['content']}\n\n")
-        self.success(f"Exported chat to {filename}")
+        if args:
+            filename = os.path.expanduser(" ".join(args))   # /export <path>
+        else:
+            safe_title = re.sub(r"[^\w\-.]", "_", conv['title'].strip()) or "chat"
+            filename = f"chat_{self.cid}_{safe_title}.md"
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"# {conv['title']}\n\n")
+                for m in msgs:
+                    f.write(f"**{m['role'].capitalize()}:** {m['content']}\n\n")
+            self.success(f"Exported chat to {filename}")
+        except OSError as e:
+            self.err(f"Could not write {filename}: {e}")
 
     def _cmd_model(self, args):
         name, prof = self.cfg.active_profile()

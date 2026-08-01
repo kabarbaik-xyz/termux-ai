@@ -350,6 +350,14 @@ git add src ai && git commit -m "fix: ..." && git push
 
 Users running `/update` then receive the new single-file `ai` — their experience is unchanged.
 
+### Debugging
+
+Errors are normally shown as a one-line message. Set **`AI_DEBUG=1`** to print full tracebacks (useful when something crashes unexpectedly):
+
+```bash
+AI_DEBUG=1 ai
+```
+
 ### Keep `ai` from going stale
 
 Enable the pre-commit hook once:

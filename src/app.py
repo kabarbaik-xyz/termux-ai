@@ -1,4 +1,12 @@
 # ══ termux_ai.app ══ (fragment; merged by build.py)
+def _dbg_exc(e):
+    """Print a full traceback when AI_DEBUG is set; otherwise stay quiet (the
+    caller still shows a one-line error). Set AI_DEBUG=1 to debug crashes."""
+    if os.environ.get("AI_DEBUG"):
+        import traceback
+        traceback.print_exc()
+
+
 class App:
     COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
@@ -323,6 +331,7 @@ class App:
         except Exception as e:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
+            _dbg_exc(e)
             if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(f"Tool chat error: {e}")
             return ""
@@ -489,6 +498,7 @@ class App:
         except Exception as e:
             if spinner: spinner.stop(); spinner = None
             self._errored = True
+            _dbg_exc(e)
             if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(str(e))
         return reply
@@ -622,4 +632,5 @@ class App:
                 print("\nGoodbye!")
                 sys.exit(0)
             except Exception as e:
+                _dbg_exc(e)
                 self.err(f"Error: {e}")

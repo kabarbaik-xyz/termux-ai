@@ -27,7 +27,11 @@ try:
     _ENC = tiktoken.get_encoding("cl100k_base")
     def est_tok(t): return len(_ENC.encode(t))
 except ImportError:
-    def est_tok(t): return len(t) // 4
+    _TOK_RE = re.compile(r"\w+|[^\w\s]")
+    def est_tok(t):
+        # No tiktoken: approximate tokens. chars/4 undercounts symbol-heavy
+        # code; word+symbol counting undercounts long words. Take the larger.
+        return max(len(t) // 4, len(_TOK_RE.findall(t)))
 
 # Rough blended USD per 1,000 tokens, for /cost estimates. Local models are free.
 # Real spend varies by vendor and input/output split; treat as an order-of-magnitude.
