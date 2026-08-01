@@ -489,6 +489,8 @@ class Config:
         "show_tokens": True,
         "tools_enabled": False,
         "strategy_first": False,
+        "extended_thinking": False,
+        "thinking_budget": 8000,
         "tts_replies": False,
         "multi_line": False,
         "auto_compact": True,
@@ -1158,8 +1160,17 @@ class AnthropicBackend(Backend):
                 return
 
             self._trim_iteration_history(payload)
-            temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode), "stream": True, "temperature": temp}
+            thinking_on = bool(self.c.get("extended_thinking", False))
+            d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
+            if thinking_on:
+                # Extended thinking (Claude 3.7/4): genuine hidden reasoning before acting.
+                budget = max(1024, int(self.c.get("thinking_budget", 8000)))
+                d["max_tokens"] = budget + max(int(self.c.get("max_tokens", 4096)), 2048)
+                d["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # thinking requires temperature to be unset (the API defaults it to 1)
+            else:
+                d["max_tokens"] = self.c.get("max_tokens", 4096)
+                d["temperature"] = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             if sys_prompt: d["system"] = sys_prompt
 
             resp = self._req(url, d, h)
@@ -1172,18 +1183,27 @@ class AnthropicBackend(Backend):
                 if evt_type == "content_block_start":
                     idx = chunk.get("index")
                     block = chunk.get("content_block", {})
-                    content_blocks[idx] = block
-                    if block.get("type") == "tool_use":
-                        content_blocks[idx]["input"] = ""
+                    if block.get("type") == "thinking":
+                        content_blocks[idx] = {"type": "thinking", "thinking": "", "signature": ""}
+                    else:
+                        content_blocks[idx] = block
+                        if block.get("type") == "tool_use":
+                            content_blocks[idx]["input"] = ""
                 elif evt_type == "content_block_delta":
                     idx = chunk.get("index")
                     delta = chunk.get("delta", {})
-                    if delta.get("type") == "text_delta":
+                    dt = delta.get("type")
+                    if dt == "text_delta":
                         text = delta.get("text", "")
                         content_blocks[idx]["text"] += text
                         text_block += text
-                    elif delta.get("type") == "input_json_delta":
+                    elif dt == "input_json_delta":
                         content_blocks[idx]["input"] += delta.get("partial_json", "")
+                    elif dt == "thinking_delta":
+                        content_blocks[idx]["thinking"] += delta.get("thinking", "")
+                        yield {"type": "thinking", "content": delta.get("thinking", "")}
+                    elif dt == "signature_delta":
+                        content_blocks[idx]["signature"] += delta.get("signature", "")
 
             blocks = [content_blocks[k] for k in sorted(content_blocks.keys())]
             tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
@@ -1258,7 +1278,7 @@ def get_backend(cfg):
 # ══ termux_ai.app ══ (fragment; merged by build.py)
 # ══ termux_ai.app ══ (fragment; merged by build.py)
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -1420,7 +1440,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
-            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act")],
+            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
@@ -1548,6 +1568,11 @@ class App:
                         buf.append(event["content"])          # reasoning or final (post-tool)
                     else:
                         fmt.feed(event["content"])             # live-stream opening / no-tool answer
+                elif et == "thinking":
+                    # Claude extended-thinking blocks: stream dim, never saved to history.
+                    if self.spinner: self.spinner.stop(); self.spinner = None
+                    if not self.quiet:
+                        print(f"{C.DIM}{event['content']}{C.RESET}", end="", flush=True)
                 elif et == "tool_progress":
                     if fmt: fmt.flush()
                     flush(thinking=True)                        # preceding text was reasoning
@@ -1797,7 +1822,7 @@ class App:
         return 0
 
     _CMD_DISPATCH = {
-        "/new": "_cmd_new", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/multi": "_cmd_multi",
+        "/new": "_cmd_new", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
@@ -1895,6 +1920,13 @@ class App:
         v = not self.cfg.get("strategy_first", False)
         self.cfg.set("strategy_first", v)
         self.success(f"Strategy-first mode {'ON (model outlines a strategy before acting)' if v else 'OFF'}.")
+
+    def _cmd_think(self, args):
+        v = not self.cfg.get("extended_thinking", False)
+        self.cfg.set("extended_thinking", v)
+        name, _ = self.cfg.active_profile()
+        extra = "" if name in ("anthropic", "claude") else " (only the Anthropic backend uses this)"
+        self.success(f"Extended thinking {'ON' + extra if v else 'OFF'}.")
 
     def _cmd_multi(self, args):
         v = not self.multi_line
@@ -2003,7 +2035,7 @@ class App:
         print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'}")
+        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'}")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

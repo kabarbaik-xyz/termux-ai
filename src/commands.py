@@ -15,6 +15,13 @@
         self.cfg.set("strategy_first", v)
         self.success(f"Strategy-first mode {'ON (model outlines a strategy before acting)' if v else 'OFF'}.")
 
+    def _cmd_think(self, args):
+        v = not self.cfg.get("extended_thinking", False)
+        self.cfg.set("extended_thinking", v)
+        name, _ = self.cfg.active_profile()
+        extra = "" if name in ("anthropic", "claude") else " (only the Anthropic backend uses this)"
+        self.success(f"Extended thinking {'ON' + extra if v else 'OFF'}.")
+
     def _cmd_multi(self, args):
         v = not self.multi_line
         self.multi_line = v
@@ -122,7 +129,7 @@
         print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'}")
+        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'}")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

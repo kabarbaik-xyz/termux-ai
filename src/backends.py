@@ -287,8 +287,17 @@ class AnthropicBackend(Backend):
                 return
 
             self._trim_iteration_history(payload)
-            temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "tools": Tools.to_anthropic_schema(build_mode), "stream": True, "temperature": temp}
+            thinking_on = bool(self.c.get("extended_thinking", False))
+            d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
+            if thinking_on:
+                # Extended thinking (Claude 3.7/4): genuine hidden reasoning before acting.
+                budget = max(1024, int(self.c.get("thinking_budget", 8000)))
+                d["max_tokens"] = budget + max(int(self.c.get("max_tokens", 4096)), 2048)
+                d["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # thinking requires temperature to be unset (the API defaults it to 1)
+            else:
+                d["max_tokens"] = self.c.get("max_tokens", 4096)
+                d["temperature"] = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             if sys_prompt: d["system"] = sys_prompt
 
             resp = self._req(url, d, h)
@@ -301,18 +310,27 @@ class AnthropicBackend(Backend):
                 if evt_type == "content_block_start":
                     idx = chunk.get("index")
                     block = chunk.get("content_block", {})
-                    content_blocks[idx] = block
-                    if block.get("type") == "tool_use":
-                        content_blocks[idx]["input"] = ""
+                    if block.get("type") == "thinking":
+                        content_blocks[idx] = {"type": "thinking", "thinking": "", "signature": ""}
+                    else:
+                        content_blocks[idx] = block
+                        if block.get("type") == "tool_use":
+                            content_blocks[idx]["input"] = ""
                 elif evt_type == "content_block_delta":
                     idx = chunk.get("index")
                     delta = chunk.get("delta", {})
-                    if delta.get("type") == "text_delta":
+                    dt = delta.get("type")
+                    if dt == "text_delta":
                         text = delta.get("text", "")
                         content_blocks[idx]["text"] += text
                         text_block += text
-                    elif delta.get("type") == "input_json_delta":
+                    elif dt == "input_json_delta":
                         content_blocks[idx]["input"] += delta.get("partial_json", "")
+                    elif dt == "thinking_delta":
+                        content_blocks[idx]["thinking"] += delta.get("thinking", "")
+                        yield {"type": "thinking", "content": delta.get("thinking", "")}
+                    elif dt == "signature_delta":
+                        content_blocks[idx]["signature"] += delta.get("signature", "")
 
             blocks = [content_blocks[k] for k in sorted(content_blocks.keys())]
             tool_uses = [b for b in blocks if b.get("type") == "tool_use"]

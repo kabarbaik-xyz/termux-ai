@@ -18,6 +18,8 @@ class Config:
         "show_tokens": True,
         "tools_enabled": False,
         "strategy_first": False,
+        "extended_thinking": False,
+        "thinking_budget": 8000,
         "tts_replies": False,
         "multi_line": False,
         "auto_compact": True,

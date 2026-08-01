@@ -188,6 +188,7 @@ docker ps | ai "which container has port 8080?"
 | `/config` | Show full config (keys masked) |
 | `/tools [on\|off]` | Toggle BUILD (on) vs PLAN (off) mode |
 | `/strategy [on\|off]` | Toggle strategy-before-act: the model outlines a numbered strategy, shows it, then executes step by step |
+| `/think [on\|off]` | Toggle Claude extended thinking: deeper hidden reasoning before acting (Anthropic backend only; raises token use) |
 | `/multi [on\|off]` | Toggle multi-line input |
 | `/tokens` | Show token usage for current chat |
 | `/cost` | Estimate token cost spent |
