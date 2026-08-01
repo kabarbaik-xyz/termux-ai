@@ -40,4 +40,4 @@ jobs:
           HOME: /tmp/aici-home
         run: |
           mkdir -p "$HOME"
-          python3 tests/test_security.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v

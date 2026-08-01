@@ -29,10 +29,14 @@ try:
 except ImportError:
     def est_tok(t): return len(t) // 4
 
+# Rough blended USD per 1,000 tokens, for /cost estimates. Local models are free.
+# Real spend varies by vendor and input/output split; treat as an order-of-magnitude.
 PRICING = {
-    "gpt-4o": 0.005, "gpt-4o-mini": 0.00015, "gpt-3.5-turbo": 0.0005,
-    "claude-3-5-sonnet": 0.003, "claude-3-opus": 0.015,
-    "llama3.2": 0.0, "llama3": 0.0, "glm-4.6": 0.001, "big-pickle": 0.001
+    "gpt-4o": 0.005, "gpt-4o-mini": 0.00015, "gpt-4-turbo": 0.01,
+    "gpt-3.5-turbo": 0.0005, "o1-mini": 0.003, "o1": 0.015,
+    "claude-3-5-sonnet": 0.003, "claude-3-5-haiku": 0.0008, "claude-3-opus": 0.015,
+    "llama3.2": 0.0, "llama3": 0.0, "llama-3.3": 0.0, "llama3.1": 0.0,
+    "deepseek": 0.00014, "gemini-1.5-flash": 0.000075, "gemini-1.5-pro": 0.00125,
 }
 
 class C:

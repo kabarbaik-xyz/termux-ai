@@ -112,8 +112,9 @@ class OpenAICompatible(Backend):
         if not self._api_key() and "localhost" not in base and "127.0.0.1" not in base:
             raise Exception(f"Profile '{self.name}' has no api_key set.\n  Fix: /profile set {self.name}.api_key YOUR_KEY")
 
-    def chat(self, msgs, stream=True):
+    def chat(self, msgs, stream=None):
         self._check_api_key()
+        if stream is None: stream = self.c.get("stream", True)
         d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream, "max_tokens": self.c.get("max_tokens", 4096)}
         h = self._headers()
         if stream:
@@ -252,8 +253,9 @@ class AnthropicBackend(Backend):
             else: payload.append(m)
         return sys_prompt, payload
 
-    def chat(self, msgs, stream=True):
+    def chat(self, msgs, stream=None):
         sys_prompt, payload = self._split_system(msgs)
+        if stream is None: stream = self.c.get("stream", True)
         d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "stream": stream}
         if sys_prompt: d["system"] = sys_prompt
         h = self._headers()

@@ -14,7 +14,6 @@ class App:
         self.multi_line = self.cfg.get("multi_line", False)
         self._validate_config()
         self.setup_rl()
-        self._ctrl_c_pressed = False
         self.spinner = None
         self._auto_approve_all = False
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
@@ -263,16 +262,39 @@ class App:
             self.spinner = Spinner("thinking")
             self.spinner.start()
         fmt = None if self.quiet else MarkdownFormatter()
-        full_reply = ""
+        current_block = ""  # current text run; resets on each tool -> only the LAST run (the answer) is returned
+        did_tools = False   # once any tool runs, later text is inter-step reasoning
+        buf = []            # text buffered after the first tool, awaiting dim/normal render
+
+        def flush(thinking):
+            # Render buffered text. `thinking`=True -> dim "reflecting" styling
+            # (or discarded in quiet mode); False -> the final answer (normal).
+            nonlocal buf
+            if not buf: return
+            joined = "".join(buf); buf = []
+            if self.quiet:
+                if not thinking: print(joined, end="", flush=True)
+            elif thinking:
+                print(f"\n{C.DIM}{C.ITALIC}{joined}{C.RESET}", end="", flush=True)
+            else:
+                fmt.first_line = True   # final answer starts at column 0, not as a continuation
+                fmt.feed(joined)
+
         try:
             for event in self.backend.chat_with_tools(msgs, self._confirm_batch, self._continue_fn):
                 et = event["type"]
                 if et == "text":
                     if self.spinner: self.spinner.stop(); self.spinner = None
-                    if fmt: fmt.feed(event["content"])
-                    else: print(event["content"], end="", flush=True)
-                    full_reply += event["content"]
+                    current_block += event["content"]
+                    if did_tools or self.quiet:
+                        buf.append(event["content"])          # reasoning or final (post-tool)
+                    else:
+                        fmt.feed(event["content"])             # live-stream opening / no-tool answer
                 elif et == "tool_progress":
+                    if fmt: fmt.flush()
+                    flush(thinking=True)                        # preceding text was reasoning
+                    current_block = ""                          # ...so it is not the saved answer
+                    did_tools = True
                     if self.quiet: continue
                     if self.spinner: self.spinner.stop(); self.spinner = None
                     print(f"\n{C.GRAY}[Tool {event['current']}/{event['total']}] {event['name']}({json.dumps(event['args'])}){C.RESET}")
@@ -282,13 +304,17 @@ class App:
                     if len(res) > 200: res = res[:200] + "..."
                     print(f"{C.DIM}{res}{C.RESET}\n")
                 elif et == "notice":
+                    if fmt: fmt.flush()
+                    flush(thinking=True)
+                    current_block = ""
                     if self.spinner: self.spinner.stop(); self.spinner = None
                     if not self.quiet:
                         print(f"{C.YELLOW}{event['content']}{C.RESET}")
                     if event.get("fatal"): break
-            if fmt: fmt.flush()
+            flush(thinking=False)                               # render the final answer (or empty)
+            if fmt: fmt.flush()                                 # emit any markdown-buffered tail
             print()
-            return full_reply
+            return current_block
         except Exception as e:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
@@ -322,6 +348,8 @@ class App:
             self.db.save_msg(self.cid, "assistant", reply, model, est_tok(reply))
             self.last_reply = reply
             if self.cfg.get("tts_replies", False): TermuxAPI.speak(reply)
+            if self.cfg.get("show_tokens", True) and not self.quiet:
+                print(f"{C.DIM}[{est_tok(reply)} tokens]{C.RESET}")
             # Auto-compact long conversations to stay within the context budget.
             if self.cfg.get("auto_compact", True) and not self.quiet \
                     and self.db.get_conv_tokens(self.cid) > self.cfg.get("auto_compact_threshold", 3000):
@@ -470,223 +498,32 @@ class App:
             return 1
         return 0
 
+    _CMD_DISPATCH = {
+        "/new": "_cmd_new", "/tools": "_cmd_tools", "/multi": "_cmd_multi",
+        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete",
+        "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
+        "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
+        "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
+        "/speak": "_cmd_speak", "/share": "_cmd_share", "/clear": "_cmd_clear",
+        "/setup": "_cmd_setup", "/update": "_cmd_update", "/config": "_cmd_config",
+        "/system": "_cmd_system", "/server": "_cmd_server", "/cost": "_cmd_cost",
+        "/undo": "_cmd_undo", "/show": "_cmd_show", "/rename": "_cmd_rename",
+        "/tokens": "_cmd_tokens", "/diff": "_cmd_diff", "/compact": "_cmd_compact",
+        "/regen": "_cmd_regen", "/retry": "_cmd_regen",
+    }
+
     def _execute_command(self, cmd_str):
         parts = shlex.split(cmd_str)
         if not parts: return
         cmd = parts[0].lower().rstrip(".,;:!?")
         args = parts[1:]
-
-        if cmd in ("/exit", "/quit"):
+        mname = self._CMD_DISPATCH.get(cmd)
+        if mname:
+            getattr(self, mname)(args)
+        elif cmd in ("/exit", "/quit"):
             sys.exit(0)
         elif cmd == "/help":
             self.print_help()
-        elif cmd == "/new":
-            self.cid = None
-            self.success("Started new chat.")
-        elif cmd == "/tools":
-            v = not self.cfg.get("tools_enabled", False)
-            self.cfg.set("tools_enabled", v)
-            self.success(f"Tool mode: {'Build (Write/Read allowed)' if v else 'Plan (Read-only allowed)'}.")
-        elif cmd == "/multi":
-            v = not self.multi_line
-            self.multi_line = v
-            self.cfg.set("multi_line", v)
-            self.success(f"Multi-line input {'enabled' if v else 'disabled'}.")
-        elif cmd == "/history":
-            convs = self.db.list_convs()
-            if not convs: self.info("No history."); return
-            for c in convs:
-                print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
-        elif cmd == "/load" and args:
-            try: cid = int(args[0])
-            except ValueError: self.err("Invalid ID."); return
-            conv = self.db.get_conv(cid)
-            if conv:
-                self.cid = cid
-                self.success(f"Loaded chat: {conv['title']}")
-            else: self.err("Chat not found.")
-        elif cmd == "/delete" and args:
-            try: cid = int(args[0])
-            except ValueError: self.err("Invalid ID."); return
-            self.db.del_conv(cid)
-            if self.cid == cid: self.cid = None
-            self.success("Chat deleted.")
-        elif cmd == "/search" and args:
-            query = " ".join(args)
-            results = self.db.search_convs(query)
-            if not results: self.info("No matches found.")
-            for r in results:
-                print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
-        elif cmd == "/export":
-            if not self.cid: self.warn("No active chat to export."); return
-            conv = self.db.get_conv(self.cid)
-            msgs = self.db.get_msgs(self.cid)
-            safe_title = re.sub(r"[^\w\-.]", "_", conv['title'].strip()) or "chat"
-            filename = f"chat_{self.cid}_{safe_title}.md"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(f"# {conv['title']}\n\n")
-                for m in msgs:
-                    f.write(f"**{m['role'].capitalize()}:** {m['content']}\n\n")
-            self.success(f"Exported chat to {filename}")
-        elif cmd == "/model":
-            name, prof = self.cfg.active_profile()
-            if not args:
-                self.info(f"Current model: {prof.get('model', 'N/A')}")
-            else:
-                self.cfg.set_path(f"backends.{name}.model", args[0])
-                self.success(f"Model set to {args[0]}")
-                self.backend = get_backend(self.cfg)
-        elif cmd == "/backends":
-            backends = self.cfg.get("backends", {})
-            active = self.cfg.get("backend", "ollama")
-            self.info("Available backends:")
-            for b in backends:
-                marker = f"{C.GREEN}*{C.RESET}" if b == active else " "
-                b_model = backends[b].get("model", "N/A")
-                print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
-        elif cmd == "/backend":
-            if not args:
-                self.warn("Usage: /backend <name> to switch active backend.")
-            else:
-                name = args[0]
-                backends = self.cfg.get("backends", {})
-                if name in backends:
-                    self.cfg.set("backend", name)
-                    self.backend = get_backend(self.cfg)
-                    self.success(f"Switched to backend: {name}")
-                else:
-                    self.err(f"Backend '{name}' not found. Use /backends to see available options.")
-        elif cmd == "/profile":
-            if not args:
-                self.info("Usage: /profile <set|add|list>")
-                self.info("  /profile list")
-                self.info("  /profile set <name>.<key> <value>")
-                self.info("  /profile add <name> <base_url> <model> [api_key]")
-            elif args[0] == "list":
-                print(json.dumps(self.cfg.masked_dict().get("backends", {}), indent=2))
-            elif args[0] == "set" and len(args) >= 3:
-                key, val = args[1], " ".join(args[2:])
-                self.cfg.set_path(f"backends.{key}", parse_value(val))
-                self.success(f"Set {key} = {val}")
-                self.backend = get_backend(self.cfg)
-            elif args[0] == "add" and len(args) >= 4:
-                name, base, model = args[1], args[2], args[3]
-                key = args[4] if len(args) > 4 else ""
-                self.cfg.set_path(f"backends.{name}", {"base_url": base, "model": model, "api_key": key})
-                self.success(f"Added profile '{name}'.")
-            else:
-                self.warn("Invalid profile command.")
-        elif cmd == "/status":
-            st = TermuxAPI.status()
-            print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
-            name, prof = self.cfg.active_profile()
-            print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-            print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'}")
-        elif cmd == "/copy":
-            if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")
-            else: self.warn("Nothing to copy.")
-        elif cmd == "/paste":
-            text = TermuxAPI.paste()
-            if text: self._chat(text)
-            else: self.warn("Clipboard empty.")
-        elif cmd == "/speak":
-            if self.last_reply: TermuxAPI.speak(self.last_reply)
-            else: self.warn("Nothing to speak.")
-        elif cmd == "/share":
-            if self.last_reply: TermuxAPI.share(self.last_reply)
-            else: self.warn("Nothing to share.")
-        elif cmd == "/clear":
-            os.system('clear' if os.name != 'nt' else 'cls')
-        elif cmd == "/setup":
-            self._run_setup("")
-        elif cmd == "/update":
-            self._self_update()
-        elif cmd == "/config":
-            if args and args[0] == "set" and len(args) >= 3:
-                key = args[1]
-                val = parse_value(" ".join(args[2:]))
-                self.cfg.set_path(key, val)
-                if key.split(".")[0] in ("backend", "backends"):
-                    try: self.backend = get_backend(self.cfg)
-                    except Exception as e: self.err(str(e))
-                self.success(f"Set {key} = {val}")
-            elif args and args[0] == "get" and len(args) >= 2:
-                v = self.cfg.get(args[1])
-                print(json.dumps(v, indent=2) if not isinstance(v, str) else v)
-            else:
-                print(json.dumps(self.cfg.masked_dict(), indent=2))
-        elif cmd == "/system":
-            if args:
-                self.cfg.set("system_instruction", " ".join(args))
-                self.success("System prompt updated.")
-            else:
-                sp = self.cfg.system_prompt()
-                self.info("System prompt:" + (f"\n{sp}" if sp else " (using built-in default)"))
-        elif cmd == "/server":
-            if not args:
-                self.warn("Usage: /server <start|stop|status>")
-            else:
-                ServerManager.manage(args[0])
-        elif cmd == "/cost":
-            by_model = self.db.get_tokens_by_model()
-            if not by_model:
-                self.info("No token usage recorded yet.")
-                return
-            total_t, total_c = 0, 0.0
-            print(f"{C.BOLD}{'model':<26}{'tokens':>10}{'est. $':>10}{C.RESET}")
-            for mdl, toks in sorted(by_model.items(), key=lambda x: -x[1]):
-                total_t += toks
-                cost = toks / 1000.0 * self._match_price(mdl)
-                total_c += cost
-                print(f"{(mdl or '?'):<26}{toks:>10}{cost:>10.4f}")
-            print(f"{C.BOLD}{'TOTAL':<26}{total_t:>10}{total_c:>10.4f}{C.RESET}")
-            print(f"{C.DIM}(estimate from the built-in price table; real spend varies by vendor){C.RESET}")
-        elif cmd == "/undo":
-            if self.cid:
-                self.db.undo_last_msg_pair(self.cid)
-                self.success("Undid last message pair.")
-            else: self.warn("No active chat.")
-        elif cmd == "/show":
-            if not self.cid: self.warn("No active chat."); return
-            conv = self.db.get_conv(self.cid)
-            msgs = self.db.get_msgs(self.cid, limit=1000)
-            print(f"\n{C.BOLD}#{self.cid} {conv['title']}{C.RESET}")
-            for mm in msgs:
-                col = C.GREEN if mm["role"] == "user" else (C.CYAN if mm["role"] == "assistant" else C.GRAY)
-                print(f"\n{col}{C.BOLD}{mm['role'].capitalize()}:{C.RESET} {mm['content']}")
-            print()
-        elif cmd == "/rename":
-            if not self.cid: self.warn("No active chat."); return
-            if not args: self.info(f"Current title: {self.db.get_conv(self.cid)['title']}"); return
-            title = " ".join(args)
-            self.db.rename_conv(self.cid, title)
-            self.success(f"Renamed to: {title}")
-        elif cmd == "/tokens":
-            if not self.cid: self.warn("No active chat."); return
-            self.info(f"This chat: {self.db.get_conv_tokens(self.cid)} tokens | All chats: {self.db.get_total_tokens()} tokens")
-        elif cmd == "/diff":
-            try:
-                r = subprocess.run(["git", "diff", "HEAD"], capture_output=True, text=True, timeout=15)
-                out = r.stdout.strip()
-                if out: print(out)
-                else: self.info("No uncommitted changes (relative to HEAD).")
-                if r.stderr.strip(): print(f"{C.DIM}{r.stderr.strip()}{C.RESET}")
-            except FileNotFoundError: self.err("git not found.")
-            except Exception as e: self.err(str(e))
-        elif cmd == "/compact":
-            if not self.cid: self.warn("No active chat."); return
-            if not self.backend: self.err("No backend configured."); return
-            self.info("Compacting conversation...")
-            ok, cmsg = self._compact_conversation(self.cid)
-            (self.success if ok else self.warn)(cmsg)
-        elif cmd in ("/regen", "/retry"):
-            if self.cid and self.last_user_msg:
-                if cmd == "/retry" and args:
-                    self._override_model(args[0])
-                    self.success(f"Retrying with model {args[0]}.")
-                self.db.undo_last_msg_pair(self.cid)
-                self._chat(self.last_user_msg)
-            else: self.warn("Nothing to regenerate.")
         else:
             self.warn(f"Unknown command: {cmd}. Type /help for options.")
 

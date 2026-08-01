@@ -327,7 +327,8 @@ src/
   config.py      Config
   tools.py       Tools (+ Plan-mode read-only executor)
   backends.py    Backend, OpenAICompatible, AnthropicBackend, get_backend
-  app.py         App
+  app.py         App (core: chat, streaming, dispatch)
+  commands.py    App slash-command handlers (_cmd_*), continuing the class body
   cli.py         main() + __main__ guard
 ```
 
