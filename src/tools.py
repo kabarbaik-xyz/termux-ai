@@ -2,16 +2,11 @@
 class Tools:
     SAFE_TOOLS = {"read_file", "list_files", "search_files"}
 
-    @staticmethod
-    def calls_signature(calls):
-        """Stable signature of a tool-call batch, for loop detection."""
-        return json.dumps([(c["name"], c.get("args", {})) for c in calls], sort_keys=True)
-
     TOOLS = [
         {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "write_file", "description": "Write content to file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
         {"type": "function", "function": {"name": "list_files", "description": "List files in directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
-        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. In Plan mode only a read-only allowlist is permitted (ls, cat, grep, head, tail, find, wc, sort, git status/diff/log, etc.) and commands run WITHOUT a shell, so pipes work but globs/redirects/&&/; are literal and any non-allowlisted binary is blocked. In Build mode any command may run, pending user approval.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
     ]
     PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
@@ -218,7 +213,32 @@ class Tools:
                 except Exception: pass
 
     @staticmethod
-    def get_schemas(build_mode: bool): return Tools.TOOLS if build_mode else Tools.PLAN_TOOLS
+    def _run_command_desc(build_mode: bool):
+        """Description sent to the model so it knows the EXACT Plan-mode rules up
+        front and never proposes a command that would be blocked (avoids wasted
+        turns thrashing on blocked commands). Built from the live allowlist."""
+        if build_mode:
+            return ("Run a shell command and return stdout/stderr. BUILD MODE: any command "
+                    "may run after the user approves. Say what you intend, then call.")
+        allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
+        git_ro = ", ".join(sorted(Tools.PLAN_GIT_RO))
+        return ("Run a shell command and return stdout/stderr.\n"
+                "PLAN MODE is read-only and runs WITHOUT a shell. ONLY these programs are "
+                "permitted: " + allowed + "; git is limited to: " + git_ro + ". Pipes (|) work.\n"
+                "These are REJECTED before running \u2014 do NOT propose them, reformulate instead: "
+                "every interpreter (python/python3/node/perl/ruby/php/java/go/lua/awk/sed/sh/bash), "
+                "redirects (> >>), command substitution ($() `backticks`), && ; ||, globs (* ? []), "
+                "and any mutating command (rm mv cp touch mkdir chmod tee dd pip npm apt ...). "
+                "If a task truly needs them, stop and ask the user to enable Build mode (/tools on).")
+
+    @staticmethod
+    def get_schemas(build_mode: bool):
+        schemas = json.loads(json.dumps(Tools.TOOLS if build_mode else Tools.PLAN_TOOLS))
+        desc = Tools._run_command_desc(build_mode)
+        for t in schemas:
+            if t["function"]["name"] == "run_command":
+                t["function"]["description"] = desc
+        return schemas
 
     @staticmethod
     def to_anthropic_schema(build_mode: bool):
@@ -271,9 +291,12 @@ class Tools:
                 if not build_mode:
                     ok, reason = Tools._plan_check(cmd_str)
                     if not ok:
-                        return ("Error: Plan mode active. Command blocked: %s. "
-                                "Only read-only allowlisted commands run in Plan mode "
-                                "(e.g. ls, cat, grep, head, tail, find, wc, git status/diff/log)." % reason)
+                        allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
+                        return ("Error: Plan mode blocked this command: %s. Plan mode permits ONLY "
+                                "these read-only programs (no shell): %s. Do NOT retry this or "
+                                "similar (interpreters, redirects, &&/;/||, mutating commands are all "
+                                "blocked). Reformulate using only the allowed list, or ask the user to "
+                                "enable Build mode (/tools on)." % (reason, allowed))
                     return Tools._run_plan(cmd_str)
                 # Build mode: full shell, always user-approved first.
                 try:

@@ -469,7 +469,15 @@ class Database:
 class Config:
     DEFAULTS = {
         "backend": "ollama",
-        "system_prompt": "You are a helpful assistant. Be concise and clear. When using tools: (1) Do not repeat commands you have already run. (2) If a command fails, do not retry it without changing arguments. (3) Complete tasks in the minimum number of steps. (4) Only use tools when necessary.",
+        "system_prompt": (
+            "You are a helpful AI assistant. Be concise and clear.\n"
+            "WORKING WITH TOOLS \u2014 reason one step at a time:\n"
+            "1. Before EACH tool call, write 1-3 sentences: what you now know, what you are about to do, and why.\n"
+            "2. Act, read the result, then reason again. If an action FAILS or is BLOCKED, do not retry it or anything similar \u2014 say what you will do differently, then do that.\n"
+            "3. Use the fewest steps possible. One well-chosen command beats several.\n"
+            "4. YOU decide when you are done: the moment you can answer, reply with your final answer and NO tool call. The iteration limit is only an emergency brake \u2014 plan to finish well before it.\n"
+            "5. Use tools only when necessary; answer from knowledge when you can."
+        ),
         "system_instruction": "",
         "temperature": 0.7,
         "max_tokens": 4096,
@@ -536,16 +544,11 @@ class Config:
 class Tools:
     SAFE_TOOLS = {"read_file", "list_files", "search_files"}
 
-    @staticmethod
-    def calls_signature(calls):
-        """Stable signature of a tool-call batch, for loop detection."""
-        return json.dumps([(c["name"], c.get("args", {})) for c in calls], sort_keys=True)
-
     TOOLS = [
         {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "write_file", "description": "Write content to file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
         {"type": "function", "function": {"name": "list_files", "description": "List files in directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
-        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. In Plan mode only a read-only allowlist is permitted (ls, cat, grep, head, tail, find, wc, sort, git status/diff/log, etc.) and commands run WITHOUT a shell, so pipes work but globs/redirects/&&/; are literal and any non-allowlisted binary is blocked. In Build mode any command may run, pending user approval.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
     ]
     PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
@@ -752,7 +755,32 @@ class Tools:
                 except Exception: pass
 
     @staticmethod
-    def get_schemas(build_mode: bool): return Tools.TOOLS if build_mode else Tools.PLAN_TOOLS
+    def _run_command_desc(build_mode: bool):
+        """Description sent to the model so it knows the EXACT Plan-mode rules up
+        front and never proposes a command that would be blocked (avoids wasted
+        turns thrashing on blocked commands). Built from the live allowlist."""
+        if build_mode:
+            return ("Run a shell command and return stdout/stderr. BUILD MODE: any command "
+                    "may run after the user approves. Say what you intend, then call.")
+        allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
+        git_ro = ", ".join(sorted(Tools.PLAN_GIT_RO))
+        return ("Run a shell command and return stdout/stderr.\n"
+                "PLAN MODE is read-only and runs WITHOUT a shell. ONLY these programs are "
+                "permitted: " + allowed + "; git is limited to: " + git_ro + ". Pipes (|) work.\n"
+                "These are REJECTED before running \u2014 do NOT propose them, reformulate instead: "
+                "every interpreter (python/python3/node/perl/ruby/php/java/go/lua/awk/sed/sh/bash), "
+                "redirects (> >>), command substitution ($() `backticks`), && ; ||, globs (* ? []), "
+                "and any mutating command (rm mv cp touch mkdir chmod tee dd pip npm apt ...). "
+                "If a task truly needs them, stop and ask the user to enable Build mode (/tools on).")
+
+    @staticmethod
+    def get_schemas(build_mode: bool):
+        schemas = json.loads(json.dumps(Tools.TOOLS if build_mode else Tools.PLAN_TOOLS))
+        desc = Tools._run_command_desc(build_mode)
+        for t in schemas:
+            if t["function"]["name"] == "run_command":
+                t["function"]["description"] = desc
+        return schemas
 
     @staticmethod
     def to_anthropic_schema(build_mode: bool):
@@ -805,9 +833,12 @@ class Tools:
                 if not build_mode:
                     ok, reason = Tools._plan_check(cmd_str)
                     if not ok:
-                        return ("Error: Plan mode active. Command blocked: %s. "
-                                "Only read-only allowlisted commands run in Plan mode "
-                                "(e.g. ls, cat, grep, head, tail, find, wc, git status/diff/log)." % reason)
+                        allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
+                        return ("Error: Plan mode blocked this command: %s. Plan mode permits ONLY "
+                                "these read-only programs (no shell): %s. Do NOT retry this or "
+                                "similar (interpreters, redirects, &&/;/||, mutating commands are all "
+                                "blocked). Reformulate using only the allowed list, or ask the user to "
+                                "enable Build mode (/tools on)." % (reason, allowed))
                     return Tools._run_plan(cmd_str)
                 # Build mode: full shell, always user-approved first.
                 try:
@@ -894,6 +925,13 @@ class Backend:
                 except Exception: pass
 
     @staticmethod
+    def _is_failure(result):
+        """True when a tool result is a genuine error/blocked (a normal empty
+        result or non-zero exit code is NOT a failure). Used for reflect-on-
+        failure and consecutive-failure detection."""
+        return (result or "").lstrip().lower().startswith("error")
+
+    @staticmethod
     def _trim_iteration_history(msgs, budget=3000):
         current_tokens = sum(est_tok(str(m.get("content", ""))) for m in msgs)
         if current_tokens <= budget:
@@ -960,8 +998,8 @@ class OpenAICompatible(Backend):
         total_calls = 0
         MAX_ITERATIONS = 25
         next_prompt_at = 10
-        last_sig = None
-        repeat_count = 0
+        MAX_FAILURES = 3
+        consecutive_failures = 0
 
         while True:
             iterations += 1
@@ -1018,16 +1056,6 @@ class OpenAICompatible(Backend):
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
 
-            # Loop detection: stop if the same tool-call batch repeats 3x in a row.
-            sig = Tools.calls_signature(norm_calls)
-            if sig == last_sig:
-                repeat_count += 1
-            else:
-                last_sig, repeat_count = sig, 1
-            if repeat_count >= 3:
-                yield {"type": "notice", "content": "[Stopped: detected a repeated tool-call loop (3x in a row). Reconsider your approach or finish up.]", "fatal": False}
-                return
-
             if not confirm_batch_fn(norm_calls):
                 msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
                 for c in calls:
@@ -1039,6 +1067,7 @@ class OpenAICompatible(Backend):
             msgs.append(msg)
 
             total = len(calls)
+            batch_results = []
             for i, c in enumerate(calls):
                 fn = c["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
@@ -1049,6 +1078,17 @@ class OpenAICompatible(Backend):
                 result = Tools.run(fn["name"], args, build_mode, max_res)
                 yield {"type": "tool_result", "name": fn["name"], "result": result}
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+                batch_results.append((fn["name"], result))
+
+            failed = [n for n, r in batch_results if Backend._is_failure(r)]
+            if failed:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_FAILURES:
+                    yield {"type": "notice", "content": "[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 please rephrase the task, enable Build mode (/tools on), or add detail.]" % (consecutive_failures, ", ".join(failed)), "fatal": True}
+                    return
+                msgs.append({"role": "system", "content": "REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed)})
+            else:
+                consecutive_failures = 0
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:
@@ -1101,8 +1141,8 @@ class AnthropicBackend(Backend):
         total_calls = 0
         MAX_ITERATIONS = 25
         next_prompt_at = 10
-        last_sig = None
-        repeat_count = 0
+        MAX_FAILURES = 3
+        consecutive_failures = 0
 
         while True:
             iterations += 1
@@ -1157,16 +1197,6 @@ class AnthropicBackend(Backend):
             for tu in tool_uses:
                 norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
 
-            # Loop detection: stop if the same tool-call batch repeats 3x in a row.
-            sig = Tools.calls_signature(norm_calls)
-            if sig == last_sig:
-                repeat_count += 1
-            else:
-                last_sig, repeat_count = sig, 1
-            if repeat_count >= 3:
-                yield {"type": "notice", "content": "[Stopped: detected a repeated tool-call loop (3x in a row). Reconsider your approach or finish up.]", "fatal": False}
-                return
-
             if not confirm_batch_fn(norm_calls):
                 results = []
                 for tu in tool_uses:
@@ -1180,6 +1210,7 @@ class AnthropicBackend(Backend):
             results = []
 
             total = len(tool_uses)
+            batch_results = []
             for i, tu in enumerate(tool_uses):
                 args = tu.get("input", {}) or {}
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
@@ -1187,8 +1218,19 @@ class AnthropicBackend(Backend):
                 result = Tools.run(tu["name"], args, build_mode, max_res)
                 yield {"type": "tool_result", "name": tu["name"], "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
+                batch_results.append((tu["name"], result))
 
             payload.append({"role": "user", "content": results})
+
+            failed = [n for n, r in batch_results if Backend._is_failure(r)]
+            if failed:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_FAILURES:
+                    yield {"type": "notice", "content": "[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 please rephrase the task, enable Build mode (/tools on), or add detail.]" % (consecutive_failures, ", ".join(failed)), "fatal": True}
+                    return
+                sys_prompt = ((sys_prompt + "\n\n") if sys_prompt else "") + ("REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed))
+            else:
+                consecutive_failures = 0
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:

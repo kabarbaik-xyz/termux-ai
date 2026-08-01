@@ -59,6 +59,13 @@ class Backend:
                 except Exception: pass
 
     @staticmethod
+    def _is_failure(result):
+        """True when a tool result is a genuine error/blocked (a normal empty
+        result or non-zero exit code is NOT a failure). Used for reflect-on-
+        failure and consecutive-failure detection."""
+        return (result or "").lstrip().lower().startswith("error")
+
+    @staticmethod
     def _trim_iteration_history(msgs, budget=3000):
         current_tokens = sum(est_tok(str(m.get("content", ""))) for m in msgs)
         if current_tokens <= budget:
@@ -125,8 +132,8 @@ class OpenAICompatible(Backend):
         total_calls = 0
         MAX_ITERATIONS = 25
         next_prompt_at = 10
-        last_sig = None
-        repeat_count = 0
+        MAX_FAILURES = 3
+        consecutive_failures = 0
 
         while True:
             iterations += 1
@@ -183,16 +190,6 @@ class OpenAICompatible(Backend):
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
 
-            # Loop detection: stop if the same tool-call batch repeats 3x in a row.
-            sig = Tools.calls_signature(norm_calls)
-            if sig == last_sig:
-                repeat_count += 1
-            else:
-                last_sig, repeat_count = sig, 1
-            if repeat_count >= 3:
-                yield {"type": "notice", "content": "[Stopped: detected a repeated tool-call loop (3x in a row). Reconsider your approach or finish up.]", "fatal": False}
-                return
-
             if not confirm_batch_fn(norm_calls):
                 msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
                 for c in calls:
@@ -204,6 +201,7 @@ class OpenAICompatible(Backend):
             msgs.append(msg)
 
             total = len(calls)
+            batch_results = []
             for i, c in enumerate(calls):
                 fn = c["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
@@ -214,6 +212,17 @@ class OpenAICompatible(Backend):
                 result = Tools.run(fn["name"], args, build_mode, max_res)
                 yield {"type": "tool_result", "name": fn["name"], "result": result}
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+                batch_results.append((fn["name"], result))
+
+            failed = [n for n, r in batch_results if Backend._is_failure(r)]
+            if failed:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_FAILURES:
+                    yield {"type": "notice", "content": "[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 please rephrase the task, enable Build mode (/tools on), or add detail.]" % (consecutive_failures, ", ".join(failed)), "fatal": True}
+                    return
+                msgs.append({"role": "system", "content": "REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed)})
+            else:
+                consecutive_failures = 0
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:
@@ -266,8 +275,8 @@ class AnthropicBackend(Backend):
         total_calls = 0
         MAX_ITERATIONS = 25
         next_prompt_at = 10
-        last_sig = None
-        repeat_count = 0
+        MAX_FAILURES = 3
+        consecutive_failures = 0
 
         while True:
             iterations += 1
@@ -322,16 +331,6 @@ class AnthropicBackend(Backend):
             for tu in tool_uses:
                 norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
 
-            # Loop detection: stop if the same tool-call batch repeats 3x in a row.
-            sig = Tools.calls_signature(norm_calls)
-            if sig == last_sig:
-                repeat_count += 1
-            else:
-                last_sig, repeat_count = sig, 1
-            if repeat_count >= 3:
-                yield {"type": "notice", "content": "[Stopped: detected a repeated tool-call loop (3x in a row). Reconsider your approach or finish up.]", "fatal": False}
-                return
-
             if not confirm_batch_fn(norm_calls):
                 results = []
                 for tu in tool_uses:
@@ -345,6 +344,7 @@ class AnthropicBackend(Backend):
             results = []
 
             total = len(tool_uses)
+            batch_results = []
             for i, tu in enumerate(tool_uses):
                 args = tu.get("input", {}) or {}
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
@@ -352,8 +352,19 @@ class AnthropicBackend(Backend):
                 result = Tools.run(tu["name"], args, build_mode, max_res)
                 yield {"type": "tool_result", "name": tu["name"], "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
+                batch_results.append((tu["name"], result))
 
             payload.append({"role": "user", "content": results})
+
+            failed = [n for n, r in batch_results if Backend._is_failure(r)]
+            if failed:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_FAILURES:
+                    yield {"type": "notice", "content": "[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 please rephrase the task, enable Build mode (/tools on), or add detail.]" % (consecutive_failures, ", ".join(failed)), "fatal": True}
+                    return
+                sys_prompt = ((sys_prompt + "\n\n") if sys_prompt else "") + ("REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed))
+            else:
+                consecutive_failures = 0
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:

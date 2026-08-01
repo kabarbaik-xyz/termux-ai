@@ -16,7 +16,7 @@ A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — an
 - **Chat history** stored in SQLite — resume, search, rename, export, delete
 - **Tool system (BUILD/PLAN modes)** — AI can read files, list directories, search code, and optionally write files & run shell commands (with batch confirmation)
 - **Batch tool confirmation** — all tool calls in a single AI response are grouped; read-only tools (read, list, search) auto-execute without prompting, while dangerous actions (write, run_command) require one collective y/N
-- **Loop detection** — automatically stops the AI if it repeats the same tool calls 3 times in a row
+- **Smart failure handling** — if a tool action fails or is blocked, the AI is nudged to reflect and try a different approach; after 3 consecutive failed rounds it stops and explains, instead of thrashing
 - **Iteration safety limit** — prompts "Continue working?" after every 10 tool-call iterations
 - **File attachments** — automatically detects `./path` references in your prompt and attaches file contents
 - **Directory scanning** — reference a folder and the AI reads all relevant source files
@@ -230,8 +230,8 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 - **Batch confirmation** — all tool calls in one response are shown together; you approve or decline the entire batch with a single y/N
 - **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`) execute automatically without prompting
 - **CWD sandbox** — `write_file` is restricted to the current working directory for safety
-- **Loop detection** — if the AI repeats the same tool-call batch 3 consecutive iterations, execution stops automatically
-- **Iteration guard** — every 10 tool calls you're prompted to continue; a hard cap of 25 iterations prevents runaway loops. In one-shot (piped) mode the continue prompt is skipped automatically
+- **Reflect-on-failure** — when a tool action errors or is blocked, a system note asks the AI to state what it will do differently before the next step (it learns the rules from the tool description up front, so it rarely proposes a blocked command at all)
+- **Failure guard** — after 3 consecutive failed action rounds the AI stops and explains (rather than thrashing); a hard cap of 25 iterations remains as a runaway backstop. Every 10 tool calls you're prompted to continue (skipped automatically in one-shot/piped mode)
 - **Bounded context** — long tool outputs are truncated (~2000 chars) and older tool iterations are trimmed out in-loop, so requests stay within budget even on long multi-step sessions
 - **Final answer only** — mid-loop narration streams live to the terminal, but only the final answer is saved to chat history
 
