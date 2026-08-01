@@ -84,6 +84,33 @@ After a successful `/server pull`, it asks whether to switch the active model �
 that prompt only appears when your active backend is the local one. The model
 commands auto-start the server if it isn't running.
 
+#### Model reference for 8 GB RAM Android devices
+
+Rule of thumb: the model file **plus ~2–4 GB overhead** must fit in free RAM.
+On an 8 GB phone, Android + Termux already use ~2.5–3.5 GB, leaving ~4–5 GB
+for Ollama — so stick to quantized models with files ≤ ~2.5 GB. Sizes below are
+the default quantizations, measured from [ollama.com](https://ollama.com/library).
+
+| Model | File size | Verdict on 8 GB |
+|---|---|---|
+| `qwen2.5:0.5b` | 398 MB | fast but weak; handy for simple chores |
+| `qwen2.5:1.5b` | 986 MB | best CPU-only speed/quality trade-off |
+| `deepseek-r1:1.5b` | 1.1 GB | reasoning-style replies, decent speed |
+| `llama3.2:1b` | 1.3 GB | tiny and quick |
+| `gemma2:2b` | 1.6 GB | solid small all-rounder |
+| `smollm2:1.7b` | 1.8 GB | fast and surprisingly capable |
+| `qwen2.5:3b` | 1.9 GB | **sweet spot** — recommended default |
+| `llama3.2:3b` | 2.0 GB | **sweet spot** — good alternative |
+| `phi3:mini` | 2.2 GB | good, a bit dated |
+| `qwen3:4b` | 2.5 GB | borderline — OK with a Vulkan GPU (`ollama-backend-vulkan`) |
+| `gemma3:4b` | 3.3 GB | too tight — will swap and crawl |
+| `qwen2.5:7b` | 4.7 GB | no — needs ~12 GB effective RAM |
+
+Practical picks for an 8 GB phone: **`qwen2.5:3b`** or **`llama3.2:3b`** as your
+everyday model, **`qwen2.5:1.5b`** when you want speed, and **`qwen3:4b`** only if
+Vulkan acceleration works on your chip (most Snapdragon 8xx / Dimensity). Avoid
+7B+ models entirely.
+
 ### Option B: Anthropic Claude
 
 Get an API key from <https://console.anthropic.com/>
