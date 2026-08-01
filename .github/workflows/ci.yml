@@ -9,11 +9,15 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # v5 runs on the node24 runtime (v4 used the deprecated node20).
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      # No actions/setup-python needed: ubuntu-latest ships Python 3.12+,
+      # which is plenty for this stdlib-only project (requires 3.8+).
+      # Skipping it also avoids another node20-deprecated action.
+
+      - name: Show Python version
+        run: python3 --version
 
       - name: Compile-check every source fragment
         run: python3 -m py_compile src/*.py
