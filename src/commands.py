@@ -274,9 +274,39 @@
 
     def _cmd_server(self, args):
         if not args:
-            self.warn("Usage: /server <start|stop|status>")
+            self.warn("Usage: /server <start|stop|status|pull|models|search|show|rm>")
+            return
+        a = args[0]
+        if a in ("start", "stop", "status"):
+            ServerManager.manage(a)
+        elif a == "pull":
+            if len(args) < 2:
+                self.warn("Usage: /server pull <model>  e.g. /server pull qwen2.5:3b"); return
+            model = ServerManager.pull(args[1])
+            if model:
+                self.success(f"Model '{model}' pulled.")
+                name, prof = self.cfg.active_profile()
+                base = (prof or {}).get("base_url", "")
+                if "localhost" in base or "127.0.0.1" in base:
+                    if input("Set it as the active model now? [y/N] ").strip().lower() in ("y", "yes"):
+                        self._override_model(model)
+                        self.success(f"Active model -> {model}.")
+                else:
+                    self.info(f"Your active backend ({name}) isn't local; use /backend ollama + /model {model} to switch to it.")
+        elif a in ("models", "list"):
+            ServerManager.models()
+        elif a == "search":
+            if len(args) < 2: self.warn("Usage: /server search <query>  e.g. /server search qwen"); return
+            ServerManager.search(" ".join(args[1:]))
+        elif a == "show":
+            if len(args) < 2: self.warn("Usage: /server show <model>"); return
+            ServerManager.show(args[1])
+        elif a == "rm":
+            if len(args) < 2: self.warn("Usage: /server rm <model>"); return
+            if input(f"Remove model '{args[1]}'? This frees its storage. [y/N] ").strip().lower() in ("y", "yes"):
+                ServerManager.rm(args[1])
         else:
-            ServerManager.manage(args[0])
+            self.err(f"Unknown action '{a}'. Use start|stop|status|pull|models|search|show|rm.")
 
     def _cmd_cost(self, args):
         by_model = self.db.get_tokens_by_model()

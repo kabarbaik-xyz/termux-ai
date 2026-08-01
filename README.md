@@ -67,13 +67,22 @@ ollama pull llama3.2
 ollama serve &
 ```
 
-Ollama is the **default** backend — no configuration needed. Manage the server from inside the CLI:
+Ollama is the **default** backend — no configuration needed. Manage the server and its models from inside the CLI:
 
 ```
-/server start ollama
+/server start            # start the local Ollama daemon
+/server pull qwen2.5:3b  # download a model (progress bar; keep screen on)
+/server models           # list installed models
+/server search qwen      # search the registry
+/server show qwen2.5:3b  # model details
+/server rm qwen2.5:3b    # remove a model (frees storage)
 /server stop
 /server status
 ```
+
+After a successful `/server pull`, it asks whether to switch the active model —
+that prompt only appears when your active backend is the local one. The model
+commands auto-start the server if it isn't running.
 
 ### Option B: Anthropic Claude
 
@@ -203,7 +212,7 @@ docker ps | ai "which container has port 8080?"
 | `/paste` | Paste clipboard and send to AI |
 | `/speak` | TTS the last reply |
 | `/share` | Share last reply via Android |
-| `/server start\|stop\|status` | Manage local Ollama server |
+| `/server start\|stop\|status\|pull\|models\|search\|show\|rm` | Manage local Ollama server + pull/list/remove models |
 | `/clear` | Clear the screen |
 | `/help` | Show all commands |
 | `/exit` | Quit (Ctrl-C also works) |

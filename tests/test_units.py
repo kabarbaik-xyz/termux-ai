@@ -2,6 +2,7 @@
 """Unit tests for non-security internals: Database, file attachment,
 compaction, and small helpers. Run:  python3 tests/test_units.py"""
 import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
+import unittest.mock as um
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -228,6 +229,46 @@ class TestSkills(_TmpHome):
         self.assertIn('path="', cat)                 # real path for read_file
         self.assertIn("read_file", cat)               # the load instruction
         self.assertNotIn("secret", cat)               # hidden skill excluded
+
+
+class TestServerManager(_TmpHome):
+    def test_pull_missing_binary_hints_install(self):
+        with um.patch.object(m.shutil, "which", return_value=None):
+            out = m.ServerManager.pull("qwen2.5:3b")
+        self.assertIsNone(out)
+
+    def test_pull_runs_ollama_pull(self):
+        calls = []
+        def fake_run(argv, **kw):
+            calls.append(argv); return type("R", (), {"returncode": 0})()
+        m.PID_FILE.write_text(f"{os.getpid()},ollama")  # server already "running"
+        with um.patch.object(m.shutil, "which", return_value="/usr/bin/ollama"), \
+             um.patch.object(m.subprocess, "run", side_effect=fake_run):
+            out = m.ServerManager.pull("qwen2.5:3b")
+        self.assertEqual(out, "qwen2.5:3b")
+        self.assertIn(["ollama", "pull", "qwen2.5:3b"], calls)
+        self.assertIn(["ollama", "list"], calls)  # refreshed after pull
+
+    def test_models_auto_starts_server(self):
+        calls = []
+        def fake_run(argv, **kw):
+            calls.append(argv); return type("R", (), {"returncode": 0})()
+        class FakeProc: pid = 12345
+        def fake_popen(argv, **kw):
+            calls.append(argv); return FakeProc()
+        with um.patch.object(m.shutil, "which", return_value="/usr/bin/ollama"), \
+             um.patch.object(m.subprocess, "run", side_effect=fake_run), \
+             um.patch.object(m.subprocess, "Popen", side_effect=fake_popen):
+            m.ServerManager.models()
+        self.assertIn(["ollama", "serve"], calls)  # auto-started
+        self.assertIn(["ollama", "list"], calls)
+
+    def test_cmd_server_dispatch(self):
+        app = m.App(); app.quiet = True
+        with um.patch.object(m.shutil, "which", return_value=None):
+            app._execute_command("/server pull qwen2.5:3b")  # missing binary -> hint, no crash
+        app._execute_command("/server")     # usage
+        app._execute_command("/server bogus")  # unknown action
 
 
 class TestHelpers(unittest.TestCase):

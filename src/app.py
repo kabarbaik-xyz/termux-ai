@@ -175,7 +175,7 @@ class App:
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
-            "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server"), ("/clear", "Clear screen"), ("/exit", "Quit")]
+            "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
         
         for cat, cmds in cats.items():
