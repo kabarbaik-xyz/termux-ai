@@ -22,6 +22,87 @@
         extra = "" if name in ("anthropic", "claude") else " (only the Anthropic backend uses this)"
         self.success(f"Extended thinking {'ON' + extra if v else 'OFF'}.")
 
+    def _cmd_skill(self, args):
+        # /skill              list
+        # /skill <name> [x]   run (once) or toggle (session)
+        # /skill off          clear session skills
+        # /skill show|edit|new|seed ...
+        if not args or args[0] in ("list", "ls"):
+            items = self.skills.list()
+            if not items:
+                self.info("No skills yet. Create one with /skill new <name>, or /skill seed for examples.")
+                return
+            active = {n for n, _ in self.active_session_skills}
+            for nm, meta in items:
+                mark = f"{C.GREEN}*{C.RESET}" if nm in active else " "
+                desc = meta.get("description", "")
+                if len(desc) > 66: desc = desc[:63] + "..."
+                print(f"  {mark} {C.BOLD}{nm}{C.RESET} {C.DIM}[{meta.get('mode','once')}]{C.RESET} {desc}")
+            return
+        sub = args[0]
+        if sub == "off":
+            if self.active_session_skills:
+                self.active_session_skills.clear()
+                self.success("Cleared all session skills.")
+            else: self.info("No session skills active.")
+            return
+        if sub == "seed":
+            written = self.skills.seed()
+            self.success("Seeded examples: " + (", ".join(written) if written else "(all already present)") + ".")
+            return
+        if sub == "show" and len(args) >= 2:
+            meta, body = self.skills.load(args[1])
+            if meta is None: self.err(f"No skill '{args[1]}'."); return
+            print(f"{C.BOLD}#{meta.get('name', args[1])}{C.RESET} {C.DIM}[{meta.get('mode','once')}]{C.RESET}")
+            print(meta.get("description", ""))
+            print(f"\n{body}")
+            return
+        if sub == "edit" and len(args) >= 2:
+            self._edit_skill(args[1]); return
+        if sub == "new" and len(args) >= 2:
+            self._new_skill(args[1]); return
+        # default: run skill <name> [args...]
+        meta, body = self.skills.load(sub)
+        if meta is None:
+            self.err(f"No skill '{sub}'. Use /skill list."); return
+        if meta.get("mode", "once") == "session":
+            names = [n for n, _ in self.active_session_skills]
+            if sub in names:
+                self.active_session_skills = [(n, b) for n, b in self.active_session_skills if n != sub]
+                self.success(f"Session skill '{sub}' OFF.")
+            else:
+                self.active_session_skills.append((sub, body))
+                self.success(f"Session skill '{sub}' ON (applies to the rest of this session; /skill off clears).")
+            return
+        if not self.backend: self.err("No backend configured."); return
+        extra = " ".join(args[1:]) if len(args) > 1 else ""
+        prompt = body + ("\n\n" + extra if extra else "")
+        title = f"/skill {sub}" + (f" {extra[:20]}" if extra else "")
+        self._chat(prompt, title=title)
+
+    def _new_skill(self, name):
+        if not Skills.valid_name(name):
+            self.err("Invalid skill name: use lowercase, digits, single hyphens (e.g. code-review)."); return
+        self.skills.ensure_dir()
+        p = self.skills.path_for(name)
+        if p.exists(): self.warn(f"Skill '{name}' already exists."); return
+        p.write_text(
+            "---\nname: %s\ndescription: What this skill does and when to use it.\nmode: once\n---\n"
+            "Write the skill's instructions here.\n" % name, encoding="utf-8")
+        self.success(f"Created {p}.")
+        self._edit_skill(name)
+
+    def _edit_skill(self, name):
+        editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+        if not editor:
+            self.warn("Set $EDITOR to edit skills (e.g. `export EDITOR=nano`)."); return
+        p = self.skills.path_for(name)
+        if not p.exists():
+            p = self.skills._discover().get(name)
+            if not p: self.err(f"No skill '{name}'."); return
+        try: subprocess.run([editor, str(p)])
+        except Exception as e: self.err(str(e))
+
     def _cmd_multi(self, args):
         v = not self.multi_line
         self.multi_line = v
@@ -135,7 +216,7 @@
         print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'}")
+        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)}")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

@@ -45,6 +45,7 @@ ORDER = [
     "config",       # Config
     "tools",        # Tools (+ Plan-mode read-only executor)
     "backends",     # Backend, OpenAICompatible, AnthropicBackend, get_backend
+    "skills",       # Skills (discovery, parse, seed) -- before App
     "app",          # App (core: init, _chat, _stream_tool_chat, _execute_command dispatch)
     "commands",     # App command handlers (_cmd_*), continuing the class body
     "cli",          # main() + __main__ guard

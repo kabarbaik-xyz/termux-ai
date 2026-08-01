@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -20,6 +20,8 @@ class App:
         self.last_reply = ""
         self.last_user_msg = ""
         self.multi_line = self.cfg.get("multi_line", False)
+        self.skills = Skills(CONFIG_DIR / "skills")
+        self.active_session_skills = []  # [(name, body)] toggled on via /skill <session>
         self._validate_config()
         self.setup_rl()
         self.spinner = None
@@ -170,6 +172,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
+            "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server"), ("/clear", "Clear screen"), ("/exit", "Quit")]
@@ -336,12 +339,12 @@ class App:
             else: self.err(f"Tool chat error: {e}")
             return ""
 
-    def _chat(self, user_input):
+    def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
             return
 
-        title_src = user_input
+        title_src = title or user_input
         user_input = self._attach_files(user_input)
         if not self.cid:
             self.cid = self.db.new_conv("New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""))
@@ -352,7 +355,10 @@ class App:
         self.db.save_msg(self.cid, "user", user_input, model, est_tok(user_input))
         self.last_user_msg = user_input
 
-        msgs = [{"role": "system", "content": self.cfg.system_prompt()}]
+        sysp = self.cfg.system_prompt()
+        if self.active_session_skills:
+            sysp += "\n\n" + "\n\n".join(f"# Active skill: {n}\n{b}" for n, b in self.active_session_skills)
+        msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 
         # Strategy-first: when enabled, ask the model to outline a strategy before
@@ -554,7 +560,7 @@ class App:
         return 0
 
     _CMD_DISPATCH = {
-        "/new": "_cmd_new", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/multi": "_cmd_multi",
+        "/new": "_cmd_new", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",

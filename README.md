@@ -189,6 +189,7 @@ docker ps | ai "which container has port 8080?"
 | `/tools [on\|off]` | Toggle BUILD (on) vs PLAN (off) mode |
 | `/strategy [on\|off]` | Toggle strategy-before-act: the model outlines a numbered strategy, shows it, then executes step by step |
 | `/think [on\|off]` | Toggle Claude extended thinking: deeper hidden reasoning before acting (Anthropic backend only; raises token use) |
+| `/skill` | List / run reusable skills (`/skill <name> [args]`, `/skill new`, `/skill seed`) |
 | `/multi [on\|off]` | Toggle multi-line input |
 | `/tokens` | Show token usage for current chat |
 | `/cost` | Estimate token cost spent |
@@ -266,6 +267,42 @@ Change any setting from inside the CLI:
 /config set max_tokens 8192
 /config set system_instruction "You are a Python expert"
 ```
+
+---
+
+## Skills
+
+Skills are reusable, user-authorable capability modules — a name + description + instructions (markdown). They're compatible in spirit with the [Agent Skills standard](https://agentskills.io), so you can adapt skills from Claude Code / Codex / pi.
+
+Skills live in `~/.config/termux-ai/skills/`. A skill is either `name.md` (flat) or `name/SKILL.md` (a directory that may bundle helper scripts the AI can run).
+
+```markdown
+---
+name: review
+description: Review code for bugs, security, and style. Use for code reviews.
+mode: once
+---
+You are a senior code reviewer. Report bugs, security issues, and style...
+```
+
+Two run modes (`mode:` in front-matter):
+- **`once`** — `/skill review ./file.py` runs the skill instructions + your args as a single turn (args honor `@file` / `./path`).
+- **`session`** — `/skill python` injects the skill into the system prompt for the rest of the session (a temporary expert mode); `/skill off` clears them.
+
+```bash
+/skill                     # list skills (* = active session skill)
+/skill seed                # drop in the bundled examples (review, commit, python)
+/skill review ./main.py    # run a once-skill
+/skill python              # toggle a session-skill on/off
+/skill show review         # view a skill
+/skill new my-skill        # create + open in $EDITOR
+/skill edit my-skill       # edit in $EDITOR
+/skill off                 # clear all session skills
+```
+
+Bundled example skills ship in the repo's [`skills/`](skills/) directory for reference; `/skill seed` copies them into your skills dir.
+
+Skills compose with everything else: `/strategy on` + `/skill review`, or `/tools on` + `/skill commit`.
 
 ---
 

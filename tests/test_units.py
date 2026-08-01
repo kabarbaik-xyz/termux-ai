@@ -168,6 +168,56 @@ class TestCompact(_TmpHome):
         self.assertFalse(ok)
 
 
+class TestSkills(_TmpHome):
+    def _skills(self):
+        return m.Skills(Path(self._home) / "skills")
+
+    def test_valid_name(self):
+        for ok in ["a", "review", "code-review", "python3", "a-b-c"]:
+            self.assertTrue(m.Skills.valid_name(ok), ok)
+        for bad in ["", "Bad", "with space", "-lead", "trail-", "double--hyphen", "x"*65, "under_score"]:
+            self.assertFalse(m.Skills.valid_name(bad), bad)
+
+    def test_parse_frontmatter(self):
+        p = Path(self._home) / "s.md"
+        p.write_text("---\nname: myskill\ndescription: Does X.\nmode: session\n---\nBody here.\n")
+        meta, body = m.Skills.parse(p)
+        self.assertEqual(meta["name"], "myskill")
+        self.assertEqual(meta["mode"], "session")
+        self.assertEqual(meta["description"], "Does X.")
+        self.assertEqual(body, "Body here.")
+
+    def test_parse_no_frontmatter_defaults(self):
+        p = Path(self._home) / "plain.md"
+        p.write_text("Just instructions.\n")
+        meta, body = m.Skills.parse(p)
+        self.assertEqual(meta["name"], "plain")
+        self.assertEqual(meta["mode"], "once")
+        self.assertIn("Just instructions", body)
+
+    def test_parse_description_with_colon(self):
+        p = Path(self._home) / "c.md"
+        p.write_text("---\ndescription: time: 5pm\n---\nbody\n")
+        meta, body = m.Skills.parse(p)
+        self.assertEqual(meta["description"], "time: 5pm")
+
+    def test_seed_and_load(self):
+        sk = self._skills()
+        self.assertEqual(sorted(sk.seed()), ["commit", "python", "review"])
+        self.assertEqual(sk.seed(), [])  # doesn't overwrite
+        self.assertEqual(sorted(n for n, _ in sk.list()), ["commit", "python", "review"])
+        meta, body = sk.load("review")
+        self.assertEqual(meta["mode"], "once")
+        self.assertIn("senior code reviewer", body)
+        self.assertEqual(sk.load("nope"), (None, None))
+
+    def test_dir_skill(self):
+        sk = self._skills(); sk.ensure_dir()
+        (sk.dir / "pack").mkdir()
+        (sk.dir / "pack" / "SKILL.md").write_text("---\nname: pack\ndescription: d\n---\nb\n")
+        self.assertIn("pack", [n for n, _ in sk.list()])
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__
