@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-6.2.0-green)
+![version](https://img.shields.io/badge/version-6.8.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -213,6 +213,8 @@ docker ps | ai "which container has port 8080?"
 
 The AI can **read** files, list directories, search code, and run safe inspection commands (`ls`, `cat`, `grep`, `head`, etc.). It **cannot** write, modify, or delete anything.
 
+Plan-mode commands run **without a shell** against a **read-only allowlist** (e.g. `ls`, `cat`, `grep`, `head`, `tail`, `find`, `wc`, `sort`, `git status/diff/log`, …). Pipes work (`grep foo f | wc -l`), but because there is no shell, redirects (`>`, `>>`), `&&`/`;`, command substitution (`$(…)`, backticks), newlines, and every non-allowlisted binary (including all interpreters) are inert or rejected. This is the complete security boundary for Plan mode.
+
 In PLAN mode, the following command patterns are **automatically blocked** to prevent accidental modification:
 
 `rm`, `mv`, `cp`, `touch`, `mkdir`, `chmod`, `chown`, `dd`, `tee`, `ln`, `rmdir`, `truncate`, `chattr`, `unlink`, `install`, `pip install`, `apt`, `pkg`, `npm`, `yarn`, `sed -i`, `awk -i`, `perl -i`, `find -delete` / `-exec` / `-ok`, `git rm` / `git clean` / `git reset --hard`, output redirection (`>`, `>>`), and interpreter execution (`python3 -c` / `-m`, `bash -c`, `sh -c`, `node`, `perl`, `ruby`, `php`, etc.).
@@ -228,8 +230,8 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 - **Batch confirmation** — all tool calls in one response are shown together; you approve or decline the entire batch with a single y/N
 - **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`) execute automatically without prompting
 - **CWD sandbox** — `write_file` is restricted to the current working directory for safety
-- **Loop detection** — if the AI repeats the same tool call 3 consecutive times, execution stops automatically
-- **Iteration cap** — after every 10 tool-call iterations (counting actual tool calls), you're prompted to continue or stop; if you stop (or decline a batch), nothing is saved to history
+- **Loop detection** — if the AI repeats the same tool-call batch 3 consecutive iterations, execution stops automatically
+- **Iteration guard** — every 10 tool calls you're prompted to continue; a hard cap of 25 iterations prevents runaway loops. In one-shot (piped) mode the continue prompt is skipped automatically
 - **Bounded context** — long tool outputs are truncated (~2000 chars) and older tool iterations are trimmed out in-loop, so requests stay within budget even on long multi-step sessions
 - **Final answer only** — mid-loop narration streams live to the terminal, but only the final answer is saved to chat history
 
@@ -245,15 +247,14 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `system_prompt` | _(see below)_ | System prompt for the AI |
 | `system_instruction` | `""` | If set, overrides `system_prompt` |
 | `temperature` | `0.7` | Sampling temperature |
-| `max_tokens` | `4096` | Max response tokens (auto-reduced to 1024 for short non-code prompts — PLAN mode only) |
+| `max_tokens` | `4096` | Max response tokens |
 | `stream` | `true` | Stream responses |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |
 | `tts_replies` | `false` | Auto-speak all replies |
 | `multi_line` | `false` | Multi-line input mode |
-| `auto_compact` | `true` | Auto-summarize when chat exceeds ~3000 tokens |
-| `auto_router` | `false` | Fallback to other backends on failure |
-| `max_file_chars` | `12000` | Max chars when attaching files |
+| `auto_compact` | `true` | Auto-summarize a chat that exceeds ~3000 tokens |
+| `max_file_chars` | `20000` | Max chars when attaching files |
 | `attach_files` | `true` | Auto-detect file references |
 
 Change any setting from inside the CLI:
@@ -268,13 +269,17 @@ Change any setting from inside the CLI:
 
 ## File Attachments
 
-Reference files or directories in your prompt and they are automatically included:
+Reference files or directories in your prompt and they are automatically included. Any of these path styles are detected:
 
 ```
-Look at ./main.py and tell me what it does
-Review this folder for bugs
-What's in ~/project/config.yaml?
+Look at ./main.py and tell me what it does     # ./ relative path
+Review ../sibling/folder for bugs              # ../ parent path
+What's in ~/project/config.yaml?               # ~ home path
+Check the source in @src/utils.py              # @ explicit reference
+Summarize the code in ./src                    # a directory is scanned recursively
 ```
+
+When you point at a **directory**, every source file under it (skipping `.git`, `node_modules`, `__pycache__`, `venv`, etc.) is read up to a bounded total and attached. References that don't exist on disk are left untouched.
 
 **Supported file types** (for both attachment and directory scanning):
 
@@ -303,6 +308,54 @@ rm ~/.local/bin/ai
 - **Termux** (recommended) or any Linux/macOS terminal
 - `readline` — for command history with arrow keys (`pkg install readline` on Termux)
 - `poppler` — optional, for PDF reading (`pkg install poppler` on Termux)
+
+---
+
+## Development
+
+The CLI ships as a **single file** (`ai`) so installation and `/update` stay trivial — but the source is split into small modules under [`src/`](src/) and stitched together by [`build.py`](build.py). **Edit `src/`, never edit `ai` directly.**
+
+```
+src/
+  _header.py     shebang, stdlib imports, __version__
+  _constants.py  paths, colors, IS_TTY, est_tok, PRICING, parse_value...
+  fileio.py      FileReader
+  ui.py          MarkdownFormatter, Spinner
+  termux_api.py  TermuxAPI
+  server.py      ServerManager
+  db.py          Database
+  config.py      Config
+  tools.py       Tools (+ Plan-mode read-only executor)
+  backends.py    Backend, OpenAICompatible, AnthropicBackend, get_backend
+  app.py         App
+  cli.py         main() + __main__ guard
+```
+
+Fragments rely on **concatenation order**, not imports — `build.py` forbids cross-module `import`/`from .` statements and fails loudly if you add one. Module-level globals live in `_constants.py` so every later fragment can see them.
+
+### Make a change & ship it
+
+```bash
+# 1. edit a module, e.g. src/tools.py
+# 2. regenerate the single-file artifact
+python3 build.py
+# 3. verify
+python3 tests/test_security.py
+# 4. commit both the source and the regenerated artifact
+git add src ai && git commit -m "fix: ..." && git push
+```
+
+Users running `/update` then receive the new single-file `ai` — their experience is unchanged.
+
+### Keep `ai` from going stale
+
+Enable the pre-commit hook once:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Now any commit that touches `src/` rebuilds `ai` automatically and **refuses to commit** if the generated file isn't staged. GitHub Actions (`.github/workflows/ci.yml`) double-checks on push: it rebuilds, rejects a stale `ai`, and runs the test suite.
 
 ---
 

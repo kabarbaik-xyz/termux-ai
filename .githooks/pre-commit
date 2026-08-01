@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Pre-commit hook: keep the generated single-file `ai` in sync with src/.
+# Enable once with:  git config core.hooksPath .githooks
+set -e
+
+# Only rebuild if this commit touches the source of truth.
+if git diff --cached --name-only --quiet -- src build.py; then
+  : # no src/ or build.py changes staged; nothing to do
+else
+  python3 build.py >/dev/null
+  if ! git diff --quiet -- ai; then
+    echo "✗ build.py regenerated 'ai' but the new file isn't staged." >&2
+    echo "  The single-file 'ai' is the shipped artifact and must match src/." >&2
+    echo "  Fix:  python3 build.py && git add ai  (then re-run your commit)" >&2
+    exit 1
+  fi
+fi
