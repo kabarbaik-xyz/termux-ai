@@ -8,7 +8,7 @@ import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit,
 import zipfile
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "6.7.0"
 
 CONFIG_DIR = Path(os.path.expanduser("~/.config/termux-ai"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -419,7 +419,7 @@ class Database:
 class Config:
     DEFAULTS = {
         "backend": "ollama",
-        "system_prompt": "You are a helpful assistant. Be concise and clear. When using tools: (1) Batch independent file reads into a single response when possible. (2) Do not re-read files you have already read. (3) Complete tasks in the minimum number of steps. (4) Only use tools when necessary.",
+        "system_prompt": "You are a helpful assistant. Be concise and clear. When using tools: (1) Do not repeat commands you have already run. (2) If a command fails, do not retry it without changing arguments. (3) Complete tasks in the minimum number of steps. (4) Only use tools when necessary.",
         "system_instruction": "",
         "temperature": 0.7,
         "max_tokens": 4096,
@@ -504,6 +504,7 @@ class Tools:
 
     @staticmethod
     def _plan_safe(cmd_str):
+        # Izinkan pipe (|), blokir yang berbahaya
         if re.search(r'\$\(|`|;|\|\||&&|>>|>|\{', cmd_str): return False
         if re.search(r'\b(busybox|toybox|env|sudo|doas|su|xargs|timeout|sh|bash|zsh|dash|fish|python3?|ruby|php)\b', cmd_str): return False
         
@@ -512,14 +513,10 @@ class Tools:
             if not tokens: return False
             prog = os.path.basename(tokens[0])
             
-            if prog in Tools.BLOCKED_WRITE_CMDS:
-                return False
-            if prog == "git" and (len(tokens) < 2 or tokens[1] not in Tools.PLAN_GIT_RO):
-                return False
-            if prog == "find" and any(t in Tools.PLAN_FIND_BLOCKED for t in tokens):
-                return False
-            if prog in ("sed", "awk", "perl") and any(t in ("-i", "-I") for t in tokens):
-                return False
+            if prog in Tools.BLOCKED_WRITE_CMDS: return False
+            if prog == "git" and (len(tokens) < 2 or tokens[1] not in Tools.PLAN_GIT_RO): return False
+            if prog == "find" and any(t in Tools.PLAN_FIND_BLOCKED for t in tokens): return False
+            if prog in ("sed", "awk", "perl") and any(t in ("-i", "-I") for t in tokens): return False
                 
         return True
 
@@ -532,17 +529,20 @@ class Tools:
 
     @staticmethod
     def run(name, args, build_mode=False, max_result=10000):
-        if name in Tools.SAFE_TOOLS:
+        is_read_only = name in Tools.SAFE_TOOLS or (name == "run_command" and not build_mode)
+        
+        # Caching untuk mencegah loop
+        if is_read_only:
             cache_key = (name, json.dumps(args, sort_keys=True))
             if cache_key in Tools._cache:
-                return Tools._cache[cache_key] + "\n[cached result]"
+                return Tools._cache[cache_key] + "\n\n[SYSTEM WARNING: You are repeating the exact same action. Stop and analyze the data you already have.]"
         
         result = Tools._run_impl(name, args, build_mode)
         if result is None:
             result = "Error: Tool returned no output."
         if len(result) > max_result: result = result[:max_result] + "\n…[truncated]"
         
-        if name in Tools.SAFE_TOOLS:
+        if is_read_only:
             Tools._cache[cache_key] = result
             
         return result
@@ -583,9 +583,8 @@ class Tools:
                     return "Error: Plan mode active. Command blocked because it may modify the system or run an interpreter. Only read-only commands are allowed."
 
                 try:
-                    cmd_list = shlex.split(cmd_str)
-                    if not cmd_list: return "Error: Empty command."
-                    r = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30, preexec_fn=os.setsid)
+                    # Gunakan shell=True agar pipe (|), grep, wc, file, dll berfungsi normal
+                    r = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=30, preexec_fn=os.setsid)
                     return (r.stdout + r.stderr)
                 except Exception as e:
                     return f"Error executing command: {e}"
@@ -721,14 +720,13 @@ class OpenAICompatible(Backend):
 
         iterations = 0
         total_calls = 0
-        loop_history = []
+        MAX_ITERATIONS = 15
 
         while True:
             iterations += 1
-            if iterations % 25 == 0:
-                if not continue_fn(iterations, total_calls):
-                    yield {"type": "notice", "content": "[Task stopped by user]", "fatal": True}
-                    return
+            if iterations > MAX_ITERATIONS:
+                yield {"type": "notice", "content": "[Stopped: Reached maximum iterations (15) to prevent infinite loops.]", "fatal": True}
+                return
 
             self._trim_iteration_history(msgs)
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
@@ -769,17 +767,6 @@ class OpenAICompatible(Backend):
 
             if not calls:
                 return
-
-            def _norm(c):
-                if isinstance(c, dict) and "function" in c:
-                    return (c["function"]["name"], c["function"]["arguments"])
-                return str(c)
-            normalized = tuple(_norm(c) for c in calls)
-            loop_history.append(normalized)
-            if len(loop_history) >= 3:
-                if len(set(loop_history[-3:])) == 1:
-                    yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
-                    return
 
             total_calls += len(calls)
 
@@ -854,14 +841,13 @@ class AnthropicBackend(Backend):
 
         iterations = 0
         total_calls = 0
-        loop_history = []
+        MAX_ITERATIONS = 15
 
         while True:
             iterations += 1
-            if iterations % 25 == 0:
-                if not continue_fn(iterations, total_calls):
-                    yield {"type": "notice", "content": "[Task stopped by user]", "fatal": True}
-                    return
+            if iterations > MAX_ITERATIONS:
+                yield {"type": "notice", "content": "[Stopped: Reached maximum iterations (15) to prevent infinite loops.]", "fatal": True}
+                return
 
             self._trim_iteration_history(payload)
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
@@ -903,15 +889,6 @@ class AnthropicBackend(Backend):
 
             if not tool_uses:
                 return
-
-            def _norm(tu):
-                return (tu.get("name"), json.dumps(tu.get("input", {}), sort_keys=True))
-            normalized = tuple(_norm(tu) for tu in tool_uses)
-            loop_history.append(normalized)
-            if len(loop_history) >= 3:
-                if len(set(loop_history[-3:])) == 1:
-                    yield {"type": "notice", "content": "[Stopped: AI is stuck in a loop repeating the same action.]", "fatal": True}
-                    return
 
             total_calls += len(tool_uses)
 
