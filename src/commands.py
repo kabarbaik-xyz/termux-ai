@@ -175,10 +175,10 @@
     def _cmd_system(self, args):
         if args:
             self.cfg.set("system_instruction", " ".join(args))
-            self.success("System prompt updated.")
+            self.success("Persona updated (tool-use rules are always appended).")
         else:
-            sp = self.cfg.system_prompt()
-            self.info("System prompt:" + (f"\n{sp}" if sp else " (using built-in default)"))
+            persona = self.cfg.get("system_instruction") or self.cfg.get("system_prompt") or "(built-in default)"
+            self.info("Persona (tool-use rules appended automatically):\n" + persona)
 
     def _cmd_server(self, args):
         if not args:

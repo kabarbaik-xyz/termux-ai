@@ -246,8 +246,8 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | Key | Default | Description |
 |---|---|---|
 | `backend` | `ollama` | Active backend profile name |
-| `system_prompt` | _(see below)_ | System prompt for the AI |
-| `system_instruction` | `""` | If set, overrides `system_prompt` |
+| `system_prompt` | _(see below)_ | Persona: role, environment, and output style |
+| `system_instruction` | `""` | If set, overrides the persona; the fixed tool-use rules are always appended |
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `4096` | Max response tokens |
 | `stream` | `true` | Stream responses |
