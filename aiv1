@@ -1088,14 +1088,14 @@ class App:
             
         name, prof = self.cfg.active_profile()
         model = prof.get("model", "N/A") if prof else "N/A"
-        tools = "On" if self.cfg.get("tools_enabled") else "Off"
+        tools = "Build" if self.cfg.get("tools_enabled") else "Plan"
         total_toks = self.db.get_total_tokens()
         conv_toks = self.db.get_conv_tokens(self.cid) if self.cid else 0
         
         print(f"{C.DIM}----------------------------------------------------------{C.RESET}")
         print(f" {C.BOLD}Backend{C.RESET} : {C.GREEN}{name}{C.RESET}")
         print(f" {C.BOLD}Model{C.RESET}   : {C.GREEN}{model}{C.RESET}")
-        print(f" {C.BOLD}Tools{C.RESET}   : {tools}")
+        print(f" {C.BOLD}Tools{C.RESET}   : {tools} Mode")
         print(f" {C.BOLD}Tokens{C.RESET}  : {conv_toks} (current) / {total_toks} (total)")
         if not IS_TTY: self.warn("Output is piped, UI disabled.")
         print(f"{C.DIM}----------------------------------------------------------{C.RESET}")
@@ -1107,7 +1107,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/regen", "Regenerate last reply"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line input")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/search <q>", "Search chats"), ("/export", "Export chat to md"), ("/delete <id>", "Delete chat")],
-            "Config": [("/setup", "Run setup wizard"), ("/backends", "List available backends"), ("/backend <name>", "Switch active backend"), ("/model <name>", "Set model"), ("/tools", "Toggle tool use mode"), ("/system <p>", "Set system prompt"), ("/config", "View config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
+            "Config": [("/setup", "Run setup wizard"), ("/backends", "List available backends"), ("/backend <name>", "Switch active backend"), ("/model <name>", "Set model"), ("/tools", "Toggle Build/Plan mode"), ("/system <p>", "Set system prompt"), ("/config", "View config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "Show system & API status"), ("/copy", "Copy last reply"), ("/paste", "Paste from clipboard"), ("/speak", "TTS last reply"), ("/share", "Share last reply"), ("/server", "Manage local AI server"), ("/cost", "Show token usage"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
         
@@ -1152,27 +1152,6 @@ class App:
     def _continue_fn(self, iters, calls):
         print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls. Continue? [Y/n]{C.RESET}")
         return input("> ").strip().lower() in ('y', '')
-
-    def _stream_chat(self, msgs):
-        self.spinner = Spinner("thinking")
-        self.spinner.start()
-        fmt = MarkdownFormatter()
-        full_reply = ""
-        try:
-            for chunk in self.backend.chat(msgs, stream=self.cfg.get("stream", True)):
-                if self.spinner: self.spinner.stop(); self.spinner = None
-                fmt.feed(chunk)
-                full_reply += chunk
-            fmt.flush()
-            print()
-            return full_reply
-        except Exception as e:
-            if self.spinner: self.spinner.stop(); self.spinner = None
-            err_msg = str(e)
-            if "Connection refused" in err_msg:
-                err_msg += "\n  Tip: Is your local AI server running? Try /server start"
-            self.err(f"Chat error: {err_msg}")
-            return ""
 
     def _stream_tool_chat(self, msgs):
         self.spinner = Spinner("thinking")
@@ -1220,10 +1199,8 @@ class App:
         msgs = [{"role": "system", "content": self.cfg.system_prompt()}]
         msgs.extend(self.db.get_msgs(self.cid))
 
-        if self.cfg.get("tools_enabled", False):
-            reply = self._stream_tool_chat(msgs)
-        else:
-            reply = self._stream_chat(msgs)
+        # AI ALWAYS uses tools. tools_enabled (Build Mode) only toggles write access.
+        reply = self._stream_tool_chat(msgs)
 
         if reply:
             self.db.save_msg(self.cid, "assistant", reply, self.backend.profile.get("model", ""))
@@ -1246,7 +1223,7 @@ class App:
         elif cmd == "/tools":
             v = not self.cfg.get("tools_enabled", False)
             self.cfg.set("tools_enabled", v)
-            self.success(f"Tool mode {'enabled' if v else 'disabled'}.")
+            self.success(f"Tool mode: {'Build (Write/Read allowed)' if v else 'Plan (Read-only allowed)'}.")
         elif cmd == "/multi":
             v = not self.multi_line
             self.multi_line = v
@@ -1340,7 +1317,7 @@ class App:
             print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
             name, prof = self.cfg.active_profile()
             print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-            print(f"{C.BOLD}Tools:{C.RESET} {'Enabled' if self.cfg.get('tools_enabled') else 'Disabled'}")
+            print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'}")
         elif cmd == "/copy":
             if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")
             else: self.warn("Nothing to copy.")
