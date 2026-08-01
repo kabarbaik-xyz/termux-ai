@@ -10,6 +10,11 @@
         self.cfg.set("tools_enabled", v)
         self.success(f"Tool mode: {'Build (Write/Read allowed)' if v else 'Plan (Read-only allowed)'}.")
 
+    def _cmd_plan(self, args):
+        v = not self.cfg.get("plan_first", False)
+        self.cfg.set("plan_first", v)
+        self.success(f"Plan-first mode {'ON (model outlines a plan before acting)' if v else 'OFF'}.")
+
     def _cmd_multi(self, args):
         v = not self.multi_line
         self.multi_line = v
@@ -117,7 +122,7 @@
         print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'}")
+        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Plan-first: {'ON' if self.cfg.get('plan_first') else 'off'}")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

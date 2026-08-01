@@ -1,6 +1,6 @@
 # ══ termux_ai.app ══ (fragment; merged by build.py)
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/plan", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -162,7 +162,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
-            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes")],
+            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/plan", "Toggle plan-before-act")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
@@ -341,6 +341,16 @@ class App:
         msgs = [{"role": "system", "content": self.cfg.system_prompt()}]
         msgs.extend(self.db.get_msgs(self.cid))
 
+        # Plan-first: when enabled, ask the model to outline a plan before acting,
+        # show it, and inject it so the model executes deliberately (less wandering).
+        if self.cfg.get("plan_first", False) and not self.quiet:
+            plan = self._make_plan(title_src)
+            if plan:
+                self._show_plan(plan)
+                msgs[0]["content"] += ("\n\nYou committed to the plan below for this "
+                    "task — execute it step by step, reasoning briefly before each action; "
+                    "revise only if a step becomes impossible:\n" + plan)
+
         # AI ALWAYS uses tools. tools_enabled (Build Mode) only toggles write access.
         reply = self._stream_tool_chat(msgs)
 
@@ -356,6 +366,36 @@ class App:
                 self.info("Auto-compacting long conversation...")
                 ok, cmsg = self._compact_conversation(self.cid)
                 if ok: self.success(cmsg)
+
+    def _make_plan(self, task):
+        """Produce a concise numbered plan for a task via a non-tool completion.
+        Returns the plan text (or '' on failure)."""
+        sysp = ("You are a planning assistant. Given a task, output a concise NUMBERED plan. "
+                "For each step state what you will do and which tool you would use "
+                "(read_file, list_files, search_files, run_command, write_file). "
+                "Use the minimum number of steps. If the task needs no tools, say \"No tools needed\" "
+                "and answer directly. Do NOT execute anything yet.")
+        msgs = [{"role": "system", "content": sysp}, {"role": "user", "content": task}]
+        spinner = None
+        if not self.quiet:
+            spinner = Spinner("planning"); spinner.start()
+        plan = ""
+        try:
+            for chunk in self.backend.chat(msgs, stream=True):
+                if spinner: spinner.stop(); spinner = None
+                plan += chunk
+        except Exception as e:
+            if spinner: spinner.stop(); spinner = None
+            if not self.quiet: self.err(f"Planning failed: {e}")
+            return ""
+        return plan.strip()
+
+    def _show_plan(self, plan):
+        if self.quiet: return
+        print(f"\n{C.CYAN}{C.BOLD}\u250c\u2500 plan \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{C.RESET}")
+        for line in plan.splitlines():
+            print(f"{C.CYAN}\u2502{C.RESET} {line}")
+        print(f"{C.CYAN}{C.BOLD}\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{C.RESET}\n")
 
     def _compact_conversation(self, cid):
         """Summarize a conversation and replace its history with the summary
@@ -499,7 +539,7 @@ class App:
         return 0
 
     _CMD_DISPATCH = {
-        "/new": "_cmd_new", "/tools": "_cmd_tools", "/multi": "_cmd_multi",
+        "/new": "_cmd_new", "/tools": "_cmd_tools", "/plan": "_cmd_plan", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",

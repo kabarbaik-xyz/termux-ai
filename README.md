@@ -187,6 +187,7 @@ docker ps | ai "which container has port 8080?"
 | `/config set <key> <value>` | Set any config value |
 | `/config` | Show full config (keys masked) |
 | `/tools [on\|off]` | Toggle BUILD (on) vs PLAN (off) mode |
+| `/plan [on\|off]` | Toggle plan-before-act: the model outlines a numbered plan, shows it, then executes step by step |
 | `/multi [on\|off]` | Toggle multi-line input |
 | `/tokens` | Show token usage for current chat |
 | `/cost` | Estimate token cost spent |
