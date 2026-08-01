@@ -2,6 +2,7 @@
 """Unit tests for non-security internals: Database, file attachment,
 compaction, and small helpers. Run:  python3 tests/test_units.py"""
 import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
+import io
 import unittest.mock as um
 from pathlib import Path
 
@@ -269,6 +270,39 @@ class TestServerManager(_TmpHome):
             app._execute_command("/server pull qwen2.5:3b")  # missing binary -> hint, no crash
         app._execute_command("/server")     # usage
         app._execute_command("/server bogus")  # unknown action
+
+
+class TestConfirmStopsSpinner(_TmpHome):
+    """Regression: when the backend asks for tool approval, the spinner thread is
+    still running (the callback fires before the event that stops it). The
+    prompt must stop it first or the \r spin overwrites the prompt + input."""
+    def test_confirm_batch_stops_active_spinner(self):
+        app = m.App(); app.quiet = False
+        with um.patch.object(m, "IS_TTY", True), \
+             um.patch("builtins.input", return_value="n"):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try:
+                app.spinner = m.Spinner("thinking"); app.spinner.start()
+                result = app._confirm_batch([{"name": "run_command", "args": {}}])
+            finally:
+                if app.spinner: app.spinner.stop()
+                sys.stdout = old
+        self.assertFalse(result)               # 'n' -> declined
+        self.assertIsNone(app.spinner)         # spinner stopped before the prompt
+
+    def test_continue_fn_stops_active_spinner(self):
+        app = m.App(); app.quiet = False
+        with um.patch.object(m, "IS_TTY", True), \
+             um.patch("builtins.input", return_value="y"):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try:
+                app.spinner = m.Spinner("thinking"); app.spinner.start()
+                result = app._continue_fn(12, 24)
+            finally:
+                if app.spinner: app.spinner.stop()
+                sys.stdout = old
+        self.assertTrue(result)                 # 'y' -> continue
+        self.assertIsNone(app.spinner)
 
 
 class TestHelpers(unittest.TestCase):

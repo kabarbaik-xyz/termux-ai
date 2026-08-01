@@ -1788,6 +1788,7 @@ class App:
         if self._auto_approve_all:
             return True
         
+        if self.spinner: self.spinner.stop(); self.spinner = None  # backend calls this before the event that stops the spinner
         print(f"\n{C.YELLOW}Approval needed for {len(calls)} action(s):{C.RESET}")
         for c in calls:
             args_str = json.dumps(c['args'])
@@ -1804,6 +1805,7 @@ class App:
     def _continue_fn(self, iters, calls):
         if self.quiet:
             return True  # non-interactive one-shot: keep going (bounded by MAX_ITERATIONS)
+        if self.spinner: self.spinner.stop(); self.spinner = None  # stop before prompting
         print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far. Continue? [Y/n]{C.RESET}")
         try:
             return input("> ").strip().lower() in ("y", "")
