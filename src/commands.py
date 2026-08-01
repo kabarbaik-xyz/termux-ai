@@ -1,3 +1,4 @@
+class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fragment compile standalone)
     # ---- slash-command handlers (dispatched by App._execute_command via _CMD_DISPATCH).
     # Each takes (self, args) where args is the list of tokens after the command.
 
