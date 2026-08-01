@@ -217,6 +217,18 @@ class TestSkills(_TmpHome):
         (sk.dir / "pack" / "SKILL.md").write_text("---\nname: pack\ndescription: d\n---\nb\n")
         self.assertIn("pack", [n for n, _ in sk.list()])
 
+    def test_catalog_lists_paths_and_respects_hidden(self):
+        sk = self._skills()
+        sk.seed()
+        # a hidden skill (disable-model-invocation) should be excluded
+        (sk.dir / "secret.md").write_text("---\nname: secret\ndescription: shh\ndisable-model-invocation: true\n---\nb\n")
+        cat = sk.catalog()
+        self.assertIn("<available-skills>", cat)
+        self.assertIn('name="review"', cat)
+        self.assertIn('path="', cat)                 # real path for read_file
+        self.assertIn("read_file", cat)               # the load instruction
+        self.assertNotIn("secret", cat)               # hidden skill excluded
+
 
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):

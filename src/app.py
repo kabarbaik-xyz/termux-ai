@@ -172,7 +172,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
-            "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills")],
+            "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server"), ("/clear", "Clear screen"), ("/exit", "Quit")]
@@ -358,6 +358,10 @@ class App:
         sysp = self.cfg.system_prompt()
         if self.active_session_skills:
             sysp += "\n\n" + "\n\n".join(f"# Active skill: {n}\n{b}" for n, b in self.active_session_skills)
+        if self.cfg.get("skill_autoload", False):
+            cat = self.skills.catalog()
+            if cat:
+                sysp += "\n\n" + cat
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 

@@ -504,6 +504,7 @@ class Config:
         "show_tokens": True,
         "tools_enabled": False,
         "strategy_first": False,
+        "skill_autoload": False,
         "extended_thinking": False,
         "thinking_budget": 8000,
         "tts_replies": False,
@@ -1381,6 +1382,27 @@ class Skills:
                 written.append(fname[:-3])
         return written
 
+    def catalog(self):
+        """Progressive-disclosure block for auto-loading: an XML list of
+        non-hidden skills (name, path, description) the model can read_file on
+        demand. Returns '' if there are none."""
+        lines = []
+        for name, path in self._discover().items():
+            try:
+                meta, _ = Skills.parse(path)
+            except Exception:
+                continue
+            if str(meta.get("disable-model-invocation", "")).lower() in ("true", "1", "yes"):
+                continue
+            desc = meta.get("description", "").strip()
+            lines.append('<skill name="%s" path="%s">%s</skill>' % (name, path, desc))
+        if not lines:
+            return ""
+        return ("<available-skills>\n" + "\n".join(lines) +
+                "\n</available-skills>\nIf one of these skills matches the user's "
+                "task, FIRST call read_file on its path to load the full instructions, "
+                "then follow them. If none match, proceed normally.")
+
 
 EXAMPLES = {
     "review.md": (
@@ -1595,7 +1617,7 @@ class App:
         cats = {
             "Chat": [("/new", "Start new chat"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
-            "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills")],
+            "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server"), ("/clear", "Clear screen"), ("/exit", "Quit")]
@@ -1781,6 +1803,10 @@ class App:
         sysp = self.cfg.system_prompt()
         if self.active_session_skills:
             sysp += "\n\n" + "\n\n".join(f"# Active skill: {n}\n{b}" for n, b in self.active_session_skills)
+        if self.cfg.get("skill_autoload", False):
+            cat = self.skills.catalog()
+            if cat:
+                sysp += "\n\n" + cat
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 
@@ -2118,6 +2144,11 @@ class App:
             written = self.skills.seed()
             self.success("Seeded examples: " + (", ".join(written) if written else "(all already present)") + ".")
             return
+        if sub == "auto":
+            v = not self.cfg.get("skill_autoload", False)
+            self.cfg.set("skill_autoload", v)
+            self.success("Skill auto-load " + ("ON (skill descriptions added to every prompt; a capable model can read_file the matching skill on its own)" if v else "OFF") + ".")
+            return
         if sub == "show" and len(args) >= 2:
             meta, body = self.skills.load(args[1])
             if meta is None: self.err(f"No skill '{args[1]}'."); return
@@ -2284,7 +2315,7 @@ class App:
         print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)}")
+        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)} active{' (autoload)' if self.cfg.get('skill_autoload') else ''}")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

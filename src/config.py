@@ -29,6 +29,7 @@ class Config:
         "show_tokens": True,
         "tools_enabled": False,
         "strategy_first": False,
+        "skill_autoload": False,
         "extended_thinking": False,
         "thinking_budget": 8000,
         "tts_replies": False,

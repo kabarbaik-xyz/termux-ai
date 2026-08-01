@@ -85,6 +85,27 @@ class Skills:
                 written.append(fname[:-3])
         return written
 
+    def catalog(self):
+        """Progressive-disclosure block for auto-loading: an XML list of
+        non-hidden skills (name, path, description) the model can read_file on
+        demand. Returns '' if there are none."""
+        lines = []
+        for name, path in self._discover().items():
+            try:
+                meta, _ = Skills.parse(path)
+            except Exception:
+                continue
+            if str(meta.get("disable-model-invocation", "")).lower() in ("true", "1", "yes"):
+                continue
+            desc = meta.get("description", "").strip()
+            lines.append('<skill name="%s" path="%s">%s</skill>' % (name, path, desc))
+        if not lines:
+            return ""
+        return ("<available-skills>\n" + "\n".join(lines) +
+                "\n</available-skills>\nIf one of these skills matches the user's "
+                "task, FIRST call read_file on its path to load the full instructions, "
+                "then follow them. If none match, proceed normally.")
+
 
 EXAMPLES = {
     "review.md": (

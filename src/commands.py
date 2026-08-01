@@ -50,6 +50,11 @@
             written = self.skills.seed()
             self.success("Seeded examples: " + (", ".join(written) if written else "(all already present)") + ".")
             return
+        if sub == "auto":
+            v = not self.cfg.get("skill_autoload", False)
+            self.cfg.set("skill_autoload", v)
+            self.success("Skill auto-load " + ("ON (skill descriptions added to every prompt; a capable model can read_file the matching skill on its own)" if v else "OFF") + ".")
+            return
         if sub == "show" and len(args) >= 2:
             meta, body = self.skills.load(args[1])
             if meta is None: self.err(f"No skill '{args[1]}'."); return
@@ -216,7 +221,7 @@
         print(f"{C.BOLD}Termux API:{C.RESET} TTS: {'✓' if st['tts'] else '✗'}, Clipboard: {'✓' if st['clipboard'] else '✗'}, Share: {'✓' if st['share'] else '✗'}")
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
-        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)}")
+        print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)} active{' (autoload)' if self.cfg.get('skill_autoload') else ''}")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")
