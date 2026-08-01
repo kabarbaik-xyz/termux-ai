@@ -56,6 +56,22 @@ if not IS_TTY:
 
 _ANSI_RE = re.compile(r"\001?\033\[[0-9;]*m\002?")
 
+# Bare ANSI color escape (no readline markers yet) -- used to wrap a prompt's
+# color codes so GNU readline doesn't count them as visible width. Without this,
+# a long typed input that wraps to a 2nd line gets mis-redrawn (line 2 overwrites
+# line 1; backspace appears to erase the whole line). Only applied when readline
+# is active: otherwise the \001/\002 (SOH/STX) bytes would print as garbage.
+_BARE_ANSI = re.compile(r"\033\[[0-9;]*m")
+
+
+def rl_wrap(s):
+    """Return s with its ANSI color codes bracketed by readline non-printing
+    markers (\001...\002) so the cursor column is tracked correctly while
+    editing long, wrapping input. No-op without readline."""
+    if not HAVE_READLINE:
+        return s
+    return _BARE_ANSI.sub(lambda mm: "\001" + mm.group(0) + "\002", s)
+
 def vlen(s): return len(_ANSI_RE.sub("", s))
 def pad(s, width): return s + " " * max(0, width - vlen(s))
 def mask(key): return "" if not key else "*" * len(key) if len(key) <= 8 else key[:4] + "…" + key[-4:]

@@ -550,7 +550,7 @@ class App:
         if not (IS_TTY and sys.stdin.isatty()):
             return 0  # non-interactive: caller pipes to bash explicitly
         try:
-            ans = input(f"\n{C.YELLOW}Run this command? [y/N]{C.RESET} ").strip().lower()
+            ans = input(rl_wrap(f"\n{C.YELLOW}Run this command? [y/N]{C.RESET} ")).strip().lower()
         except (EOFError, KeyboardInterrupt):
             ans = ""
         if ans not in ("y", "yes"):
@@ -613,7 +613,7 @@ class App:
                 else:
                     prefix = f"{info_str} {C.GREEN}▸{C.RESET} "
                     
-                user_input = input(prefix).strip()
+                user_input = input(rl_wrap(prefix)).strip()
                 if not user_input: continue
                 
                 if self.multi_line:
