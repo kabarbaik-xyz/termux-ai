@@ -17,7 +17,7 @@ class Config:
         "stream": True,
         "show_tokens": True,
         "tools_enabled": False,
-        "plan_first": False,
+        "strategy_first": False,
         "tts_replies": False,
         "multi_line": False,
         "auto_compact": True,
