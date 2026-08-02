@@ -344,6 +344,10 @@ Bundled example skills ship in the repo's [`skills/`](skills/) directory for ref
 
 **`data-engineer`** (session) — a Data Engineer / BI playbook. Reads a data report (`.xlsx`/`.xls`/`.csv`) **and** an objective doc (`.docx`/`.doc`/`.pdf`/`.txt`) via `read_file`, elaborates the real business need in `docs/analysis.md` (working **both** directions: report→dashboard and dashboard→report), then builds a self-contained single-page **HTML BI dashboard** (`dashboard.html`, inline CSS/JS/SVG, no CDN, opens offline). Activate `/skill data-engineer`, then *"read sales.xlsx and the brief.pdf, then build the dashboard"*.
 
+**`cloud-arch`** (session) — Cloud Architecture + SRE. Ingests deployment signals from a codebase (`clone_repo` / `list_files recursive` / `search_files`) and/or product docs, infers the workload profile and NFRs, then produces `docs/cloud-architecture.md` (provider, compute/data/network/IAM, regions, topology, well-architected trade-offs), `docs/sre.md` (SLIs/SLOs, error budgets, HA/DR, observability, runbooks), `docs/security-compliance.md`, and starter `docs/iac/` (Terraform by default). Activate `/skill cloud-arch`, then *"design the infra for this repo"*.
+
+**`finops`** (session) — cloud cost optimization. Reads IaC (Terraform/CDK/CloudFormation/Pulumi/Bicep), architecture docs, and billing CSV/XLSX exports to find waste (idle/oversized compute, wrong storage tier, egress, non-prod 24/7, missing commit discounts) and writes `docs/finops-assessment.md`, `docs/finops-recommendations.md` (prioritized: effort/impact/risk), and `docs/finops-governance.md` (tagging, budgets, unit-economics KPIs). Activate `/skill finops`, then *"audit the terraform in this folder for savings"*.
+
 > **Binary file reading**: `read_file` parses `.xlsx` (full row/column table, sparse-aware), `.docx`, `.pptx` natively (stdlib, no deps), and `.pdf` via `pdftotext` (install with `pkg install poppler`). Legacy `.xls`/`.doc` aren't supported — convert to `.xlsx`/`.csv`/`.docx`.
 
 Skills compose with everything else: `/strategy on` + `/skill review`, or `/tools on` + `/skill commit`.
