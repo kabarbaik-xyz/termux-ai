@@ -340,6 +340,11 @@ class App:
             if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(f"Tool chat error: {e}")
             return ""
+        finally:
+            # Stop the spinner on EVERY exit -- a clean return with no streamed
+            # events (empty/broken reply) would otherwise leave it spinning into
+            # the next prompt and stack with it on small screens.
+            if self.spinner: self.spinner.stop(); self.spinner = None
 
     def _chat(self, user_input, title=None):
         if not self.backend:
@@ -414,6 +419,8 @@ class App:
             if spinner: spinner.stop(); spinner = None
             if not self.quiet: self.err(f"Strategy planning failed: {e}")
             return ""
+        finally:
+            if spinner: spinner.stop(); spinner = None
         return strategy.strip()
 
     def _show_strategy(self, strategy):
@@ -513,6 +520,8 @@ class App:
             _dbg_exc(e)
             if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(str(e))
+        finally:
+            if spinner: spinner.stop(); spinner = None
         return reply
 
     def oneshot(self, prompt, stdin_data=None):
@@ -601,6 +610,9 @@ class App:
         
         while True:
             try:
+                # Safety net: never render the prompt over a still-spinning
+                # indicator (an empty/broken reply can leave self.spinner running).
+                if self.spinner: self.spinner.stop(); self.spinner = None
                 try:
                     b_name, b_prof = self.cfg.active_profile()
                     b_model = b_prof.get("model", "N/A")[:12] if b_prof else "N/A"

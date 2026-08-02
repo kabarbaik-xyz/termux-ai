@@ -304,6 +304,22 @@ class TestConfirmStopsSpinner(_TmpHome):
         self.assertTrue(result)                 # 'y' -> continue
         self.assertIsNone(app.spinner)
 
+    def test_stream_chat_stops_spinner_on_empty_reply(self):
+        # The reported bug: an empty/broken reply streams no events, so the
+        # spinner was never stopped and stacked with the next prompt.
+        app = m.App(); app.quiet = False
+        def empty_cwt(msgs, confirm, cont):
+            return
+            yield  # makes chat_with_tools a generator that yields nothing
+        app.backend = type("B", (), {"profile": {"model": "x"}, "chat_with_tools": empty_cwt})()
+        with um.patch.object(m, "IS_TTY", True):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try:
+                app._stream_tool_chat([{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}])
+            finally:
+                sys.stdout = old
+        self.assertIsNone(app.spinner)   # finally must have stopped it
+
 
 class TestFetchUrl(_TmpHome):
     def test_html_to_text(self):
