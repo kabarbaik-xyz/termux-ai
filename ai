@@ -1781,8 +1781,20 @@ Executive Summary · Business Background · Problem Statement · Business Object
 **docs/02-PRD.md - Product Requirements Document**
 Vision · Target Users & Personas · Use Cases / User Stories · Functional Requirements (each with Acceptance Criteria) · Non-Functional Requirements (performance, security, usability) · UX/Flows (described) · Dependencies · Prioritization (MoSCoW or RICE) · Release/Phasing · Open Questions.
 
-**docs/03-TSD.md - Technical Specification Document**
-System Overview & Architecture (describe the diagram in words) · Components/Modules · Data Model · APIs/Integrations · Tech Stack (with versions) · Security & Auth · Deployment/Infra · Observability (logs/metrics) · Key Sequence Flows · Technical Debt/Risks observed.
+**docs/03-TSD.md - Technical Specification Document (the detailed close-up of the codebase)**
+The deep technical reference, not a summary. Cover each of these, all derived from code you read (cite file:line for non-obvious claims; mark guesses [verify]):
+- Overview & tech stack: languages, frameworks + versions, repository layout.
+- Architecture: component/layer diagram described in words, request & data flow, design patterns in use.
+- Modules/components: each one - responsibility, key classes/functions, public interfaces, dependencies.
+- **API / endpoints reference (enumerate ALL of them)**: for every route/endpoint - HTTP method + path, auth required, request params/body schema, response schema + status codes, error cases, example request/response, pagination / rate limits.
+- Data model/schema: tables/collections, fields + types + constraints, indexes, relationships (describe the ERD), migrations.
+- Core business logic: key algorithms, state machines, rules, calculations.
+- Integrations: third-party APIs, queues, webhooks, auth providers - and their contracts.
+- Security & auth: mechanism (session/JWT/API key), permission/RBAC model, crypto, secrets handling, input validation.
+- Configuration: config files, env vars, feature flags.
+- Build/test/deploy: build tooling, test framework + how to run, CI/CD, deployment topology.
+- Observability: logging format/levels, metrics, tracing, health checks.
+- Technical debt / known issues / risks.
 
 **docs/04-EPICS.md - Epic & Task Breakdown**
 Group into Themes -> Epics -> User Stories (As a X, I want Y, so that Z) -> Acceptance Criteria -> Tasks -> Estimate (T-shirt) -> Priority. Render as tables.
