@@ -1775,20 +1775,34 @@ Write each file (e.g. docs/02-PRD.md), then show a short summary. Match the user
 
 Structures:
 
+> **Diagrams**: for ANY diagram/flow/structure, use Mermaid fenced blocks - never ASCII art and never "describe in words". Pick the right type: flowchart (structure/flow), sequenceDiagram (interactions over time), erDiagram (data model), C4-style flowchart (architecture context/containers/components), stateDiagram-v2 (state machines).
+
 **docs/01-BRD.md - Business Requirements Document**
-Executive Summary · Business Background · Problem Statement · Business Objectives (SMART) · Stakeholders & Roles · Business Requirements (capabilities, not features) · Scope (In/Out) · Success Metrics/KPIs · Assumptions, Constraints, Risks · Milestones.
+Executive Summary · Business Background · Problem Statement · Business Objectives (SMART) · Stakeholders & Roles · Business Requirements (capabilities, not features) · Scope (In/Out) · Success Metrics/KPIs · Assumptions, Constraints, Risks · Milestones. Add a high-level system context (Mermaid flowchart) if it frames the problem.
 
 **docs/02-PRD.md - Product Requirements Document**
-Vision · Target Users & Personas · Use Cases / User Stories · Functional Requirements (each with Acceptance Criteria) · Non-Functional Requirements (performance, security, usability) · UX/Flows (described) · Dependencies · Prioritization (MoSCoW or RICE) · Release/Phasing · Open Questions.
+Vision · Target Users & Personas · Use Cases / User Stories · Functional Requirements (each with Acceptance Criteria) · Non-Functional Requirements (performance, security, usability) · UX/Flows (a Mermaid flowchart per key user flow) · Dependencies · Prioritization (MoSCoW or RICE) · Release/Phasing · Open Questions.
 
-**docs/03-TSD.md - Technical Specification Document (the detailed close-up of the codebase)**
-The deep technical reference, not a summary. Cover each of these, all derived from code you read (cite file:line for non-obvious claims; mark guesses [verify]):
+**docs/03-SAD.md - Software Architecture Document (with ADRs)**
+The architecture view: the structure of the system and WHY it is built that way. All derived from code you read (cite file:line; [verify] for guesses). Cover:
+- Introduction & scope, and the architectural drivers (functional needs + quality attributes: scale, availability, latency, security, maintainability).
+- System context (Mermaid C4-style flowchart): the system plus external actors/systems.
+- Container view (Mermaid flowchart): deployable units (apps, APIs, DBs, queues, caches) and how they interact.
+- Component view (Mermaid flowchart): major components/modules within each container.
+- Key runtime scenarios (Mermaid sequenceDiagram): a few critical request/data flows.
+- Deployment view (Mermaid flowchart): environments, regions, infra topology.
+- Architectural principles & patterns (layering, DDD, event-driven, etc.) and technology choices with rationale.
+- **Architecture Decision Records (ADRs)** - a numbered list (ADR-001, ADR-002, ...), each: Title · Status (Proposed/Accepted/Deprecated) · Context · Decision · Consequences · Alternatives considered. Reverse-engineer one ADR per significant architectural choice you can infer from the code.
+- Architectural risks & trade-offs.
+
+**docs/04-TSD.md - Technical Specification Document (the detailed close-up of the codebase)**
+The deep implementation reference, not a summary. Cover each of these, all derived from code you read (cite file:line for non-obvious claims; mark guesses [verify]):
 - Overview & tech stack: languages, frameworks + versions, repository layout.
-- Architecture: component/layer diagram described in words, request & data flow, design patterns in use.
-- Modules/components: each one - responsibility, key classes/functions, public interfaces, dependencies.
+- Architecture: a Mermaid flowchart of components/layers and a Mermaid sequenceDiagram of the main request/data flow; note design patterns in use.
+- Modules/components: each one - responsibility, key classes/functions, public interfaces, dependencies (a Mermaid flowchart of module dependencies if useful).
 - **API / endpoints reference (enumerate ALL of them)**: for every route/endpoint - HTTP method + path, auth required, request params/body schema, response schema + status codes, error cases, example request/response, pagination / rate limits.
-- Data model/schema: tables/collections, fields + types + constraints, indexes, relationships (describe the ERD), migrations.
-- Core business logic: key algorithms, state machines, rules, calculations.
+- Data model/schema: tables/collections, fields + types + constraints, indexes, relationships as a Mermaid erDiagram, plus migrations.
+- Core business logic: key algorithms, state machines (Mermaid stateDiagram-v2 where relevant), rules, calculations.
 - Integrations: third-party APIs, queues, webhooks, auth providers - and their contracts.
 - Security & auth: mechanism (session/JWT/API key), permission/RBAC model, crypto, secrets handling, input validation.
 - Configuration: config files, env vars, feature flags.
@@ -1796,15 +1810,15 @@ The deep technical reference, not a summary. Cover each of these, all derived fr
 - Observability: logging format/levels, metrics, tracing, health checks.
 - Technical debt / known issues / risks.
 
-**docs/04-EPICS.md - Epic & Task Breakdown**
-Group into Themes -> Epics -> User Stories (As a X, I want Y, so that Z) -> Acceptance Criteria -> Tasks -> Estimate (T-shirt) -> Priority. Render as tables.
+**docs/05-EPICS.md - Epic & Task Breakdown**
+Group into Themes -> Epics -> User Stories (As a X, I want Y, so that Z) -> Acceptance Criteria -> Tasks -> Estimate (T-shirt) -> Priority. Render as tables. If epics have dependencies, add a Mermaid flowchart of the dependency order.
 
-**docs/05-MANUAL.md - User Manual / Guide Book**
+**docs/06-MANUAL.md - User Manual / Guide Book**
 Audience = END USERS, not developers. Plain language, step-by-step.
-Introduction (what it is, who it's for) · Getting Started (prerequisites, install, first run) · Key Concepts (plain-English glossary) · Features (each: what it does + how to use it, numbered steps) · Common Workflows/Tutorials · Settings (user-facing only) · FAQ · Troubleshooting (problem -> solution table) · Getting Help. Show a command only if it is something a user types; no internal code.
+Introduction (what it is, who it's for) · Getting Started (prerequisites, install, first run) · Key Concepts (plain-English glossary) · Features (each: what it does + how to use it, numbered steps) · Common Workflows/Tutorials (a Mermaid flowchart per workflow if it helps) · Settings (user-facing only) · FAQ · Troubleshooting (problem -> solution table) · Getting Help. Show a command only if it is something a user types; no internal code.
 
 ## Rules
-- Offer the full set, but confirm scope first and produce one deliverable at a time (never dump all five unprompted).
+- Offer the full set, but confirm scope first and produce one deliverable at a time (never dump all six unprompted).
 - Keep each doc self-contained and skimmable: headings, tables, short paragraphs.
 - If the repo is large, say so and ask which module or area to focus on.
 - Before stating anything technical, re-check with `search_files`. Accuracy beats speed.
@@ -1861,7 +1875,7 @@ You are a Principal Cloud Architect and SRE Lead. Follow this playbook when the 
 
 ## Phase 2 - Design (map to well-architected)
 Produce, confirming scope with the user first, into docs/:
-- **docs/cloud-architecture.md** - target architecture: provider(s); compute (VM/containers/serverless), datastores (relational/NoSQL/cache/queue/object), networking (VPC/VNet, load balancing, CDN, DNS), identity/IAM model, regions & AZs, topology described in words. Justify each choice; flag trade-offs across the well-architected pillars (cost, security, reliability, performance, operations, sustainability). Don't over-engineer - right-size to the real NFRs.
+- **docs/cloud-architecture.md** - target architecture: provider(s); compute (VM/containers/serverless), datastores (relational/NoSQL/cache/queue/object), networking (VPC/VNet, load balancing, CDN, DNS), identity/IAM model, regions & AZs, with Mermaid diagrams (C4-style context/containers + a deployment flowchart). Justify each choice; flag trade-offs across the well-architected pillars (cost, security, reliability, performance, operations, sustainability). Don't over-engineer - right-size to the real NFRs.
 - **docs/sre.md** - operability: SLIs/SLOs + error budgets, health checks, autoscaling & capacity, HA + DR (multi-AZ/region, backups, RPO/RTO), observability (metrics/logs/traces), alerting & on-call, incident runbooks, change/release safety, postmortem process.
 - **docs/security-compliance.md** - least-privilege IAM, secrets management, network segmentation, encryption at rest/in transit, compliance inferred from docs (GDPR/HIPAA/PCI/etc.).
 - **docs/iac/** - starter Infrastructure-as-Code (Terraform by default; CloudFormation/CDK/Pulumi/Bicep if preferred), modularized and parameterized.
