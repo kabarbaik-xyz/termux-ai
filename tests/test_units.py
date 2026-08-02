@@ -356,6 +356,76 @@ class TestFetchUrl(_TmpHome):
         self.assertIn("Body text", out)
         self.assertNotIn("<html>", out)         # HTML stripped
 
+    def test_github_token_attached_for_api(self):
+        os.environ["GITHUB_TOKEN"] = "ghp_test123"
+        captured = {}
+        class FakeResp:
+            headers = {}
+            _data = b"{}"
+            def read(self, n=-1): return self._data
+            def geturl(self): return "https://api.github.com/repos/x/y"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        def fake_urlopen(req, timeout=10):
+            captured["auth"] = req.headers.get("Authorization")
+            return FakeResp()
+        try:
+            with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+                m.Tools._fetch_url("https://api.github.com/repos/x/y")
+        finally:
+            os.environ.pop("GITHUB_TOKEN", None)
+        self.assertEqual(captured.get("auth"), "token ghp_test123")
+
+    def test_no_token_for_other_hosts(self):
+        os.environ["GITHUB_TOKEN"] = "ghp_test123"
+        captured = {}
+        class FakeResp:
+            headers = {}
+            _data = b"plain"
+            def read(self, n=-1): return self._data
+            def geturl(self): return "https://example.com/"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        def fake_urlopen(req, timeout=10):
+            captured["auth"] = req.headers.get("Authorization")
+            return FakeResp()
+        try:
+            with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+                m.Tools._fetch_url("https://example.com/")
+        finally:
+            os.environ.pop("GITHUB_TOKEN", None)
+        self.assertIsNone(captured.get("auth"))
+
+
+class TestCloneRepo(_TmpHome):
+    def test_requires_build_mode(self):
+        out = m.Tools.run("clone_repo", {"url": "https://github.com/x/y"}, build_mode=False)
+        self.assertIn("Build mode", out)
+
+    def test_rejects_non_https(self):
+        out = m.Tools.run("clone_repo", {"url": "git@github.com:x/y.git"}, build_mode=True)
+        self.assertIn("https", out)
+        out2 = m.Tools.run("clone_repo", {"url": "file:///etc"}, build_mode=True)
+        self.assertIn("https", out2)
+
+    def test_excluded_from_plan_tools(self):
+        names = [t["function"]["name"] for t in m.Tools.PLAN_TOOLS]
+        self.assertIn("fetch_url", names)      # read-only -> plan OK
+        self.assertNotIn("clone_repo", names)  # writes -> build only
+        self.assertNotIn("write_file", names)
+
+    def test_happy_path(self):
+        class FakeProc:
+            returncode = 0
+            def communicate(self, timeout=None): return ("Cloning into...", "")
+        with um.patch.object(m.subprocess, "Popen", return_value=FakeProc()):
+            out = m.Tools.run("clone_repo", {"url": "https://github.com/octocat/Hello-World.git"}, build_mode=True)
+        self.assertIn("Cloned", out)
+        import re as _re
+        mm = _re.search(r"to:\s+(\S+)", out)
+        if mm:
+            shutil.rmtree(mm.group(1), ignore_errors=True)  # clean up the temp dir
+
 
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
