@@ -319,7 +319,7 @@ class App:
                 elif et == "tool_result":
                     if self.quiet: continue
                     res = event['result']
-                    if len(res) > 200: res = res[:200] + "..."
+                    if len(res) > 800: res = res[:800] + "..."
                     print(f"{C.DIM}{res}{C.RESET}\n")
                 elif et == "notice":
                     if fmt: fmt.flush()

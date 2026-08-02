@@ -469,6 +469,39 @@ class TestLocalScan(_TmpHome):
         self.assertIn("main.py", out)
 
 
+class TestTrimHistory(_TmpHome):
+    def _msg(self, role, content, **kw):
+        d = {"role": role, "content": content}; d.update(kw); return d
+    def _tc(self, mid, name="read_file", args='{"path":"x"}'):
+        return [{"id": mid, "type": "function", "function": {"name": name, "arguments": args}}]
+
+    def test_latest_tool_result_is_protected(self):
+        msgs = [
+            self._msg("system", "sys"),
+            self._msg("user", "go"),
+            self._msg("assistant", "reading", tool_calls=self._tc("1")),
+            self._msg("tool", "X" * 5000, tool_call_id="1"),  # the only/latest result
+        ]
+        m.Backend._trim_iteration_history(msgs, budget=400)  # tiny budget -> would trim
+        self.assertEqual(msgs[3]["content"], "X" * 5000)    # but latest is protected
+
+    def test_older_results_snippet_trimmed_latest_kept(self):
+        old_big = "IMPORTANT-HEAD" + ("Y" * 5000)
+        msgs = [
+            self._msg("system", "sys"),
+            self._msg("user", "go"),
+            self._msg("assistant", "r1", tool_calls=self._tc("1")),
+            self._msg("tool", old_big, tool_call_id="1"),       # OLDER big result
+            self._msg("assistant", "r2", tool_calls=self._tc("2")),
+            self._msg("tool", "Z" * 5000, tool_call_id="2"),    # LATEST big result
+        ]
+        m.Backend._trim_iteration_history(msgs, budget=400)
+        self.assertIn("IMPORTANT-HEAD", msgs[3]["content"])   # head snippet survives
+        self.assertIn("trimmed", msgs[3]["content"].lower())
+        self.assertLess(len(msgs[3]["content"]), 700)
+        self.assertEqual(msgs[5]["content"], "Z" * 5000)      # latest untouched
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

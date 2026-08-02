@@ -273,7 +273,7 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 - **CWD sandbox** — `write_file` is restricted to the current working directory for safety
 - **Reflect-on-failure** — when a tool action errors or is blocked, a system note asks the AI to state what it will do differently before the next step (it learns the rules from the tool description up front, so it rarely proposes a blocked command at all)
 - **Failure guard** — after 3 consecutive failed action rounds the AI stops and explains (rather than thrashing); a hard cap of 25 iterations remains as a runaway backstop. Every 10 tool calls you're prompted to continue (skipped automatically in one-shot/piped mode)
-- **Bounded context** — long tool outputs are truncated (~2000 chars) and older tool iterations are trimmed out in-loop, so requests stay within budget even on long multi-step sessions
+- **Bounded context** — each tool result is capped (default ~10 KB) and older tool results are trimmed to head snippets in-loop so long multi-step sessions stay within budget. **The most recent result is always kept in full** (the model must see what it just read to continue)
 - **Final answer only** — mid-loop narration streams live to the terminal, but only the final answer is saved to chat history
 
 ---
