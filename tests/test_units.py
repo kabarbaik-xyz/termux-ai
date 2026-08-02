@@ -205,9 +205,9 @@ class TestSkills(_TmpHome):
 
     def test_seed_and_load(self):
         sk = self._skills()
-        self.assertEqual(sorted(sk.seed()), ["commit", "python", "reverse-engineer", "review"])
+        self.assertEqual(sorted(sk.seed()), ["commit", "data-engineer", "python", "reverse-engineer", "review"])
         self.assertEqual(sk.seed(), [])  # doesn't overwrite
-        self.assertEqual(sorted(n for n, _ in sk.list()), ["commit", "python", "reverse-engineer", "review"])
+        self.assertEqual(sorted(n for n, _ in sk.list()), ["commit", "data-engineer", "python", "reverse-engineer", "review"])
         meta, body = sk.load("review")
         self.assertEqual(meta["mode"], "once")
         self.assertIn("senior code reviewer", body)
@@ -516,6 +516,59 @@ class TestTrimHistory(_TmpHome):
         self.assertIn("trimmed", msgs[3]["content"].lower())
         self.assertLess(len(msgs[3]["content"]), 700)
         self.assertEqual(msgs[5]["content"], "Z" * 5000)      # latest untouched
+
+
+class TestXlsxReader(_TmpHome):
+    def _build_xlsx(self, shared, sheet_rows):
+        """Build a minimal xlsx the parser can read. sheet_rows: list of rows,
+        each a list of cell tuples (type, value): 's'=shared-string idx,
+        'n'=number string, 'gap'=skip (sparse)."""
+        import zipfile, io
+        SS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        shared_xml = '<?xml version="1.0"?><sst %s>' % SS + "".join("<si><t>%s</t></si>" % s for s in shared) + "</sst>"
+        sheet_xml = '<?xml version="1.0"?><worksheet %s><sheetData>' % SS
+        for ri, row in enumerate(sheet_rows, 1):
+            sheet_xml += '<row r="%d">' % ri
+            for ci, cell in enumerate(row):
+                col = chr(65 + ci)
+                t, val = cell
+                if t == "s": sheet_xml += '<c r="%s%d" t="s"><v>%s</v></c>' % (col, ri, val)
+                elif t == "n": sheet_xml += '<c r="%s%d"><v>%s</v></c>' % (col, ri, val)
+                # 'gap' -> omit the cell entirely (sparse)
+            sheet_xml += '</row>'
+        sheet_xml += '</sheetData></worksheet>'
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("xl/sharedStrings.xml", shared_xml)
+            z.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        return buf.getvalue()
+
+    def test_xlsx_reconstructs_table(self):
+        data = self._build_xlsx(["Name", "Age", "Alice", "Bob"], [
+            [("s", 0), ("s", 1)],      # Name | Age
+            [("s", 2), ("n", "30")],   # Alice | 30
+            [("s", 3), ("n", "25")],   # Bob | 25
+        ])
+        p = os.path.join(os.getcwd(), "t.xlsx"); open(p, "wb").write(data)
+        out = m.Tools.run("read_file", {"path": p})
+        self.assertIn("Name | Age", out)
+        self.assertIn("Alice | 30", out)
+        self.assertIn("Bob | 25", out)
+
+    def test_xlsx_aligns_sparse_columns(self):
+        # row2: A=Bob, C=Engineer (B skipped) -> must keep 3 columns
+        data = self._build_xlsx(["Name", "Age", "Bob", "Engineer"], [
+            [("s", 0), ("s", 1)],
+            [("s", 2), ("gap", None), ("s", 3)],
+        ])
+        p = os.path.join(os.getcwd(), "s.xlsx"); open(p, "wb").write(data)
+        out = m.Tools.run("read_file", {"path": p})
+        bob = [ln for ln in out.splitlines() if "Bob" in ln][0]
+        parts = bob.split(" | ")
+        self.assertEqual(len(parts), 3)        # gap-filled to 3 columns
+        self.assertEqual(parts[0], "Bob")
+        self.assertEqual(parts[1], "")         # the skipped column B
+        self.assertEqual(parts[2], "Engineer")
 
 
 class TestHelpers(unittest.TestCase):

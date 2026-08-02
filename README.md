@@ -342,6 +342,10 @@ Bundled example skills ship in the repo's [`skills/`](skills/) directory for ref
 
 **`reverse-engineer`** (session) — a PM/PO playbook: turn a code repo into **BRD → PRD → TSD → Epic/Task breakdown → User Manual/Guide**, each written to `docs/`. It drives `clone_repo` / `fetch_url` / `search_files`, verifies every claim against the real code, and matches your language (Bahasa/English). Activate with `/skill reverse-engineer`, then e.g. *"analyze github.com/owner/repo and start with the BRD"*. (Best with a capable model; on 8 GB use `qwen2.5:3b`+, ideally cloud for the technical docs.)
 
+**`data-engineer`** (session) — a Data Engineer / BI playbook. Reads a data report (`.xlsx`/`.xls`/`.csv`) **and** an objective doc (`.docx`/`.doc`/`.pdf`/`.txt`) via `read_file`, elaborates the real business need in `docs/analysis.md` (working **both** directions: report→dashboard and dashboard→report), then builds a self-contained single-page **HTML BI dashboard** (`dashboard.html`, inline CSS/JS/SVG, no CDN, opens offline). Activate `/skill data-engineer`, then *"read sales.xlsx and the brief.pdf, then build the dashboard"*.
+
+> **Binary file reading**: `read_file` parses `.xlsx` (full row/column table, sparse-aware), `.docx`, `.pptx` natively (stdlib, no deps), and `.pdf` via `pdftotext` (install with `pkg install poppler`). Legacy `.xls`/`.doc` aren't supported — convert to `.xlsx`/`.csv`/`.docx`.
+
 Skills compose with everything else: `/strategy on` + `/skill review`, or `/tools on` + `/skill commit`.
 
 ---

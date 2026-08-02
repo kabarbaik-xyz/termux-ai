@@ -44,10 +44,62 @@ class FileReader:
 
     @staticmethod
     def _read_xlsx(path):
-        texts = []
-        with zipfile.ZipFile(path) as z:
-            if "xl/sharedStrings.xml" not in z.namelist(): return "[No text data found in xlsx]"
-            xml = z.read("xl/sharedStrings.xml").decode("utf-8")
-            for s in re.findall(r"<si>(.*?)</si>", xml, re.DOTALL):
-                texts.append(html.unescape("".join(re.findall(r"<t[^>]*>(.*?)</t>", s, re.DOTALL))))
-        return "\n".join(texts).strip()
+        """Reconstruct the worksheet table: resolve shared strings / inline
+        strings / numbers per cell, honour sparse columns via the cell ref
+        (e.g. 'C3'), and emit pipe-delimited rows so the data shape survives."""
+        import xml.etree.ElementTree as ET
+        def ln(tag): return tag.rsplit("}", 1)[-1]
+        def kids(el, name): return [c for c in el.iter() if ln(c.tag) == name]
+        try:
+            z = zipfile.ZipFile(path)
+        except Exception as e:
+            return "[Error opening xlsx: %s]" % e
+        names = z.namelist()
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            try:
+                root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+                for si in kids(root, "si"):
+                    shared.append("".join((t.text or "") for t in si.iter() if ln(t.tag) == "t"))
+            except Exception:
+                pass
+        sheets = [n for n in names if re.match(r"^xl/worksheets/sheet\d+\.xml$", n)]
+        sheets.sort(key=lambda n: int(re.search(r"(\d+)\.xml$", n).group(1)))
+        out = []
+        for sname in sheets:
+            try:
+                root = ET.fromstring(z.read(sname))
+            except Exception:
+                continue
+            def cidx(ref):
+                m = re.match(r"([A-Z]+)", ref or "")
+                if not m: return 0
+                n = 0
+                for ch in m.group(1): n = n * 26 + (ord(ch) - 64)
+                return n - 1
+            rows_out = []
+            for row in kids(root, "row"):
+                cells = []
+                for c in list(row):
+                    if ln(c.tag) != "c": continue
+                    t_attr = c.get("t")
+                    v = next((x for x in c if ln(x.tag) == "v"), None)
+                    isn = next((x for x in c if ln(x.tag) == "is"), None)
+                    if t_attr == "s" and v is not None:
+                        try: val = shared[int(v.text)]
+                        except Exception: val = ""
+                    elif t_attr == "inlineStr" and isn is not None:
+                        val = "".join((tt.text or "") for tt in isn.iter() if ln(tt.tag) == "t")
+                    elif v is not None:
+                        val = v.text
+                    else:
+                        val = ""
+                    idx = cidx(c.get("r", ""))
+                    while len(cells) <= idx: cells.append("")
+                    if idx < len(cells): cells[idx] = val
+                if any(cells):
+                    rows_out.append(" | ".join(cells))
+            if rows_out:
+                out.append("### %s (%d rows)" % (sname, len(rows_out)))
+                out.extend(rows_out)
+        return "\n".join(out).strip() or "[No data found in xlsx]"
