@@ -267,7 +267,8 @@ In PLAN mode, the following command patterns are **automatically blocked** to pr
 The AI can also **write files** and **run any shell command**. Key behaviors:
 
 - **Batch confirmation** — all tool calls in one response are shown together; you approve or decline the entire batch with a single y/N
-- **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`) execute automatically without prompting
+- **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`, `fetch_url`) execute automatically without prompting
+- **Web research** — `fetch_url` does an HTTP GET and returns the page as readable text (HTML stripped). The AI uses it to read/research websites directly. It refuses private/local addresses (127.0.0.1, localhost, 10.x …) as an SSRF guard unless `AI_FETCH_ALLOW_PRIVATE=1` is set; ~500 KB cap, 10s timeout.
 - **CWD sandbox** — `write_file` is restricted to the current working directory for safety
 - **Reflect-on-failure** — when a tool action errors or is blocked, a system note asks the AI to state what it will do differently before the next step (it learns the rules from the tool description up front, so it rarely proposes a blocked command at all)
 - **Failure guard** — after 3 consecutive failed action rounds the AI stops and explains (rather than thrashing); a hard cap of 25 iterations remains as a runaway backstop. Every 10 tool calls you're prompted to continue (skipped automatically in one-shot/piped mode)

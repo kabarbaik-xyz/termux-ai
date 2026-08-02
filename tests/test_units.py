@@ -305,6 +305,58 @@ class TestConfirmStopsSpinner(_TmpHome):
         self.assertIsNone(app.spinner)
 
 
+class TestFetchUrl(_TmpHome):
+    def test_html_to_text(self):
+        html_in = ("<html><head><title>T</title><style>x{}</style></head>"
+                   "<body><h1>Title</h1><p>Hello &amp; <b>welcome</b></p>"
+                   "<script>bad()</script></body></html>")
+        out = m.Tools._html_to_text(html_in)
+        self.assertIn("Title", out)
+        self.assertIn("Hello & welcome", out)   # entity unescaped, tags stripped
+        self.assertNotIn("bad()", out)          # script removed
+        self.assertNotIn("<b>", out)
+
+    def test_rejects_non_http(self):
+        self.assertIn("must start with http", m.Tools._fetch_url("ftp://x.com"))
+        self.assertIn("must start with http", m.Tools._fetch_url("example.com"))
+
+    def test_blocks_private_addresses(self):
+        self.assertIn("SSRF", m.Tools._fetch_url("http://127.0.0.1:8080/"))
+        self.assertIn("SSRF", m.Tools._fetch_url("http://localhost/"))
+        self.assertIn("SSRF", m.Tools._fetch_url("http://10.0.0.1/"))
+
+    def test_private_allowed_with_env(self):
+        os.environ["AI_FETCH_ALLOW_PRIVATE"] = "1"
+        try:
+            class FakeResp:
+                headers = {}
+                _data = b"ok from local"
+                def read(self, n=-1): return self._data
+                def geturl(self): return "http://127.0.0.1/"
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            with um.patch.object(m.urllib.request, "urlopen", return_value=FakeResp()):
+                out = m.Tools._fetch_url("http://127.0.0.1/")
+        finally:
+            os.environ.pop("AI_FETCH_ALLOW_PRIVATE", None)
+        self.assertIn("ok from local", out)
+
+    def test_fetch_happy_path_html(self):
+        class FakeResp:
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+            _data = b"<html><body><h1>Hello World</h1><p>Body text</p></body></html>"
+            def read(self, n=-1): return self._data
+            def geturl(self): return "https://example.com/page"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        with um.patch.object(m.urllib.request, "urlopen", return_value=FakeResp()):
+            out = m.Tools._fetch_url("https://example.com/page")
+        self.assertIn("Fetched https://example.com/page", out)
+        self.assertIn("Hello World", out)
+        self.assertIn("Body text", out)
+        self.assertNotIn("<html>", out)         # HTML stripped
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

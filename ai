@@ -5,7 +5,7 @@
 Single-file, zero-dependency (stdlib only). Talks to any OpenAI-compatible
 endpoint, or natively to Anthropic's Messages API.
 """
-import os, sys, json, sqlite3, urllib.request, urllib.error, subprocess, atexit, shutil, time, threading, re, html, shlex, signal
+import os, sys, json, sqlite3, urllib.request, urllib.error, urllib.parse, subprocess, atexit, shutil, time, threading, re, html, shlex, signal, ipaddress
 import select, tempfile
 import zipfile
 from pathlib import Path
@@ -666,7 +666,7 @@ class Config:
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 class Tools:
-    SAFE_TOOLS = {"read_file", "list_files", "search_files"}
+    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url"}
 
     TOOLS = [
         {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
@@ -674,6 +674,7 @@ class Tools:
         {"type": "function", "function": {"name": "list_files", "description": "List files in directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
         {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
+        {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
     ]
     PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] != "write_file"]
     
@@ -911,6 +912,77 @@ class Tools:
         return [{"name": t["function"]["name"], "description": t["function"]["description"], "input_schema": t["function"]["parameters"]} for t in Tools.get_schemas(build_mode)]
 
     @staticmethod
+    def _allow_private():
+        return os.environ.get("AI_FETCH_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
+
+    @staticmethod
+    def _is_private_host(host):
+        """True for an IP literal in private/loopback/etc ranges, or localhost.
+        DNS hostnames can't be fully checked cheaply (rebinding), so we only
+        guard obvious literals -- the device is single-user and low-stakes."""
+        host = (host or "").lower().strip()
+        if not host:
+            return False
+        if host == "localhost" or host.endswith(".localhost"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _html_to_text(s):
+        """Crude HTML -> readable text: drop script/style/template, add line
+        breaks for block elements, strip remaining tags, unescape entities."""
+        s = re.sub(r"(?is)<(script|style|noscript|template)\b[^>]*>.*?</\1>", "", s)
+        s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+        s = re.sub(r"(?i)<li\b[^>]*>", "\n- ", s)
+        s = re.sub(r"(?i)<h[1-6]\b[^>]*>", "\n## ", s)
+        s = re.sub(r"(?i)</(p|div|li|tr|td|th|h[1-6]|section|article|header|footer|ul|ol|table)>", "\n", s)
+        s = re.sub(r"<[^>]+>", "", s)
+        s = html.unescape(s)
+        s = re.sub(r"[ \t]+", " ", s)
+        s = re.sub(r"\n[ \t]+", "\n", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
+
+    @staticmethod
+    def _fetch_url(url, timeout=10, max_bytes=500000):
+        url = (url or "").strip()
+        if not re.match(r"^https?://", url, re.I):
+            return "Error: URL must start with http:// or https://"
+        try:
+            host = urllib.parse.urlparse(url).hostname or ""
+        except Exception:
+            host = ""
+        if Tools._is_private_host(host) and not Tools._allow_private():
+            return ("Error: refusing to fetch private/local address '%s' (SSRF guard). "
+                    "Set env AI_FETCH_ALLOW_PRIVATE=1 to allow." % host)
+        req = urllib.request.Request(url, headers={"User-Agent": "termux-ai/%s (+CLI)" % __version__})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ctype = resp.headers.get("Content-Type", "").lower()
+                data = resp.read(max_bytes + 1)
+                final_url = resp.geturl()
+        except urllib.error.HTTPError as e:
+            return "HTTP %d %s for %s" % (e.code, e.reason, url)
+        except urllib.error.URLError as e:
+            return "Error: could not fetch %s (%s)" % (url, getattr(e, "reason", e))
+        except Exception as e:
+            return "Error: %s" % e
+        truncated = len(data) > max_bytes
+        if truncated:
+            data = data[:max_bytes]
+        text = data.decode("utf-8", "replace")
+        looks_html = ("html" in ctype or text.lstrip()[:200].lower().startswith("<!doctype html")
+                      or "<html" in text.lower()[:500])
+        if looks_html:
+            text = Tools._html_to_text(text)
+        note = " (truncated at %d KB)" % (max_bytes // 1000) if truncated else ""
+        return "Fetched %s%s\n\n%s" % (final_url, note, text.strip())
+
+    @staticmethod
     def run(name, args, build_mode=False, max_result=10000):
         # Note: we intentionally do NOT memoize results. A previous cache caused
         # stale file contents to be served to the model within a session (C1).
@@ -982,6 +1054,8 @@ class Tools:
                 path = args.get("path", ".")
                 r = subprocess.run(["grep", "-rn", "--", args.get("query", ""), path], capture_output=True, text=True, timeout=15)
                 return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
+            elif name == "fetch_url":
+                return Tools._fetch_url(args.get("url", ""))
             return "Unknown tool"
         except Exception as e: return f"Error: {e}"
 
