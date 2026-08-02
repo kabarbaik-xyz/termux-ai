@@ -348,6 +348,8 @@ Bundled example skills ship in the repo's [`skills/`](skills/) directory for ref
 
 **`finops`** (session) — cloud cost optimization. Reads IaC (Terraform/CDK/CloudFormation/Pulumi/Bicep), architecture docs, and billing CSV/XLSX exports to find waste (idle/oversized compute, wrong storage tier, egress, non-prod 24/7, missing commit discounts) and writes `docs/finops-assessment.md`, `docs/finops-recommendations.md` (prioritized: effort/impact/risk), and `docs/finops-governance.md` (tagging, budgets, unit-economics KPIs). Activate `/skill finops`, then *"audit the terraform in this folder for savings"*.
 
+**`pentest`** (session) — authorized security assessment. Enumerates the attack surface of a codebase (`clone_repo` / recursive `list_files` / `search_files`) and/or infra/IaC, runs available scanners when present (npm/pip audit, semgrep, bandit, tfsec, checkov, gitleaks, trivy), and evaluates against **OWASP Top 10/ASVS, NIST CSF, CIS Controls**. Writes `docs/security-assessment.md` (exec summary + risk rating), `docs/vulnerabilities.md` (each finding: severity, exact file:line, framework reference, remediation), `docs/dependency-audit.md` (CVEs → fixed-in), `docs/infra-hardening.md`, and `docs/remediation-plan.md` (quick wins first). Authorized-scope only, fix-oriented, no weaponization. Activate `/skill pentest`, then *"security-review this repo"*.
+
 > **Binary file reading**: `read_file` parses `.xlsx` (full row/column table, sparse-aware), `.docx`, `.pptx` natively (stdlib, no deps), and `.pdf` via `pdftotext` (install with `pkg install poppler`). Legacy `.xls`/`.doc` aren't supported — convert to `.xlsx`/`.csv`/`.docx`.
 
 Skills compose with everything else: `/strategy on` + `/skill review`, or `/tools on` + `/skill commit`.
