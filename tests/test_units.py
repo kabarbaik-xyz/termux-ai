@@ -427,6 +427,48 @@ class TestCloneRepo(_TmpHome):
             shutil.rmtree(mm.group(1), ignore_errors=True)  # clean up the temp dir
 
 
+class TestLocalScan(_TmpHome):
+    def _tree(self):
+        # app/main.py, app/utils/helpers.py + junk: node_modules, .git, dist
+        base = Path(os.getcwd()) / "app"
+        (base / "utils").mkdir(parents=True)
+        (base / "main.py").write_text("print('main')")
+        (base / "utils" / "helpers.py").write_text("def foo(): pass")
+        (base / "node_modules").mkdir()
+        (base / "node_modules" / "dep.js").write_text("var searchme = 1")
+        (base / "dist").mkdir()
+        (base / "dist" / "bundle.js").write_text("var searchme = 2")
+        (base / ".git").mkdir()
+        (base / ".git" / "config").write_text("searchme")
+        return base
+
+    def test_list_files_nonrecursive(self):
+        app_dir = self._tree()
+        out = m.Tools.run("list_files", {"path": str(app_dir)})
+        self.assertIn("main.py", out)
+        self.assertIn("utils", out)
+
+    def test_list_files_recursive_ignores_junk(self):
+        app_dir = self._tree()
+        out = m.Tools.run("list_files", {"path": str(app_dir), "recursive": True})
+        self.assertIn("main.py", out)
+        self.assertIn(os.path.join("utils", "helpers.py"), out)
+        self.assertNotIn("node_modules", out)
+        self.assertNotIn(".git", out)
+        self.assertNotIn("dist", out)
+
+    def test_search_files_ignores_junk(self):
+        app_dir = self._tree()
+        # 'searchme' only exists inside node_modules/dist/.git -> all ignored
+        out = m.Tools.run("search_files", {"query": "searchme", "path": str(app_dir)})
+        self.assertEqual(out, "No matches")
+
+    def test_search_files_finds_real(self):
+        app_dir = self._tree()
+        out = m.Tools.run("search_files", {"query": "print", "path": str(app_dir)})
+        self.assertIn("main.py", out)
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

@@ -1,11 +1,19 @@
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 class Tools:
     SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url"}
+    # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
+    # build noise (node_modules, .git, __pycache__, dist, ...) doesn't flood the
+    # AI's context when it scans a local codebase. (AI can still read_file a
+    # specific file inside one of these if it really needs to.)
+    IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox",
+                   "dist", "build", ".next", ".nuxt", "target", ".pytest_cache",
+                   ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "coverage",
+                   ".gradle", ".cache", ".terraform", ".eggs", ".sass-cache", "Pods"}
 
     TOOLS = [
         {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "write_file", "description": "Write content to file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
-        {"type": "function", "function": {"name": "list_files", "description": "List files in directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
+        {"type": "function", "function": {"name": "list_files", "description": "List files in a directory. Set recursive=true to map the whole tree (auto-skips dependency/VCS/build dirs like node_modules, .git, __pycache__, dist).", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
@@ -410,7 +418,17 @@ class Tools:
                 return f"Written to {p}"
             elif name == "list_files":
                 p = os.path.expanduser(args.get("path", "."))
-                return "\n".join(sorted(e for e in os.listdir(p) if not e.startswith(".")))
+                if not args.get("recursive", False):
+                    return "\n".join(sorted(e for e in os.listdir(p) if not e.startswith(".")))
+                entries = []
+                for root, dirs, files in os.walk(p):
+                    dirs[:] = sorted(d for d in dirs if d not in Tools.IGNORE_DIRS and not d.startswith("."))
+                    for f in sorted(files):
+                        if f.startswith("."): continue
+                        entries.append(os.path.relpath(os.path.join(root, f), p))
+                        if len(entries) >= 500:
+                            return "\n".join(entries) + "\n...[tree truncated at 500 entries]"
+                return "\n".join(entries) or "(empty)"
             elif name == "run_command":
                 cmd_str = args.get("command", "")
                 if not cmd_str: return "Error: Command is missing."
@@ -440,7 +458,11 @@ class Tools:
                     return f"Error executing command: {e}"
             elif name == "search_files":
                 path = args.get("path", ".")
-                r = subprocess.run(["grep", "-rn", "--", args.get("query", ""), path], capture_output=True, text=True, timeout=15)
+                cmd = ["grep", "-rn"]
+                for d in Tools.IGNORE_DIRS:
+                    cmd += ["--exclude-dir", d]
+                cmd += ["--", args.get("query", ""), path]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
             elif name == "fetch_url":
                 return Tools._fetch_url(args.get("url", ""))
