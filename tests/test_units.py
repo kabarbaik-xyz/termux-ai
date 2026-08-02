@@ -205,9 +205,9 @@ class TestSkills(_TmpHome):
 
     def test_seed_and_load(self):
         sk = self._skills()
-        self.assertEqual(sorted(sk.seed()), ["commit", "python", "review"])
+        self.assertEqual(sorted(sk.seed()), ["commit", "python", "reverse-engineer", "review"])
         self.assertEqual(sk.seed(), [])  # doesn't overwrite
-        self.assertEqual(sorted(n for n, _ in sk.list()), ["commit", "python", "review"])
+        self.assertEqual(sorted(n for n, _ in sk.list()), ["commit", "python", "reverse-engineer", "review"])
         meta, body = sk.load("review")
         self.assertEqual(meta["mode"], "once")
         self.assertIn("senior code reviewer", body)

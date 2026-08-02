@@ -329,7 +329,7 @@ Two run modes (`mode:` in front-matter):
 
 ```bash
 /skill                     # list skills (* = active session skill)
-/skill seed                # drop in the bundled examples (review, commit, python)
+/skill seed                # drop in the bundled examples (review, commit, python, reverse-engineer)
 /skill review ./main.py    # run a once-skill
 /skill python              # toggle a session-skill on/off
 /skill show review         # view a skill
@@ -339,6 +339,8 @@ Two run modes (`mode:` in front-matter):
 ```
 
 Bundled example skills ship in the repo's [`skills/`](skills/) directory for reference; `/skill seed` copies them into your skills dir.
+
+**`reverse-engineer`** (session) — a PM/PO playbook: turn a code repo into **BRD → PRD → TSD → Epic/Task breakdown → User Manual/Guide**, each written to `docs/`. It drives `clone_repo` / `fetch_url` / `search_files`, verifies every claim against the real code, and matches your language (Bahasa/English). Activate with `/skill reverse-engineer`, then e.g. *"analyze github.com/owner/repo and start with the BRD"*. (Best with a capable model; on 8 GB use `qwen2.5:3b`+, ideally cloud for the technical docs.)
 
 Skills compose with everything else: `/strategy on` + `/skill review`, or `/tools on` + `/skill commit`.
 
