@@ -493,6 +493,12 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             if args:
                 self._override_model(args[0])
                 self.success(f"Retrying with model {args[0]}.")
+            # An interrupted turn resumes from its checkpoint (never redoes
+            # already-completed tool steps) instead of restarting from scratch.
+            if self.db.get_resume_state(self.cid):
+                model = (self.backend.profile.get("model", "") if self.backend else "") or ""
+                self._continue_from_checkpoint(self.cid, model)
+                return
             self.db.undo_last_msg_pair(self.cid)
             self._chat(self.last_user_msg)
         else: self.warn("Nothing to regenerate.")

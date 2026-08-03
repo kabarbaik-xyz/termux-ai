@@ -3,6 +3,7 @@
 compaction, and small helpers. Run:  python3 tests/test_units.py"""
 import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
 import io
+import json
 import unittest.mock as um
 from pathlib import Path
 
@@ -967,6 +968,76 @@ class TestHygiene(_TmpHome):
         self.assertEqual([(x["role"], x["content"]) for x in app2.db.get_msgs(app2.cid)],
                          [("user", "q1"), ("assistant", "a1")])
         self.assertEqual(app2.db.get_conv(app2.cid)["title"], "roundtrip")
+
+
+class TestInterruptContinue(_TmpHome):
+    def test_handle_interruption_auto_continues_and_saves(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai"); app.cid = cid
+        ck = [{"role": "system", "content": "sys"},
+              {"role": "user", "content": "build thing"},
+              {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+              {"role": "tool", "tool_call_id": "c1", "content": "file contents"}]
+        calls = {"n": 0}
+        def fake(msgs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                app._pending_checkpoint = [dict(k) for k in msgs]
+                return ""
+            return "final answer"
+        with um.patch.object(app, "_stream_tool_chat", side_effect=fake), um.patch("time.sleep"):
+            app._handle_interruption(ck, "gemma")
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(app.db.get_msgs(cid)[-1]["content"], "final answer")
+        self.assertIsNone(app.db.get_resume_state(cid))
+
+    def test_auto_continue_off_keeps_checkpoint_and_saves_nothing(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai"); app.cid = cid
+        app.cfg.set("auto_continue", False)
+        ck = [{"role": "user", "content": "x"}, {"role": "tool", "tool_call_id": "c", "content": "r"}]
+        with um.patch.object(app, "_stream_tool_chat") as st:
+            app._handle_interruption(ck, "m")
+        st.assert_not_called()
+        self.assertIsNotNone(app.db.get_resume_state(cid))
+        self.assertEqual(len(app.db.get_msgs(cid)), 0)
+
+    def test_auto_continue_gives_up_after_max_and_keeps_checkpoint(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai"); app.cid = cid
+        ck = [{"role": "user", "content": "x"}, {"role": "tool", "tool_call_id": "c", "content": "r"}]
+        def fake(msgs):
+            app._pending_checkpoint = [dict(k) for k in msgs]
+            return ""   # keeps failing
+        with um.patch.object(app, "_stream_tool_chat", side_effect=fake), um.patch("time.sleep") as sl:
+            app._handle_interruption(ck, "m")
+        self.assertIsNotNone(app.db.get_resume_state(cid))
+        self.assertEqual(len(app.db.get_msgs(cid)), 0)
+
+    def test_retry_continues_from_checkpoint(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai"); app.cid = cid; app.last_user_msg = "x"
+        ck = [{"role": "user", "content": "x"}, {"role": "tool", "tool_call_id": "c", "content": "r"}]
+        app.db.set_resume_state(cid, json.dumps(ck))
+        with um.patch.object(app, "_stream_tool_chat", return_value="recovered"), um.patch("time.sleep"):
+            app._cmd_regen([])
+        self.assertEqual(app.db.get_msgs(cid)[-1]["content"], "recovered")
+        self.assertIsNone(app.db.get_resume_state(cid))
+
+    def test_count_tool_steps(self):
+        msgs = [{"role": "tool", "content": "a"}, {"role": "tool", "content": "b"},
+                {"role": "user", "content": [{"type": "tool_result", "content": "c"}]},
+                {"content": "plain"}]
+        self.assertEqual(m.App._count_tool_steps(msgs), 3)
+
+    def test_resume_shows_pending_notice(self):
+        app = m.App(); app.quiet = False
+        cid = app.db.new_conv("t", "m", "openai")
+        app.db.set_resume_state(cid, json.dumps([{"role": "tool", "tool_call_id": "c", "content": "r"}]))
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try: app._activate(cid, banner=True)
+        finally: sys.stdout = old
+        self.assertIn("Interrupted turn pending", buf.getvalue())
 
 
 class TestHelpers(unittest.TestCase):

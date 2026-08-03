@@ -282,6 +282,21 @@ and is re-attached on every turn, so the new model picks up exactly where the
 last one left off. `/model` and `/backend` confirm how many messages stay in
 context after the switch.
 
+### Interrupted turns: continue, never restart
+
+When a connection drops or a backend fails **mid-task**, the app snapshots the
+in-flight state (already-executed tool calls + results) into a checkpoint and
+**auto-continues** (config `auto_continue`, default **on**): a notice shows the
+completed steps with a 2s window to press Ctrl+C and skip, then the model
+receives a *"continue, don't redo"* instruction and picks up from the last
+completed step — tool work is never re-executed from scratch. Up to
+`max_auto_continue` (default 2) attempts before giving up.
+
+The checkpoint is persisted, so after a phone kill/reboot, resuming the
+session shows `[Interrupted turn pending: N tool steps completed]` and
+`/retry` continues from the checkpoint instead of restarting. A fresh user
+message clears the pending checkpoint.
+
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.

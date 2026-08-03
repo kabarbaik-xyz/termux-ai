@@ -41,6 +41,8 @@ class Config:
         "continue_every": 10,
         "auto_resume": True,
         "prune_days": 0,
+        "auto_continue": True,
+        "max_auto_continue": 2,
         "retries": 3,
         "retry_delay": 1.0,
         "fold_long_blocks": True,

@@ -29,6 +29,7 @@ class App:
         self._auto_continue = False
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
         self._errored = False  # set when a request fails (for one-shot exit codes)
+        self._pending_checkpoint = None  # in-flight msgs snapshot when a turn is interrupted mid-stream
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
 
@@ -349,8 +350,13 @@ class App:
             self._errored = True
             _dbg_exc(e)
             if current_block or did_tools or buf:
-                self.err("Connection dropped mid-reply (network hiccup). Nothing was saved - run /retry to regenerate with the same context.")
-            elif self.quiet: sys.stderr.write(f"Error: {e}\n")
+                # Mid-stream / mid-tool interruption: snapshot the in-flight
+                # state -- executed tool results are already in msgs -- so the
+                # turn can CONTINUE instead of restarting from scratch.
+                self._pending_checkpoint = [dict(m) for m in msgs]
+                return ""
+            self._pending_checkpoint = None
+            if self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(f"Tool chat error: {e}")
             return ""
         finally:
@@ -417,6 +423,10 @@ class App:
                 else:
                     tail = ""
                 print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
+            ck = self.db.get_resume_state(cid)
+            if ck:
+                steps = self._count_tool_steps(ck)
+                print(f"{C.YELLOW}[Interrupted turn pending: {steps} tool step{'s' if steps != 1 else ''} completed. /retry to continue, or send a new message.]{C.RESET}")
 
     def _maybe_resume(self):
         mode = self._resume_mode
@@ -439,6 +449,100 @@ class App:
         elif cid:
             self._clear_last_cid()  # stale pointer (session deleted)
 
+    # ---- Interrupted-turn continuation (never restart from scratch) ----
+    @staticmethod
+    def _count_tool_steps(msgs):
+        """Number of tool steps actually executed in an in-flight msgs list."""
+        c = 0
+        for m in msgs or []:
+            if not isinstance(m, dict): continue
+            if m.get("role") == "tool":
+                c += 1
+            elif m.get("role") == "user" and isinstance(m.get("content"), list):
+                c += sum(1 for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result")
+        return c
+
+    def _auto_continue_attempt(self, pending):
+        """One continuation attempt: re-send the in-flight msgs (executed tool
+        results included) with a 'continue, don't redo' instruction. Shows a
+        notice + short window first so the user can Ctrl+C to abort."""
+        n = self._count_tool_steps(pending)
+        if not self.quiet:
+            print(f"{C.YELLOW}[\u26a0 Interrupted after {n} tool step{'s' if n != 1 else ''} (connection dropped). Auto-resuming in 2s \u2014 press Ctrl+C to skip...]{C.RESET}")
+            try:
+                time.sleep(2.0)
+            except KeyboardInterrupt:
+                print(f"\n{C.YELLOW}[Auto-resume skipped. Checkpoint kept \u2014 /retry to continue later.]{C.RESET}")
+                return ""
+        note = ("Your previous response was INTERRUPTED mid-task (connection dropped). "
+                "The already-executed tool calls and their results are in the history above. "
+                "CONTINUE from exactly where you left off. Do NOT re-execute or repeat completed "
+                "tool calls. If a tool call appears without its result yet, re-issue ONLY that call "
+                "to finish it, then continue the task.")
+        cont = [dict(m) for m in pending]
+        for m in cont:
+            if m.get("role") == "system":
+                m["content"] = m["content"] + "\n\n[INTERRUPTED \u2014 continue]\n" + note
+                break
+        try:
+            return self._stream_tool_chat(cont)
+        except KeyboardInterrupt:
+            print(f"\n{C.YELLOW}[Auto-resume stopped by you \u2014 checkpoint kept. /retry to continue later.]{C.RESET}")
+            return ""
+
+    def _handle_interruption(self, pending, model):
+        """A turn failed mid-stream after doing work. Persist the checkpoint,
+        then auto-continue (config auto_continue, default ON) up to
+        max_auto_continue times. On success the final reply is saved normally;
+        on failure the checkpoint stays for /retry."""
+        self._pending_checkpoint = None
+        try:
+            self.db.set_resume_state(self.cid, json.dumps(pending))
+        except (TypeError, ValueError):
+            self.db.set_resume_state(self.cid, "[]")
+        if not self.cfg.get("auto_continue", True):
+            n = self._count_tool_steps(pending)
+            if not self.quiet:
+                print(f"{C.YELLOW}[Interrupted turn: {n} tool step{'s' if n != 1 else ''} completed. Run /retry to continue, or send a new message.]{C.RESET}")
+            return
+        total = max(1, int(self.cfg.get("max_auto_continue", 2)))
+        for attempt in range(1, total + 1):
+            reply = self._auto_continue_attempt(pending)
+            if reply:
+                self.db.clear_resume_state(self.cid)
+                self.db.save_msg(self.cid, "assistant", reply, model, est_tok(reply))
+                self.last_reply = reply
+                self._persist_session()
+                if not self.quiet:
+                    print(f"{C.DIM}[Resumed after interruption \u2014 reply saved]{C.RESET}")
+                return
+            pending = self._pending_checkpoint
+            self._pending_checkpoint = None
+            if not pending:
+                break
+            if attempt < total and not self.quiet:
+                print(f"{C.YELLOW}[Auto-resume failed \u2014 trying again ({total - attempt} left)...]{C.RESET}")
+        if not self.quiet:
+            self.warn("Could not auto-resume after retries. Checkpoint kept \u2014 run /retry, or send a new message.")
+
+    def _continue_from_checkpoint(self, cid, model):
+        """Manual /retry after an interrupted turn: continue from the checkpoint
+        instead of regenerating from the user message alone."""
+        ck = self.db.get_resume_state(cid)
+        if not ck:
+            return False
+        self.cid = cid
+        reply = self._auto_continue_attempt(ck)
+        if reply:
+            self.db.clear_resume_state(cid)
+            self.db.save_msg(cid, "assistant", reply, model, est_tok(reply))
+            self.last_reply = reply
+            self._persist_session()
+            self.success("Resumed and completed the interrupted turn.")
+            return True
+        self.warn("Could not complete the interrupted turn yet. Checkpoint kept.")
+        return False
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -454,6 +558,7 @@ class App:
         model = self.backend.profile.get("model", "")
         self.db.save_msg(self.cid, "user", user_input, model, est_tok(user_input))
         self.last_user_msg = user_input
+        self.db.clear_resume_state(self.cid)   # a fresh user turn supersedes any pending checkpoint
 
         sysp = self.cfg.system_prompt()
         if self.active_session_skills:
@@ -477,14 +582,19 @@ class App:
 
         # AI ALWAYS uses tools. tools_enabled (Build Mode) only toggles write access.
         reply = self._stream_tool_chat(msgs)
+        pending = self._pending_checkpoint
+        self._pending_checkpoint = None
 
         if reply:
+            self.db.clear_resume_state(self.cid)
             self.db.save_msg(self.cid, "assistant", reply, model, est_tok(reply))
             self.last_reply = reply
             self._persist_session()
             if self.cfg.get("tts_replies", False): TermuxAPI.speak(reply)
             if self.cfg.get("show_tokens", True) and not self.quiet:
                 print(f"{C.DIM}[{est_tok(reply)} tokens]{C.RESET}")
+        elif pending:
+            self._handle_interruption(pending, model)
             # Auto-compact long conversations to stay within the context budget.
             if self.cfg.get("auto_compact", True) and not self.quiet \
                     and self.db.get_conv_tokens(self.cid) > self.cfg.get("auto_compact_threshold", 3000):

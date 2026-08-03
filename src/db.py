@@ -17,6 +17,8 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
                 content TEXT, model TEXT, tokens INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id));
+            CREATE TABLE IF NOT EXISTS resume_state (
+                cid INTEGER PRIMARY KEY, msgs TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         """)
         self.conn.commit()
         _secure_file(DB_FILE)
@@ -90,6 +92,23 @@ class Database:
     def del_conv(self, cid):
         self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
         self.conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+        self.conn.execute("DELETE FROM resume_state WHERE cid = ?", (cid,))
+        self.conn.commit()
+
+    def set_resume_state(self, cid, msgs):
+        self.conn.execute(
+            "INSERT INTO resume_state (cid, msgs) VALUES (?,?) ON CONFLICT(cid) DO UPDATE SET msgs=excluded.msgs, created_at=CURRENT_TIMESTAMP",
+            (cid, msgs))
+        self.conn.commit()
+
+    def get_resume_state(self, cid):
+        row = self.conn.execute("SELECT msgs FROM resume_state WHERE cid= ?", (cid,)).fetchone()
+        if not row: return None
+        try: return json.loads(row["msgs"])
+        except Exception: return None
+
+    def clear_resume_state(self, cid):
+        self.conn.execute("DELETE FROM resume_state WHERE cid = ?", (cid,))
         self.conn.commit()
 
     def prune_old(self, days):
