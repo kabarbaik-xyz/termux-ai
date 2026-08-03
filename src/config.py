@@ -39,6 +39,8 @@ class Config:
         "max_tool_result": 10000,
         "max_iterations": 50,
         "continue_every": 10,
+        "retries": 3,
+        "retry_delay": 1.0,
         "fold_long_blocks": True,
         "fold_head": 8,
         "attach_files": True,

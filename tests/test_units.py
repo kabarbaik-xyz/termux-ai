@@ -660,6 +660,79 @@ class TestFold(_TmpHome):
         self.assertIn("FULL REPLY BODY", buf.getvalue())
 
 
+class TestBackendResilience(_TmpHome):
+    def setUp(self):
+        super().setUp()
+        self.b = m.Backend({})
+
+    def test_stream_req_retries_transient_then_succeeds(self):
+        calls = {"n": 0}
+        def fake_req(url, data, headers):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise m.BackendError("Stream idle for too long. Aborting.", transient=True)
+            return object()
+        def fake_sse(resp):
+            yield {"type": "text", "content": "hi"}
+        with um.patch.object(self.b, "_req", side_effect=fake_req), \
+             um.patch.object(self.b, "_sse_lines", side_effect=fake_sse), \
+             um.patch("time.sleep"):
+            evts = list(self.b._stream_req("u", {}, {}, notify=lambda *a: None))
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(evts, [{"type": "text", "content": "hi"}])
+
+    def test_stream_req_never_retries_mid_stream(self):
+        calls = {"n": 0}
+        def fake_req(url, data, headers):
+            calls["n"] += 1
+            return object()
+        def fake_sse(resp):
+            yield {"type": "text", "content": "partial"}
+            raise m.BackendError("Stream idle for too long. Aborting.", transient=True)
+        with um.patch.object(self.b, "_req", side_effect=fake_req), \
+             um.patch.object(self.b, "_sse_lines", side_effect=fake_sse):
+            with self.assertRaises(m.BackendError):
+                list(self.b._stream_req("u", {}, {}, notify=lambda *a: None))
+        self.assertEqual(calls["n"], 1)   # mid-stream drop: never retried
+
+    def test_stream_req_never_retries_permanent_error(self):
+        calls = {"n": 0}
+        def fake_req(url, data, headers):
+            calls["n"] += 1
+            raise m.BackendError("HTTP 401: bad key", transient=False)
+        with um.patch.object(self.b, "_req", side_effect=fake_req):
+            with self.assertRaises(m.BackendError):
+                list(self.b._stream_req("u", {}, {}, notify=lambda *a: None))
+        self.assertEqual(calls["n"], 1)
+
+    def test_transient_classification(self):
+        self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
+        self.assertFalse(m.Backend._transient(m.BackendError("x", transient=False)))
+        self.assertTrue(m.Backend._transient(TimeoutError("t")))
+        self.assertFalse(m.Backend._transient(ValueError("boom")))
+
+    def test_with_retry_succeeds_after_transient(self):
+        calls = {"n": 0}
+        def fn():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise m.BackendError("Request timed out.", transient=True)
+            return "ok"
+        with um.patch("time.sleep"):
+            self.assertEqual(self.b._with_retry(fn), "ok")
+        self.assertEqual(calls["n"], 2)
+
+    def test_model_switch_preserves_session_context(self):
+        app = m.App(); app.quiet = True
+        app.cid = app.db.new_conv("ctx", "old-model", "openai")
+        app.db.save_msg(app.cid, "user", "first question")
+        app.db.save_msg(app.cid, "assistant", "first answer")
+        app._execute_command("/model new-model-xyz")
+        msgs = app.db.get_msgs(app.cid)
+        self.assertEqual([x["content"] for x in msgs], ["first question", "first answer"])
+        self.assertIsNotNone(app.cid)
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

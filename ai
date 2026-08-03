@@ -698,6 +698,8 @@ class Config:
         "max_tool_result": 10000,
         "max_iterations": 50,
         "continue_every": 10,
+        "retries": 3,
+        "retry_delay": 1.0,
         "fold_long_blocks": True,
         "fold_head": 8,
         "attach_files": True,
@@ -1235,6 +1237,13 @@ class Tools:
 
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
+class BackendError(Exception):
+    """Backend request failure. transient=True when a retry may succeed
+    (network blips, 429/5xx, timeouts, empty or dropped streams)."""
+    def __init__(self, message, transient=False):
+        super().__init__(message)
+        self.transient = transient
+
 class Backend:
     def __init__(self, cfg): self.c = cfg
     API_KEY_ENV = "OPENAI_API_KEY"
@@ -1255,32 +1264,33 @@ class Backend:
                 err_body = ""
                 try: err_body = e.read().decode()[:300]
                 except Exception: pass
-                if e.code in (408, 429, 500, 502, 503, 504) and attempt < 2:
+                transient = e.code in (408, 429, 500, 502, 503, 504)
+                if transient and attempt < 2:
                     time.sleep(0.5 * (2 ** attempt))
                     continue
-                raise Exception(f"HTTP {e.code}: {err_body}")
+                raise BackendError(f"HTTP {e.code}: {err_body}", transient=transient)
             except urllib.error.URLError as e:
                 if isinstance(e.reason, TimeoutError):
                     if attempt < 2:
                         time.sleep(0.5 * (2 ** attempt))
                         continue
-                    raise Exception("Request timed out.")
+                    raise BackendError("Request timed out.", transient=True)
                 if attempt < 2:
                     time.sleep(0.5 * (2 ** attempt))
                     continue
-                raise Exception(f"Connection failed: {e.reason}")
+                raise BackendError(f"Connection failed: {e.reason}", transient=True)
             except TimeoutError:
                 if attempt < 2:
                     time.sleep(0.5 * (2 ** attempt))
                     continue
-                raise Exception("Request timed out.")
+                raise BackendError("Request timed out.", transient=True)
 
     def _sse_lines(self, resp, idle_timeout=120):
         buf = b""
         last_byte = time.monotonic()
         while True:
             if time.monotonic() - last_byte > idle_timeout:
-                raise Exception("Stream idle for too long. Aborting.")
+                raise BackendError("Stream idle for too long. Aborting.", transient=True)
             chunk = resp.read(4096)
             if not chunk: break
             buf += chunk
@@ -1293,6 +1303,56 @@ class Backend:
                 if d == "[DONE]": return
                 try: yield json.loads(d)
                 except Exception: pass
+
+    @staticmethod
+    def _transient(e):
+        """True when a backend error is worth retrying (network hiccups,
+        throttling, timeouts, dropped/empty streams)."""
+        if isinstance(e, BackendError): return e.transient
+        if isinstance(e, (TimeoutError, ConnectionError, OSError)): return True
+        return type(e).__name__ in ("IncompleteRead", "RemoteDisconnected",
+                                    "ChunkedEncodingError", "ProtocolError")
+
+    def _with_retry(self, fn):
+        """Run fn() retrying transient errors with exponential backoff
+        (config: retries, retry_delay). Used for non-streaming requests."""
+        attempts = max(1, int(self.c.get("retries", 3)))
+        base = float(self.c.get("retry_delay", 1.0))
+        for attempt in range(1, attempts + 1):
+            try:
+                return fn()
+            except Exception as e:
+                if not self._transient(e) or attempt >= attempts:
+                    raise
+                time.sleep(base * (2 ** (attempt - 1)))
+
+    def _stream_req(self, url, data, headers, notify=None):
+        """Yield parsed SSE events for ONE request, retrying transient failures
+        with exponential backoff (config: retries, retry_delay). A retry only
+        happens when NOTHING was emitted yet -- a mid-stream drop can't be
+        retried without duplicating output, so it propagates and the caller
+        tells the user to /retry."""
+        attempts = max(1, int(self.c.get("retries", 3)))
+        base = float(self.c.get("retry_delay", 1.0))
+        for attempt in range(1, attempts + 1):
+            emitted = False
+            try:
+                resp = self._req(url, data, headers)
+                for evt in self._sse_lines(resp):
+                    emitted = True
+                    yield evt
+                return
+            except Exception as e:
+                if emitted or not self._transient(e) or attempt >= attempts:
+                    raise
+                delay = base * (2 ** (attempt - 1))
+                if notify:
+                    notify(attempt, attempts, delay)
+                else:
+                    sys.stderr.write(
+                        f"\n[network hiccup \u2014 retrying in {delay:.0f}s ({attempt}/{attempts})]\n")
+                    sys.stderr.flush()
+                time.sleep(delay)
 
     @staticmethod
     def _is_failure(result):
@@ -1369,10 +1429,10 @@ class OpenAICompatible(Backend):
         d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream, "max_tokens": self.c.get("max_tokens", 4096)}
         h = self._headers()
         if stream:
-            for chunk in self._sse_lines(self._req(self._url(), d, h)):
+            for chunk in self._stream_req(self._url(), d, h):
                 choices = chunk.get("choices") or [{}]
                 if t := choices[0].get("delta", {}).get("content", ""): yield t
-        else: yield json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"]
+        else: yield self._with_retry(lambda: json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"])
 
     def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         self._check_api_key()
@@ -1397,13 +1457,12 @@ class OpenAICompatible(Backend):
             self._trim_iteration_history(msgs)
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             d = {"model": self._model(), "messages": msgs, "temperature": temp, "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
-            resp = self._req(self._url(), d, h)
 
             content_buf = ""
             tool_calls_buf = {}
             finish_reason = None
 
-            for chunk in self._sse_lines(resp):
+            for chunk in self._stream_req(self._url(), d, h):
                 if not chunk.get("choices"): continue
                 ch0 = chunk["choices"][0]
                 delta = ch0.get("delta", {})
@@ -1533,10 +1592,10 @@ class AnthropicBackend(Backend):
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
         if stream:
-            for chunk in self._sse_lines(self._req(url, d, h)):
+            for chunk in self._stream_req(url, d, h):
                 if chunk.get("type") == "content_block_delta":
                     if t := chunk.get("delta", {}).get("text", ""): yield t
-        else: yield json.loads(self._req(url, d, h).read())["content"][0]["text"]
+        else: yield self._with_retry(lambda: json.loads(self._req(url, d, h).read())["content"][0]["text"])
 
     def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         sys_prompt, payload = self._split_system(msgs)
@@ -1573,13 +1632,11 @@ class AnthropicBackend(Backend):
                 d["temperature"] = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             if sys_prompt: d["system"] = sys_prompt
 
-            resp = self._req(url, d, h)
-
             content_blocks = {}
             text_block = ""
             stop_reason = None
 
-            for chunk in self._sse_lines(resp):
+            for chunk in self._stream_req(url, d, h):
                 evt_type = chunk.get("type")
                 if evt_type == "message_delta":
                     sr = chunk.get("delta", {}).get("stop_reason")
@@ -2381,7 +2438,9 @@ class App:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
             _dbg_exc(e)
-            if self.quiet: sys.stderr.write(f"Error: {e}\n")
+            if current_block or did_tools or buf:
+                self.err("Connection dropped mid-reply (network hiccup). Nothing was saved - run /retry to regenerate with the same context.")
+            elif self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(f"Tool chat error: {e}")
             return ""
         finally:
@@ -2879,6 +2938,9 @@ class App:
             self.cfg.set_path(f"backends.{name}.model", args[0])
             self.success(f"Model set to {args[0]}")
             self.backend = get_backend(self.cfg)
+            if self.cid:
+                n = len(self.db.get_msgs(self.cid))
+                self.info(f"Context preserved: {n} message(s) stay in this chat for the new model.")
 
     def _cmd_backends(self, args):
         backends = self.cfg.get("backends", {})
@@ -2899,6 +2961,8 @@ class App:
                 self.cfg.set("backend", name)
                 self.backend = get_backend(self.cfg)
                 self.success(f"Switched to backend: {name}")
+                if self.cid:
+                    self.info(f"Context preserved: {len(self.db.get_msgs(self.cid))} message(s) stay in this chat.")
             else:
                 self.err(f"Backend '{name}' not found. Use /backends to see available options.")
 

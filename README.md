@@ -244,6 +244,20 @@ docker ps | ai "which container has port 8080?"
 | `/fold on\|off` | Toggle folding of long lists/tables (default on; `fold_head` controls how many stay visible) |
 | `/clear` | Clear the screen |
 
+### Resilience & context
+
+Backend hiccups (connection drops, timeouts, 429/5xx) are retried automatically
+with exponential backoff (`retries`, `retry_delay` in config) — but only when
+nothing has been printed yet, so you never see duplicated output. If the stream
+drops mid-reply, nothing is saved and the app tells you to run `/retry`, which
+regenerates with the same context.
+
+Switching models never loses the conversation: `/model`, `/backend`, `/profile`
+and `/retry <model>` only swap the client — history lives in the local database
+and is re-attached on every turn, so the new model picks up exactly where the
+last one left off. `/model` and `/backend` confirm how many messages stay in
+context after the switch.
+
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.

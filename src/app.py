@@ -346,7 +346,9 @@ class App:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
             _dbg_exc(e)
-            if self.quiet: sys.stderr.write(f"Error: {e}\n")
+            if current_block or did_tools or buf:
+                self.err("Connection dropped mid-reply (network hiccup). Nothing was saved - run /retry to regenerate with the same context.")
+            elif self.quiet: sys.stderr.write(f"Error: {e}\n")
             else: self.err(f"Tool chat error: {e}")
             return ""
         finally:

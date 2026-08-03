@@ -173,6 +173,9 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             self.cfg.set_path(f"backends.{name}.model", args[0])
             self.success(f"Model set to {args[0]}")
             self.backend = get_backend(self.cfg)
+            if self.cid:
+                n = len(self.db.get_msgs(self.cid))
+                self.info(f"Context preserved: {n} message(s) stay in this chat for the new model.")
 
     def _cmd_backends(self, args):
         backends = self.cfg.get("backends", {})
@@ -193,6 +196,8 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
                 self.cfg.set("backend", name)
                 self.backend = get_backend(self.cfg)
                 self.success(f"Switched to backend: {name}")
+                if self.cid:
+                    self.info(f"Context preserved: {len(self.db.get_msgs(self.cid))} message(s) stay in this chat.")
             else:
                 self.err(f"Backend '{name}' not found. Use /backends to see available options.")
 
