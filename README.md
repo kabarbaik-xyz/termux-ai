@@ -240,7 +240,13 @@ docker ps | ai "which container has port 8080?"
 | `/speak` | TTS the last reply |
 | `/share` | Share last reply via Android |
 | `/server start\|stop\|status\|pull\|models\|search\|show\|rm` | Manage local Ollama server + pull/list/remove models |
+| `/expand` (or `/last`) | View the **full** last reply (unfolded) in `less` — scroll/search, `q` to return |
+| `/fold on\|off` | Toggle folding of long lists/tables (default on; `fold_head` controls how many stay visible) |
 | `/clear` | Clear the screen |
+
+### Compact output (folding)
+
+Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.
 | `/help` | Show all commands |
 | `/exit` | Quit (Ctrl-C also works) |
 

@@ -604,6 +604,62 @@ class TestWriteFileAppend(_TmpHome):
         self.assertEqual(body, "<html>\n<head></head>\n<body>chart</body>\n</html>\n")
 
 
+class TestFold(_TmpHome):
+    def _feed(self, fmt, text):
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            fmt.feed(text); fmt.flush()
+        finally:
+            sys.stdout = old
+        return buf.getvalue()
+
+    def test_long_list_folds(self):
+        f = m.MarkdownFormatter(fold=True, fold_head=8)
+        out = self._feed(f, "\n".join("- item %d" % i for i in range(1, 16)) + "\n")
+        self.assertIn("item 1", out); self.assertIn("item 8", out)   # head shown
+        self.assertNotIn("item 9", out)                              # tail hidden
+        self.assertIn("7 more", out)                                 # 15 - 8
+        self.assertIn("/expand", out)
+
+    def test_short_list_not_folded(self):
+        f = m.MarkdownFormatter(fold=True, fold_head=8)
+        out = self._feed(f, "\n".join("- item %d" % i for i in range(1, 6)) + "\n")
+        self.assertIn("item 5", out)
+        self.assertNotIn("more", out)
+
+    def test_fold_disabled_shows_all(self):
+        f = m.MarkdownFormatter(fold=False, fold_head=8)
+        out = self._feed(f, "\n".join("- item %d" % i for i in range(1, 16)) + "\n")
+        self.assertIn("item 15", out)
+        self.assertNotIn("more", out)
+
+    def test_long_table_folds(self):
+        rows = "| Col |\n|---|\n" + "\n".join("| r%d |" % i for i in range(1, 13)) + "\n"
+        f = m.MarkdownFormatter(fold=True, fold_head=8)
+        out = self._feed(f, rows)
+        self.assertIn("more", out)
+        self.assertNotIn("r12", out)
+
+    def test_fold_command_toggles(self):
+        app = m.App(); app.quiet = True
+        app._execute_command("/fold off")
+        self.assertFalse(app.cfg.get("fold_long_blocks"))
+        app._execute_command("/fold on")
+        self.assertTrue(app.cfg.get("fold_long_blocks"))
+
+    def test_expand_no_reply_warns(self):
+        app = m.App(); app.quiet = True; app.last_reply = ""
+        app._execute_command("/expand")   # warns, no crash
+
+    def test_expand_inline_when_no_less(self):
+        app = m.App(); app.quiet = False; app.last_reply = "FULL REPLY BODY"
+        with um.patch.object(m.shutil, "which", return_value=None):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try: app._execute_command("/expand")
+            finally: sys.stdout = old
+        self.assertIn("FULL REPLY BODY", buf.getvalue())
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

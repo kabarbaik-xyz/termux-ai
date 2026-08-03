@@ -241,6 +241,24 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         if self.last_reply: TermuxAPI.share(self.last_reply)
         else: self.warn("Nothing to share.")
 
+    def _cmd_fold(self, args):
+        if not args:
+            self.info(f"Folding long lists/tables: {'ON' if self.cfg.get('fold_long_blocks', True) else 'OFF'} (head {self.cfg.get('fold_head', 8)}). Use /fold on|off.")
+            return
+        v = args[0].lower() in ("on", "true", "1", "yes")
+        self.cfg.set("fold_long_blocks", v)
+        self.success(f"Folding long lists/tables {'ON' if v else 'OFF'}.")
+
+    def _cmd_expand(self, args):
+        if not self.last_reply:
+            self.warn("No last reply to expand."); return
+        if IS_TTY and shutil.which("less"):
+            try:
+                subprocess.run(["less", "-R"], input=self.last_reply); return
+            except Exception:
+                pass
+        print(self.last_reply)
+
     def _cmd_clear(self, args):
         os.system('clear' if os.name != 'nt' else 'cls')
 

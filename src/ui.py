@@ -1,21 +1,55 @@
 # ══ termux_ai.ui ══ (fragment; merged by build.py)
 class MarkdownFormatter:
-    def __init__(self, indent="      "):
+    def __init__(self, indent="      ", fold=True, fold_head=8):
         self.buffer = ""
         self.in_code_block = False
         self.first_line = True
         self.indent = indent
+        self.fold = fold
+        self.fold_head = fold_head
+        self._run_type = None      # None | "list" | "table" (current foldable run)
+        self._run_count = 0
+        self._run_tail = []        # lines buffered beyond fold_head (the hidden part)
 
     def feed(self, text):
         self.buffer += text.replace("\r\n", "\n").replace("\r", "")
         while "\n" in self.buffer:
             line, self.buffer = self.buffer.split("\n", 1)
-            self._print_line(line + "\n")
+            self._handle_line(line + "\n")
 
     def flush(self):
         if self.buffer:
-            self._print_line(self.buffer)
-            self.buffer = ""
+            line = self.buffer; self.buffer = ""
+            self._handle_line(line)
+        self._flush_run()
+
+    def _handle_line(self, line):
+        # Code-block lines never fold; they just close any pending run.
+        if self.in_code_block:
+            self._flush_run()
+            self._print_line(line); return
+        s = line.strip()
+        is_list = bool(re.match(r"^\s*([-*]|\d+\.)\s", line))
+        is_table = bool(len(s) > 1 and s.startswith("|") and s.rstrip().endswith("|"))
+        kind = "list" if is_list else ("table" if is_table else None)
+        if kind is None:
+            self._flush_run()
+            self._print_line(line); return
+        if self._run_type != kind:
+            self._flush_run()
+            self._run_type = kind; self._run_count = 0; self._run_tail = []
+        self._run_count += 1
+        # Show the head live; buffer the overflow so a long list/table renders compact.
+        if not self.fold or self._run_count <= self.fold_head:
+            self._print_line(line)
+        else:
+            self._run_tail.append(line)
+
+    def _flush_run(self):
+        if self._run_type is not None and self._run_tail:
+            pre = "" if self.first_line else self.indent
+            print(f"{pre}{C.DIM}\u2026 {len(self._run_tail)} more \u2014 /expand to view{C.RESET}")
+        self._run_type = None; self._run_count = 0; self._run_tail = []
 
     def _print_line(self, line):
         prefix = "" if self.first_line else self.indent

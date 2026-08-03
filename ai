@@ -229,22 +229,56 @@ class FileReader:
 # ══ termux_ai.ui ══ (fragment; merged by build.py)
 # ══ termux_ai.ui ══ (fragment; merged by build.py)
 class MarkdownFormatter:
-    def __init__(self, indent="      "):
+    def __init__(self, indent="      ", fold=True, fold_head=8):
         self.buffer = ""
         self.in_code_block = False
         self.first_line = True
         self.indent = indent
+        self.fold = fold
+        self.fold_head = fold_head
+        self._run_type = None      # None | "list" | "table" (current foldable run)
+        self._run_count = 0
+        self._run_tail = []        # lines buffered beyond fold_head (the hidden part)
 
     def feed(self, text):
         self.buffer += text.replace("\r\n", "\n").replace("\r", "")
         while "\n" in self.buffer:
             line, self.buffer = self.buffer.split("\n", 1)
-            self._print_line(line + "\n")
+            self._handle_line(line + "\n")
 
     def flush(self):
         if self.buffer:
-            self._print_line(self.buffer)
-            self.buffer = ""
+            line = self.buffer; self.buffer = ""
+            self._handle_line(line)
+        self._flush_run()
+
+    def _handle_line(self, line):
+        # Code-block lines never fold; they just close any pending run.
+        if self.in_code_block:
+            self._flush_run()
+            self._print_line(line); return
+        s = line.strip()
+        is_list = bool(re.match(r"^\s*([-*]|\d+\.)\s", line))
+        is_table = bool(len(s) > 1 and s.startswith("|") and s.rstrip().endswith("|"))
+        kind = "list" if is_list else ("table" if is_table else None)
+        if kind is None:
+            self._flush_run()
+            self._print_line(line); return
+        if self._run_type != kind:
+            self._flush_run()
+            self._run_type = kind; self._run_count = 0; self._run_tail = []
+        self._run_count += 1
+        # Show the head live; buffer the overflow so a long list/table renders compact.
+        if not self.fold or self._run_count <= self.fold_head:
+            self._print_line(line)
+        else:
+            self._run_tail.append(line)
+
+    def _flush_run(self):
+        if self._run_type is not None and self._run_tail:
+            pre = "" if self.first_line else self.indent
+            print(f"{pre}{C.DIM}\u2026 {len(self._run_tail)} more \u2014 /expand to view{C.RESET}")
+        self._run_type = None; self._run_count = 0; self._run_tail = []
 
     def _print_line(self, line):
         prefix = "" if self.first_line else self.indent
@@ -664,6 +698,8 @@ class Config:
         "max_tool_result": 10000,
         "max_iterations": 50,
         "continue_every": 10,
+        "fold_long_blocks": True,
+        "fold_head": 8,
         "attach_files": True,
         "api_keys": {"anthropic": ""},
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
@@ -2007,7 +2043,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -2175,7 +2211,7 @@ class App:
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
-            "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/clear", "Clear screen"), ("/exit", "Quit")]
+            "Utils": [("/status", "System & API status"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
         
         for cat, cmds in cats.items():
@@ -2282,7 +2318,7 @@ class App:
         if not self.quiet:
             self.spinner = Spinner("thinking")
             self.spinner.start()
-        fmt = None if self.quiet else MarkdownFormatter()
+        fmt = None if self.quiet else MarkdownFormatter(fold=self.cfg.get("fold_long_blocks", True), fold_head=self.cfg.get("fold_head", 8))
         current_block = ""  # current text run; resets on each tool -> only the LAST run (the answer) is returned
         did_tools = False   # once any tool runs, later text is inter-step reasoning
         buf = []            # text buffered after the first tool, awaiting dim/normal render
@@ -2510,7 +2546,7 @@ class App:
         if sysp: msgs.append({"role": "system", "content": sysp})
         msgs.append({"role": "user", "content": prompt})
 
-        fmt = MarkdownFormatter() if (show and not self.quiet and not json_mode) else None
+        fmt = MarkdownFormatter(fold=self.cfg.get("fold_long_blocks", True), fold_head=self.cfg.get("fold_head", 8)) if (show and not self.quiet and not json_mode) else None
         spinner = Spinner("thinking") if (show and not self.quiet) else None
         if spinner: spinner.start()
         reply = ""
@@ -2588,7 +2624,7 @@ class App:
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
-        "/speak": "_cmd_speak", "/share": "_cmd_share", "/clear": "_cmd_clear",
+        "/speak": "_cmd_speak", "/share": "_cmd_share", "/expand": "_cmd_expand", "/last": "_cmd_expand", "/fold": "_cmd_fold", "/clear": "_cmd_clear",
         "/setup": "_cmd_setup", "/update": "_cmd_update", "/config": "_cmd_config",
         "/system": "_cmd_system", "/server": "_cmd_server", "/cost": "_cmd_cost",
         "/undo": "_cmd_undo", "/show": "_cmd_show", "/rename": "_cmd_rename",
@@ -2910,6 +2946,24 @@ class App:
     def _cmd_share(self, args):
         if self.last_reply: TermuxAPI.share(self.last_reply)
         else: self.warn("Nothing to share.")
+
+    def _cmd_fold(self, args):
+        if not args:
+            self.info(f"Folding long lists/tables: {'ON' if self.cfg.get('fold_long_blocks', True) else 'OFF'} (head {self.cfg.get('fold_head', 8)}). Use /fold on|off.")
+            return
+        v = args[0].lower() in ("on", "true", "1", "yes")
+        self.cfg.set("fold_long_blocks", v)
+        self.success(f"Folding long lists/tables {'ON' if v else 'OFF'}.")
+
+    def _cmd_expand(self, args):
+        if not self.last_reply:
+            self.warn("No last reply to expand."); return
+        if IS_TTY and shutil.which("less"):
+            try:
+                subprocess.run(["less", "-R"], input=self.last_reply); return
+            except Exception:
+                pass
+        print(self.last_reply)
 
     def _cmd_clear(self, args):
         os.system('clear' if os.name != 'nt' else 'cls')
