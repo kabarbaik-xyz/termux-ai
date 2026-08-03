@@ -398,6 +398,56 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             self.success("Undid last message pair.")
         else: self.warn("No active chat.")
 
+    def _cmd_prune(self, args):
+        if args:
+            try: days = max(0, int(args[0]))
+            except ValueError: self.warn("Usage: /prune [days]"); return
+        else:
+            days = int(self.cfg.get("prune_days", 0) or 0)
+        if days <= 0:
+            self.info("Auto-prune is off (config prune_days=0). Run /prune <days> to prune once, or set prune_days.")
+            return
+        n = self.db.prune_old(days)
+        self.success(f"Pruned {n} session(s) untouched for >{days}d (pinned kept).")
+
+    def _cmd_import(self, args):
+        if not args: self.warn("Usage: /import <file>"); return
+        path = os.path.expanduser(" ".join(args))
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        except OSError as e:
+            self.err(f"Could not read {path}: {e}"); return
+        title = "Imported chat"
+        msgs = []
+        cur_role, cur = None, []
+        def flush():
+            nonlocal cur_role, cur
+            if cur_role and cur:
+                msgs.append({"role": cur_role, "content": "\n".join(cur).strip()})
+            cur = []
+        for ln in lines:
+            if ln.startswith("# "):
+                title = ln[2:].strip()
+                continue
+            mm = re.match(r"^\*\*(User|Assistant):\*\*\s*(.*)$", ln)
+            if mm:
+                flush()
+                cur_role = "user" if mm.group(1) == "User" else "assistant"
+                cur = [mm.group(2)]
+            elif cur_role:
+                cur.append(ln)
+        flush()
+        if not msgs:
+            self.err("No messages found in file."); return
+        model = (self.backend.profile.get("model", "") if self.backend else "") or ""
+        cid = self.db.new_conv(title, model, self.cfg.get("backend", ""))
+        for msg in msgs:
+            self.db.save_msg(cid, msg["role"], msg["content"])
+        self.cid = cid
+        self._persist_session()
+        self.success(f"Imported {len(msgs)} message(s) into session #{cid} \"{title}\".")
+
     def _cmd_show(self, args):
         if not self.cid: self.warn("No active chat."); return
         conv = self.db.get_conv(self.cid)

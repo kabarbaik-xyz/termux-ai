@@ -92,6 +92,19 @@ class Database:
         self.conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
         self.conn.commit()
 
+    def prune_old(self, days):
+        """Delete unpinned conversations untouched for more than `days` days
+        (and their messages). Returns the number of sessions deleted."""
+        if not days or days <= 0:
+            return 0
+        cutoff = f"-{int(days)} days"
+        self.conn.execute(
+            "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE pinned = 0 AND updated_at < datetime('now', ?))", (cutoff,))
+        cur = self.conn.execute(
+            "DELETE FROM conversations WHERE pinned = 0 AND updated_at < datetime('now', ?)", (cutoff,))
+        self.conn.commit()
+        return cur.rowcount
+
     def rename_conv(self, cid, title):
         self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
         self.conn.commit()

@@ -263,6 +263,8 @@ history earlier. The resume banner also flags a model change:
 - `/save [name]` — bookmark the current session (rename with a name)
 - `/unsave` — un-bookmark the current chat
 - `/history` — list all chats
+- `/prune [days]` — delete old unpinned chats (or set `prune_days` in config to auto-prune on startup; 0 = off)
+- `/import <file>` — restore a session from an `/export` backup
 - `ai --continue` / `ai --new` / `ai -l <id>` — same, at launch
 - `ai <prompt>` one-shot calls are unaffected (never auto-resume)
 

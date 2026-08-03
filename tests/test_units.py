@@ -915,6 +915,60 @@ class TestResumeQuality(_TmpHome):
         self.assertIn("answer-one", out)
 
 
+class TestHygiene(_TmpHome):
+    def _age(self, app, cid, days):
+        app.db.conn.execute("UPDATE conversations SET updated_at = datetime('now', ?) WHERE id = ?", (f"-{days} days", cid))
+        app.db.conn.commit()
+
+    def test_prune_deletes_old_unpinned_keeps_pinned_and_recent(self):
+        app = m.App(); app.quiet = True
+        old = app.db.new_conv("old", "m", "openai"); app.db.save_msg(old, "user", "hi")
+        old_pin = app.db.new_conv("old-pin", "m", "openai"); app.db.save_msg(old_pin, "user", "hi"); app.db.set_pinned(old_pin, 1)
+        recent = app.db.new_conv("recent", "m", "openai"); app.db.save_msg(recent, "user", "hi")
+        self._age(app, old, 30); self._age(app, old_pin, 30)
+        self.assertEqual(app.db.prune_old(7), 1)
+        self.assertIsNone(app.db.get_conv(old))                 # pruned
+        self.assertIsNotNone(app.db.get_conv(old_pin))          # pinned kept
+        self.assertIsNotNone(app.db.get_conv(recent))           # recent kept
+
+    def test_prune_zero_is_noop(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("x", "m", "openai")
+        self._age(app, cid, 100)
+        self.assertEqual(app.db.prune_old(0), 0)
+        self.assertIsNotNone(app.db.get_conv(cid))
+
+    def test_import_restores_session(self):
+        app = m.App(); app.quiet = True
+        path = os.path.join(self._home, "backup.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# My Imported Chat\n\n**User:** hello there\nsecond line\n\n**Assistant:** hi!\n")
+        app._execute_command("/import %s" % path)
+        self.assertIsNotNone(app.cid)
+        self.assertEqual(app.db.get_conv(app.cid)["title"], "My Imported Chat")
+        self.assertEqual([(x["role"], x["content"]) for x in app.db.get_msgs(app.cid)],
+                         [("user", "hello there\nsecond line"), ("assistant", "hi!")])
+        self.assertEqual(app._get_last_cid(), app.cid)  # resume pointer set
+
+    def test_import_missing_file_warns(self):
+        app = m.App(); app.quiet = True
+        app._execute_command("/import /nonexistent/nope.md")  # no crash
+        self.assertIsNone(app.cid)
+
+    def test_roundtrip_export_import(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("roundtrip", "m", "openai")
+        app.db.save_msg(cid, "user", "q1"); app.db.save_msg(cid, "assistant", "a1")
+        app.cid = cid
+        path = os.path.join(self._home, "rt.md")
+        app._execute_command("/export %s" % path)
+        app2 = m.App(); app2.quiet = True
+        app2._execute_command("/import %s" % path)
+        self.assertEqual([(x["role"], x["content"]) for x in app2.db.get_msgs(app2.cid)],
+                         [("user", "q1"), ("assistant", "a1")])
+        self.assertEqual(app2.db.get_conv(app2.cid)["title"], "roundtrip")
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

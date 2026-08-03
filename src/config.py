@@ -40,6 +40,7 @@ class Config:
         "max_iterations": 50,
         "continue_every": 10,
         "auto_resume": True,
+        "prune_days": 0,
         "retries": 3,
         "retry_delay": 1.0,
         "fold_long_blocks": True,
