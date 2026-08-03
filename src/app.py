@@ -570,6 +570,18 @@ class App:
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 
+        # Gather-then-execute: recommend the model read everything it needs up
+        # front (batched), then act -- rather than dribbling reads across steps.
+        if self.cfg.get("gather_first", True):
+            msgs[0]["content"] += (
+                "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
+                "In your first one or two responses, batch the reads you'll need "
+                "(read_file / list_files / search_files) into a single response with "
+                "several parallel calls. Then stop reading and EXECUTE with "
+                "write_file / run_command. Never re-read a file you already fetched; "
+                "for large files page once per line-range with "
+                "read_file(path, start=LINE) in the same batched response.")
+
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).
         if self.cfg.get("strategy_first", False) and not self.quiet:

@@ -768,6 +768,8 @@ class Config:
         "max_tool_result": 10000,
         "max_iterations": 50,
         "repeat_limit": 3,
+        "gather_first": True,
+        "gather_threshold": 3,
         "continue_every": 10,
         "auto_resume": True,
         "prune_days": 0,
@@ -1455,6 +1457,30 @@ class Backend:
         failure and consecutive-failure detection."""
         return (result or "").lstrip().lower().startswith("error")
 
+    CONTEXT_TOOLS = {"read_file", "list_files", "search_files", "fetch_url"}
+
+    def _phase_nudge(self, names, read_streak, phase_nudged, threshold):
+        """Drive a gather-then-execute loop. After a just-executed batch, update
+        the read-phase streak. Returns (new_streak, new_nudged, nudge_msg). When
+        the model keeps READING batch after batch (no execution yet) and its
+        streak hits ``threshold``, return a message that tells it to batch the
+        remaining reads into ONE response and move to executing -- instead of
+        dribbling one read per iteration forever."""
+        all_read = bool(names) and all(n in Backend.CONTEXT_TOOLS for n in names)
+        if all_read:
+            read_streak += 1
+            if read_streak >= threshold and not phase_nudged:
+                return read_streak, True, (
+                    f"[Context phase: {read_streak} consecutive iterations and you're still only reading. "
+                    "Stop reading one file per step. Batch the remaining reads (read_file/list_files/search_files) "
+                    "into a SINGLE response with several calls at once, then EXECUTE the task with "
+                    "write_file/run_command. Never re-read something already fetched; page big files with "
+                    "read_file(path, start=LINE) once per page in the same batched response.]")
+            return read_streak, phase_nudged, None
+        # Execution (non-read) call: phase is over; allow a future re-read spiral
+        # to nudge again.
+        return 0, (False if names else phase_nudged), None
+
     @staticmethod
     def _trim_iteration_history(msgs, budget=8000):
         """Bound accumulated tool-result size for long agentic loops so context
@@ -1543,6 +1569,9 @@ class OpenAICompatible(Backend):
         consecutive_failures = 0
         REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
         repeat_count = {}
+        GATHER_N = max(2, int(self.c.get("gather_threshold", 3)))
+        read_streak = 0
+        phase_nudged = False
 
         def _repeat_check(calls):
             """Stop early if the model repeats the exact same tool call. A free
@@ -1672,6 +1701,12 @@ class OpenAICompatible(Backend):
             else:
                 consecutive_failures = 0
 
+            read_streak, phase_nudged, nudge = self._phase_nudge(
+                [n for n, _ in batch_results], read_streak, phase_nudged, GATHER_N)
+            if nudge:
+                msgs.append({"role": "system", "content": nudge})
+                yield {"type": "notice", "content": "\n" + nudge, "fatal": False}
+
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:
                 if continue_fn and not continue_fn(iterations, total_calls):
@@ -1729,6 +1764,9 @@ class AnthropicBackend(Backend):
         consecutive_failures = 0
         REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
         repeat_count = {}
+        GATHER_N = max(2, int(self.c.get("gather_threshold", 3)))
+        read_streak = 0
+        phase_nudged = False
 
         def _repeat_check(calls):
             for c in calls:
@@ -1869,6 +1907,12 @@ class AnthropicBackend(Backend):
                 sys_prompt = ((sys_prompt + "\n\n") if sys_prompt else "") + ("REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed))
             else:
                 consecutive_failures = 0
+
+            read_streak, phase_nudged, nudge = self._phase_nudge(
+                [n for n, _ in batch_results], read_streak, phase_nudged, GATHER_N)
+            if nudge:
+                payload.append({"role": "user", "content": nudge})
+                yield {"type": "notice", "content": "\n" + nudge, "fatal": False}
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:
@@ -2795,6 +2839,18 @@ class App:
                 sysp += "\n\n" + cat
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
+
+        # Gather-then-execute: recommend the model read everything it needs up
+        # front (batched), then act -- rather than dribbling reads across steps.
+        if self.cfg.get("gather_first", True):
+            msgs[0]["content"] += (
+                "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
+                "In your first one or two responses, batch the reads you'll need "
+                "(read_file / list_files / search_files) into a single response with "
+                "several parallel calls. Then stop reading and EXECUTE with "
+                "write_file / run_command. Never re-read a file you already fetched; "
+                "for large files page once per line-range with "
+                "read_file(path, start=LINE) in the same batched response.")
 
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).

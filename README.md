@@ -318,6 +318,18 @@ loop now counts identical tool calls and **stops after `repeat_limit`
 (default 3) unchanged repeats** with a clear message (instead of burning all
 50 iterations), configurable via `repeat_limit`.
 
+### Gather-then-execute
+
+The loop now steers agentic turns into two phases instead of letting the model
+dribble reads across every iteration: the system prompt recommends batching
+all context reads (read_file / list_files / search_files) into the first one
+or two responses, then executing (config `gather_first`, default on). If the
+model ignores that and keeps reading for `gather_threshold` (default 3)
+consecutive iterations, the harness injects a nudge (shown as a notice and
+sent to the model) telling it to batch the remaining reads into one response
+and move to execution. The streak resets the moment it writes or runs, so a
+later re-read spiral gets nudged again.
+
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.

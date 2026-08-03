@@ -39,6 +39,8 @@ class Config:
         "max_tool_result": 10000,
         "max_iterations": 50,
         "repeat_limit": 3,
+        "gather_first": True,
+        "gather_threshold": 3,
         "continue_every": 10,
         "auto_resume": True,
         "prune_days": 0,

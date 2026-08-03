@@ -775,6 +775,51 @@ class TestBackendResilience(_TmpHome):
         self.assertNotIn("[lines", full)                       # backward compatible
         self.assertIn("line 1", full)
 
+    def test_phase_nudge_injected_after_read_streak(self):
+        b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
+        calls = {"n": 0}; seen = []
+        def fake_stream(url, data, headers, notify=None):
+            n = calls["n"]; calls["n"] += 1
+            seen.append((n, data.get("messages", [])))
+            if n == 0:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"a"}'}}]}, "finish_reason": "tool_calls"}]}
+            elif n == 1:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t2", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"b"}'}}]}, "finish_reason": "tool_calls"}]}
+            elif n == 2:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t3", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"c"}'}}]}, "finish_reason": "tool_calls"}]}
+            elif n == 3:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t4", "type": "function", "function": {"name": "write_file", "arguments": '{"path":"d","content":"x"}'}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {}}, {"delta": {}}, {"delta": {}}, {"delta": {}}, {"delta": {}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
+             um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        notices = [e for e in evts if e["type"] == "notice"]
+        self.assertTrue(any("Context phase" in e["content"] for e in notices))
+        # the nudge is visible to the model in the WRITE request (4th request)
+        write_req_msgs = [mm for n, mm in seen if n == 3][0]
+        self.assertTrue(any(mm.get("role") == "system" and "Context phase" in mm["content"] for mm in write_req_msgs))
+
+    def test_phase_nudge_honors_threshold(self):
+        b = m.OpenAICompatible({"gather_threshold": 5}, "t", {"base_url": "http://localhost", "model": "x"})
+        calls = {"n": 0}
+        def fake_stream(url, data, headers, notify=None):
+            n = calls["n"]; calls["n"] += 1
+            if n == 0:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"a"}'}}]}, "finish_reason": "tool_calls"}]}
+            elif n == 1:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t2", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"b"}'}}]}, "finish_reason": "tool_calls"}]}
+            elif n == 2:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t3", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"c"}'}}]}, "finish_reason": "tool_calls"}]}
+            elif n == 3:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t4", "type": "function", "function": {"name": "write_file", "arguments": '{"path":"d","content":"x"}'}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {} }]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
+             um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        self.assertFalse(any("Context phase" in e.get("content", "") for e in evts if e["type"] == "notice"))
+
     def test_transient_classification(self):
         self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
         self.assertFalse(m.Backend._transient(m.BackendError("x", transient=False)))
