@@ -154,11 +154,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         cid = self._get_last_cid()
         conv = self.db.get_conv(cid) if cid else None
         if conv:
-            self.cid = cid
-            self._persist_session()
-            n = len(self.db.get_msgs(cid))
-            ago = self._ago(conv["updated_at"])
-            print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}]{C.RESET}")
+            self._activate(cid, banner=True)
         else:
             self.warn("No previous session to continue. Send a message to start one.")
 
@@ -406,7 +402,8 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         if not self.cid: self.warn("No active chat."); return
         conv = self.db.get_conv(self.cid)
         msgs = self.db.get_msgs(self.cid, limit=1000)
-        print(f"\n{C.BOLD}#{self.cid} {conv['title']}{C.RESET}")
+        model = self.db.last_msg_model(self.cid)
+        print(f"\n{C.BOLD}#{self.cid} {conv['title']}{C.RESET} {C.DIM}[model: {model or 'n/a'}]{C.RESET}")
         for mm in msgs:
             col = C.GREEN if mm["role"] == "user" else (C.CYAN if mm["role"] == "assistant" else C.GRAY)
             print(f"\n{col}{C.BOLD}{mm['role'].capitalize()}:{C.RESET} {mm['content']}")

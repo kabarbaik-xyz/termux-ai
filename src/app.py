@@ -408,9 +408,15 @@ class App:
             if conv:
                 n = len(self.db.get_msgs(cid))
                 ago = self._ago(conv["updated_at"])
-                model = (conv.get("model") or "").strip()
-                model_s = f", {model}" if model else ""
-                print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{model_s}]{C.RESET}")
+                prev = self.db.last_msg_model(cid)
+                cur = (self.backend.profile.get("model", "") if self.backend else "").strip()
+                if prev and cur and prev != cur:
+                    tail = f" \u2014 now on {cur}; /retry to re-answer with the current model"
+                elif prev:
+                    tail = f" \u2014 was {prev}"
+                else:
+                    tail = ""
+                print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
 
     def _maybe_resume(self):
         mode = self._resume_mode

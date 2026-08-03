@@ -858,6 +858,63 @@ class TestNamedSessions(_TmpHome):
         self.assertEqual(app.db.get_conv(cid)["pinned"], 1)
 
 
+class TestResumeQuality(_TmpHome):
+    def _capture(self, fn):
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try: fn()
+        finally: sys.stdout = old
+        return buf.getvalue()
+
+    def test_resume_banner_notes_model_change(self):
+        app = m.App(); app.quiet = False
+        cid = app.db.new_conv("mytask", "m", "openai")
+        app.db.save_msg(cid, "user", "hi", "oldmodel")
+        if app.backend and isinstance(getattr(app.backend, "profile", None), dict):
+            app.backend.profile["model"] = "current-model"
+        out = self._capture(lambda: app._activate(cid, banner=True))
+        self.assertIn("mytask", out)
+        self.assertIn("now on current-model", out)
+        self.assertIn("/retry", out)
+
+    def test_resume_banner_same_model_shows_session_model(self):
+        app = m.App(); app.quiet = False
+        cid = app.db.new_conv("easy", "m", "openai")
+        app.db.save_msg(cid, "user", "hi", "deepseek-chat")
+        if app.backend and isinstance(getattr(app.backend, "profile", None), dict):
+            app.backend.profile["model"] = "deepseek-chat"
+        out = self._capture(lambda: app._activate(cid, banner=True))
+        self.assertIn("easy", out)
+        self.assertIn("was deepseek-chat", out)
+
+    def test_compact_summary_reattaches_on_resume(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("task", "m", "openai")
+        app.db.save_msg(cid, "user", "How do we ship?")
+        app.db.save_msg(cid, "assistant", "Step one: ...")
+        app.db.save_msg(cid, "user", "[Summary of the earlier conversation]\nKey facts: db scheme, files")
+        app.db.save_msg(cid, "user", "continue")
+        app.db.save_msg(cid, "assistant", "Step two done.")
+        app._set_last_cid(cid); app._resume_mode = "continue"
+        app._maybe_resume()
+        self.assertEqual(app.cid, cid)
+        msgs = app.db.get_msgs(cid)
+        contents = [x["content"] for x in msgs]
+        self.assertIn("[Summary of the earlier conversation]\nKey facts: db scheme, files", contents)
+        self.assertEqual(contents[-1], "Step two done.")
+
+    def test_show_on_resumed_session_prints_history(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai")
+        app.db.save_msg(cid, "user", "question-one")
+        app.db.save_msg(cid, "assistant", "answer-one")
+        app._set_last_cid(cid); app._resume_mode = "continue"
+        app._maybe_resume()
+        self.assertEqual(app.cid, cid)
+        out = self._capture(lambda: app._execute_command("/show"))
+        self.assertIn("question-one", out)
+        self.assertIn("answer-one", out)
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

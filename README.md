@@ -251,6 +251,11 @@ Every chat is saved to the local database as you go. On startup the app
 a banner with the title, message count and when it was last active:
 `[Resumed: "campaign dashboard" — 24 messages, last active 2h ago]`.
 
+Everything auto-saves and re-attaches on resume, so the new model picks up
+where you left off \u2014 including a `/compact` summary if you merged the
+history earlier. The resume banner also flags a model change:
+`[Resumed: ".." \u2014 24 messages, last active 2h ago \u2014 now on deepseek-chat; /retry to re-answer with the current model]`.
+
 - `/continue` — resume the last session explicitly
 - `/new` — start a fresh session (clears the resume pointer)
 - `/load <id|name>` — load any past session by id or by name/title match

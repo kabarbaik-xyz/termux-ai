@@ -65,6 +65,11 @@ class Database:
         rows = self.conn.execute("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?", (cid, limit)).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in rows][::-1]
 
+    def last_msg_model(self, cid):
+        row = self.conn.execute(
+            "SELECT model FROM messages WHERE conversation_id = ? AND model != '' ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+        return row["model"] if row else ""
+
     def list_convs(self, limit=20):
         return self.conn.execute(
             "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
