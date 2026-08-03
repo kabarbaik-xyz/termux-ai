@@ -128,13 +128,35 @@ class FileReader:
     }
 
     @staticmethod
-    def read(path, max_chars=20000):
+    def read(path, max_chars=20000, start_line=None, end_line=None):
+        """Read a file.
+
+        With no range args, returns the first ``max_chars`` chars (backward
+        compatible). With ``start_line``/``end_line`` (1-based, inclusive) it
+        returns that line span prefixed by a short header so the caller can
+        page through a large file instead of re-reading the head every time.
+        """
         p = os.path.expanduser(path)
         if not os.path.exists(p): return f"Error: File not found at path '{p}'"
         ext = os.path.splitext(p)[1].lower()
         try:
             if ext in FileReader.TEXT_EXTS:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()[:max_chars]
+                with open(p, "r", encoding="utf-8", errors="ignore") as f: text = f.read()
+                if start_line is None and end_line is None:
+                    return text[:max_chars]
+                lines = text.split("\n")
+                total = len(lines)
+                lo = max(1, int(start_line)) if start_line is not None else 1
+                hi = int(end_line) if end_line is not None else min(total, lo + 200)
+                hi = min(max(hi, lo), total)
+                lo = min(lo, total)
+                page = "\n".join(lines[lo - 1:hi])[:max_chars]
+                head = f"[lines {lo}\u2013{hi} of {total}]"
+                if hi < total:
+                    head += f" \u2014 to continue, read_file(path={path!r}, start={hi + 1})"
+                else:
+                    head += "  \u2014 end of file"
+                return head + "\n" + page
             elif ext == ".pdf":
                 if shutil.which("pdftotext"):
                     r = subprocess.run(["pdftotext", "-layout", p, "-"], capture_output=True, text=True, timeout=15)
@@ -745,6 +767,7 @@ class Config:
         "max_file_chars": 20000,
         "max_tool_result": 10000,
         "max_iterations": 50,
+        "repeat_limit": 3,
         "continue_every": 10,
         "auto_resume": True,
         "prune_days": 0,
@@ -821,7 +844,7 @@ class Tools:
                    ".gradle", ".cache", ".terraform", ".eggs", ".sass-cache", "Pods"}
 
     TOOLS = [
-        {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read file contents. Optional start/end are 1-based LINE numbers (inclusive) for reading a specific span of a large file; without them the first part of the file is returned.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "start": {"type": "integer", "description": "1-based line to start reading from"}, "end": {"type": "integer", "description": "1-based line to read up to (inclusive)"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "write_file", "description": "Write content to a file. Set append=true to ADD to an existing file instead of overwriting - use this to build LARGE files in sections so no single call exceeds the output token limit.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}}},
         {"type": "function", "function": {"name": "list_files", "description": "List files in a directory. Set recursive=true to map the whole tree (auto-skips dependency/VCS/build dirs like node_modules, .git, __pycache__, dist).", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
@@ -1207,7 +1230,7 @@ class Tools:
                 if not p: return "Error: Path is missing."
                 if not os.path.exists(p): return f"Error: Not found at {p}"
                 if os.path.isdir(p): return "Error: Is a directory"
-                return FileReader.read(p)
+                return FileReader.read(p, start_line=args.get("start"), end_line=args.get("end"))
             elif name == "write_file":
                 if not build_mode: return "Error: Write access is disabled in Plan mode."
                 p = os.path.expanduser(args.get("path", ""))
@@ -1518,6 +1541,22 @@ class OpenAICompatible(Backend):
         next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
+        REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
+        repeat_count = {}
+
+        def _repeat_check(calls):
+            """Stop early if the model repeats the exact same tool call. A free
+            mirror with tiny context can 'forget' it already made a call and
+            re-issue it forever; this turns that 50-iteration burn into a
+            clear, immediate stop."""
+            for c in calls:
+                key = (c["name"], json.dumps(c.get("args") or {}, sort_keys=True))
+                repeat_count[key] = repeat_count.get(key, 0) + 1
+                n = repeat_count[key]
+                if n >= REPEAT_LIMIT:
+                    shown = (json.dumps(c.get("args") or {}, sort_keys=True))[:120]
+                    return True, (c["name"], shown, n)
+            return False, None
 
         while True:
             iterations += 1
@@ -1592,6 +1631,12 @@ class OpenAICompatible(Backend):
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
+
+            stuck, stuck_call = _repeat_check(norm_calls)
+            if stuck:
+                name, shown, n = stuck_call
+                yield {"type": "notice", "content": f"[Stopped: you've called {name}({shown}) {n} times unchanged and nothing is changing. \u2014 /retry to resume with a different action, or rephrase the task.]", "fatal": True}
+                return
 
             if not confirm_batch_fn(norm_calls):
                 msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
@@ -1682,6 +1727,18 @@ class AnthropicBackend(Backend):
         next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
+        REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
+        repeat_count = {}
+
+        def _repeat_check(calls):
+            for c in calls:
+                key = (c["name"], json.dumps(c.get("args") or {}, sort_keys=True))
+                repeat_count[key] = repeat_count.get(key, 0) + 1
+                n = repeat_count[key]
+                if n >= REPEAT_LIMIT:
+                    shown = (json.dumps(c.get("args") or {}, sort_keys=True))[:120]
+                    return True, (c["name"], shown, n)
+            return False, None
 
         while True:
             iterations += 1
@@ -1771,6 +1828,12 @@ class AnthropicBackend(Backend):
             norm_calls = []
             for tu in tool_uses:
                 norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
+
+            stuck, stuck_call = _repeat_check(norm_calls)
+            if stuck:
+                name, shown, n = stuck_call
+                yield {"type": "notice", "content": f"[Stopped: you've called {name}({shown}) {n} times unchanged and nothing is changing. \u2014 /retry to resume with a different action, or rephrase the task.]", "fatal": True}
+                return
 
             if not confirm_batch_fn(norm_calls):
                 results = []

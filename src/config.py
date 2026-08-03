@@ -38,6 +38,7 @@ class Config:
         "max_file_chars": 20000,
         "max_tool_result": 10000,
         "max_iterations": 50,
+        "repeat_limit": 3,
         "continue_every": 10,
         "auto_resume": True,
         "prune_days": 0,

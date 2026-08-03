@@ -228,6 +228,22 @@ class OpenAICompatible(Backend):
         next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
+        REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
+        repeat_count = {}
+
+        def _repeat_check(calls):
+            """Stop early if the model repeats the exact same tool call. A free
+            mirror with tiny context can 'forget' it already made a call and
+            re-issue it forever; this turns that 50-iteration burn into a
+            clear, immediate stop."""
+            for c in calls:
+                key = (c["name"], json.dumps(c.get("args") or {}, sort_keys=True))
+                repeat_count[key] = repeat_count.get(key, 0) + 1
+                n = repeat_count[key]
+                if n >= REPEAT_LIMIT:
+                    shown = (json.dumps(c.get("args") or {}, sort_keys=True))[:120]
+                    return True, (c["name"], shown, n)
+            return False, None
 
         while True:
             iterations += 1
@@ -302,6 +318,12 @@ class OpenAICompatible(Backend):
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
+
+            stuck, stuck_call = _repeat_check(norm_calls)
+            if stuck:
+                name, shown, n = stuck_call
+                yield {"type": "notice", "content": f"[Stopped: you've called {name}({shown}) {n} times unchanged and nothing is changing. \u2014 /retry to resume with a different action, or rephrase the task.]", "fatal": True}
+                return
 
             if not confirm_batch_fn(norm_calls):
                 msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
@@ -392,6 +414,18 @@ class AnthropicBackend(Backend):
         next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
+        REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
+        repeat_count = {}
+
+        def _repeat_check(calls):
+            for c in calls:
+                key = (c["name"], json.dumps(c.get("args") or {}, sort_keys=True))
+                repeat_count[key] = repeat_count.get(key, 0) + 1
+                n = repeat_count[key]
+                if n >= REPEAT_LIMIT:
+                    shown = (json.dumps(c.get("args") or {}, sort_keys=True))[:120]
+                    return True, (c["name"], shown, n)
+            return False, None
 
         while True:
             iterations += 1
@@ -481,6 +515,12 @@ class AnthropicBackend(Backend):
             norm_calls = []
             for tu in tool_uses:
                 norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
+
+            stuck, stuck_call = _repeat_check(norm_calls)
+            if stuck:
+                name, shown, n = stuck_call
+                yield {"type": "notice", "content": f"[Stopped: you've called {name}({shown}) {n} times unchanged and nothing is changing. \u2014 /retry to resume with a different action, or rephrase the task.]", "fatal": True}
+                return
 
             if not confirm_batch_fn(norm_calls):
                 results = []

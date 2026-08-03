@@ -7,13 +7,35 @@ class FileReader:
     }
 
     @staticmethod
-    def read(path, max_chars=20000):
+    def read(path, max_chars=20000, start_line=None, end_line=None):
+        """Read a file.
+
+        With no range args, returns the first ``max_chars`` chars (backward
+        compatible). With ``start_line``/``end_line`` (1-based, inclusive) it
+        returns that line span prefixed by a short header so the caller can
+        page through a large file instead of re-reading the head every time.
+        """
         p = os.path.expanduser(path)
         if not os.path.exists(p): return f"Error: File not found at path '{p}'"
         ext = os.path.splitext(p)[1].lower()
         try:
             if ext in FileReader.TEXT_EXTS:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f: return f.read()[:max_chars]
+                with open(p, "r", encoding="utf-8", errors="ignore") as f: text = f.read()
+                if start_line is None and end_line is None:
+                    return text[:max_chars]
+                lines = text.split("\n")
+                total = len(lines)
+                lo = max(1, int(start_line)) if start_line is not None else 1
+                hi = int(end_line) if end_line is not None else min(total, lo + 200)
+                hi = min(max(hi, lo), total)
+                lo = min(lo, total)
+                page = "\n".join(lines[lo - 1:hi])[:max_chars]
+                head = f"[lines {lo}\u2013{hi} of {total}]"
+                if hi < total:
+                    head += f" \u2014 to continue, read_file(path={path!r}, start={hi + 1})"
+                else:
+                    head += "  \u2014 end of file"
+                return head + "\n" + page
             elif ext == ".pdf":
                 if shutil.which("pdftotext"):
                     r = subprocess.run(["pdftotext", "-layout", p, "-"], capture_output=True, text=True, timeout=15)

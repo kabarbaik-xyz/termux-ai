@@ -306,6 +306,18 @@ that was never really shown. Only a drop **after real content** streams stops
 the retry (to avoid duplicate output) and triggers the interrupt-continuation
 flow above.
 
+### Read loops that never progress
+
+`read_file` now supports **line offsets** (`start`/`end`, 1-based): a large
+file is read in pages with a `[lines N–M of T]` header and a
+`read_file(..., start=M+1)` hint, so a model can walk a file top-to-bottom
+instead of re-reading the same head. Previously, offset arguments were
+silently ignored and every call returned the identical truncated head — the
+classic "reads the same file 40 times" spiral. As a second backstop, the tool
+loop now counts identical tool calls and **stops after `repeat_limit`
+(default 3) unchanged repeats** with a clear message (instead of burning all
+50 iterations), configurable via `repeat_limit`.
+
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.

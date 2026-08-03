@@ -748,6 +748,33 @@ class TestBackendResilience(_TmpHome):
         self.assertFalse(m.Backend._has_payload({"type": "content_block_delta", "delta": {}}))
         self.assertTrue(m.Backend._has_payload({"type": "message_start"}))
 
+    def test_repeat_guard_stops_identical_call_early(self):
+        b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
+        calls = {"n": 0}
+        def fake_stream(url, data, headers, notify=None):
+            calls["n"] += 1
+            yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"app.js","start":600}'}}]}, "finish_reason": "tool_calls"}]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        self.assertLess(calls["n"], 50)  # stopped far before max_iterations
+        notice = [e for e in evts if e["type"] == "notice"]
+        self.assertTrue(notice and notice[-1].get("fatal"))
+        self.assertIn("read_file", notice[-1]["content"])
+
+    def test_read_file_offset_paging(self):
+        p = os.path.join(tempfile.gettempdir(), "_f_tool_paging.txt")
+        with open(p, "w") as f:
+            f.write("\n".join(f"line {i}" for i in range(1, 21)))
+        res = m.Tools.run("read_file", {"path": p, "start": 3, "end": 5}, False)
+        self.assertIn(f"[lines 3\u20135 of 20]", res)
+        self.assertIn("line 3", res)
+        self.assertIn("line 5", res)
+        self.assertNotIn("line 6", res)
+        self.assertIn("continue", res)
+        full = m.Tools.run("read_file", {"path": p}, False)   # no offsets
+        self.assertNotIn("[lines", full)                       # backward compatible
+        self.assertIn("line 1", full)
+
     def test_transient_classification(self):
         self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
         self.assertFalse(m.Backend._transient(m.BackendError("x", transient=False)))
