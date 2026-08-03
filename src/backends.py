@@ -167,6 +167,45 @@ class Backend:
         return 0, (False if names else phase_nudged), None
 
     @staticmethod
+    def _read_covered(intervals, lo, hi):
+        for a, b in intervals:
+            if lo >= a and hi <= b:
+                return True
+        return False
+
+    @staticmethod
+    def _read_union(intervals, lo, hi):
+        out = []
+        for a, b in intervals:
+            if hi + 1 < a or b + 1 < lo:
+                out.append((a, b))
+            else:
+                lo, hi = min(lo, a), max(hi, b)
+        out.append((lo, hi))
+        return out
+
+    def _read_spiral_check(self, norm_calls, coverage, re_read, limit):
+        """Detect when the model re-reads lines of a file it has ALREADY shown
+        (overlapping ranges) rather than fresh ground. When the same file's
+        already-covered region is revisited ``limit`` times, return the path so
+        the loop can stop -- a model that only *re-reads* makes no progress."""
+        for c in norm_calls:
+            if c.get("name") != "read_file":
+                continue
+            args = c.get("args") or {}
+            p = args.get("path") or ""
+            lo = int(args.get("start") or 1)
+            hi = int(args.get("end") or 2000000000)
+            iv = coverage.get(p, [])
+            if Backend._read_covered(iv, lo, hi):
+                re_read[p] = re_read.get(p, 0) + 1
+                if re_read[p] >= limit:
+                    return p
+            else:
+                coverage[p] = Backend._read_union(iv, lo, hi)
+        return None
+
+    @staticmethod
     def _trim_iteration_history(msgs, budget=8000):
         """Bound accumulated tool-result size for long agentic loops so context
         doesn't balloon. Truncates OLDER tool results to a head snippet -- but
@@ -257,6 +296,9 @@ class OpenAICompatible(Backend):
         GATHER_N = max(2, int(self.c.get("gather_threshold", 3)))
         read_streak = 0
         phase_nudged = False
+        RE_LIMIT = max(2, int(self.c.get("re_read_limit", 3)))
+        coverage = {}
+        re_read = {}
 
         def _repeat_check(calls):
             """Stop early if the model repeats the exact same tool call. A free
@@ -345,6 +387,11 @@ class OpenAICompatible(Backend):
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
+
+            spiral_file = self._read_spiral_check(norm_calls, coverage, re_read, RE_LIMIT)
+            if spiral_file:
+                yield {"type": "notice", "content": f"[Stopped: you've re-read {spiral_file} {re_read[spiral_file]} times over ground already shown this turn. This read isn't progressing \u2014 stop re-reading and work from what you have, or /retry with a more specific request.]", "fatal": True}
+                return
 
             stuck, stuck_call = _repeat_check(norm_calls)
             if stuck:
@@ -452,6 +499,9 @@ class AnthropicBackend(Backend):
         GATHER_N = max(2, int(self.c.get("gather_threshold", 3)))
         read_streak = 0
         phase_nudged = False
+        RE_LIMIT = max(2, int(self.c.get("re_read_limit", 3)))
+        coverage = {}
+        re_read = {}
 
         def _repeat_check(calls):
             for c in calls:
@@ -551,6 +601,11 @@ class AnthropicBackend(Backend):
             norm_calls = []
             for tu in tool_uses:
                 norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
+
+            spiral_file = self._read_spiral_check(norm_calls, coverage, re_read, RE_LIMIT)
+            if spiral_file:
+                yield {"type": "notice", "content": f"[Stopped: you've re-read {spiral_file} {re_read[spiral_file]} times over ground already shown this turn. This read isn't progressing \u2014 stop re-reading and work from what you have, or /retry with a more specific request.]", "fatal": True}
+                return
 
             stuck, stuck_call = _repeat_check(norm_calls)
             if stuck:

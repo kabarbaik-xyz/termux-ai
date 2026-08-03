@@ -330,6 +330,13 @@ sent to the model) telling it to batch the remaining reads into one response
 and move to execution. The streak resets the moment it writes or runs, so a
 later re-read spiral gets nudged again.
 
+A separate **re-read guard** (`re_read_limit`, default 3) stops the worst
+case — a model that keeps reading *overlapping* ranges of the same file (the
+identical-call guard can't see these because the args differ). The harness
+tracks which line ranges of each file it has already shown this turn and,
+when the same file's covered ground is re-requested 3 times, stops with
+"you've re-read {file} N times over ground already shown".
+
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.

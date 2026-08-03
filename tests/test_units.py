@@ -863,6 +863,25 @@ class TestBackendResilience(_TmpHome):
         self.assertIn("local v7.0.0", out)
         self.assertIn("Already up to date", out)
 
+    def test_read_spiral_stops_overlapping_re_reads(self):
+        b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
+        calls = {"n": 0}
+        ranges = [("a", 100, 500), ("a", 200, 400), ("a", 250, 350), ("a", 300, 380)]
+        def fake_stream(url, data, headers, notify=None):
+            n = calls["n"]; calls["n"] += 1
+            if n < len(ranges):
+                path, lo, hi = ranges[n]
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t%d" % n, "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": path, "start": lo, "end": hi})}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {}} ]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
+             um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        notices = [e for e in evts if e["type"] == "notice"]
+        self.assertTrue(notices and notices[-1].get("fatal"))
+        self.assertIn("re-read", notices[-1]["content"])
+        self.assertEqual(calls["n"], 4)   # 1st fresh, then 3 redundant re-reads -> stop
+
     def test_transient_classification(self):
         self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
         self.assertFalse(m.Backend._transient(m.BackendError("x", transient=False)))
