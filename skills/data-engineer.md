@@ -29,6 +29,8 @@ Produce ONE self-contained `dashboard.html` (inline <style> and <script>, NO ext
 - Clean responsive CSS; readable on a phone.
 After writing, tell the user the path and suggest opening it in a browser.
 
+> **Write it in SECTIONS, never one huge call.** A full HTML page can exceed the model output token limit and arrive truncated/empty. Build it incrementally: first `write_file` the opening (`<!DOCTYPE html>` ... `<head>` ... `<style>` ... KPI cards), then `write_file(append=true)` the chart functions, then the data table + aggregated `<script>` data, then the closing `</body></html>`. Each call stays well under the limit.
+
 ## Rules
 - Every number in the dashboard must trace to the source file you read - never invent figures. Mark estimates [estimate].
 - Match the user's language (Bahasa Indonesia or English).

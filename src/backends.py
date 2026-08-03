@@ -164,10 +164,14 @@ class OpenAICompatible(Backend):
 
             content_buf = ""
             tool_calls_buf = {}
+            finish_reason = None
 
             for chunk in self._sse_lines(resp):
                 if not chunk.get("choices"): continue
-                delta = chunk["choices"][0].get("delta", {})
+                ch0 = chunk["choices"][0]
+                delta = ch0.get("delta", {})
+                fr = ch0.get("finish_reason")
+                if fr: finish_reason = fr
                 if delta.get("content"):
                     content_buf += delta["content"]
                 if delta.get("tool_calls"):
@@ -196,6 +200,22 @@ class OpenAICompatible(Backend):
 
             if not calls:
                 return
+
+            if finish_reason == "length" and calls:
+                # Output was truncated mid-tool-call -> the arguments are almost
+                # certainly incomplete (often parse to {}). Executing would just
+                # fail with "Path is missing" and the model would flail. Instead
+                # tell it to split the work into smaller writes and continue.
+                msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
+                note = ("Your previous response was TRUNCATED by the output token limit "
+                        "(finish_reason=length), so the tool-call arguments were incomplete. "
+                        "Do NOT retry the same large call. Break big file writes into sections: "
+                        "write the opening with write_file, then append the rest in parts using "
+                        "write_file(append=true). Keep each call well under the output limit.")
+                for c in calls:
+                    msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": note})
+                yield {"type": "notice", "content": "\n[Output hit the token limit mid-tool-call - asked the AI to split the write into smaller pieces (write_file + append).]", "fatal": False}
+                continue
 
             total_calls += len(calls)
 
@@ -319,10 +339,14 @@ class AnthropicBackend(Backend):
 
             content_blocks = {}
             text_block = ""
+            stop_reason = None
 
             for chunk in self._sse_lines(resp):
                 evt_type = chunk.get("type")
-                if evt_type == "content_block_start":
+                if evt_type == "message_delta":
+                    sr = chunk.get("delta", {}).get("stop_reason")
+                    if sr: stop_reason = sr
+                elif evt_type == "content_block_start":
                     idx = chunk.get("index")
                     block = chunk.get("content_block", {})
                     if block.get("type") == "thinking":
@@ -359,6 +383,22 @@ class AnthropicBackend(Backend):
 
             if not tool_uses:
                 return
+
+            if stop_reason == "max_tokens" and tool_uses:
+                # Output truncated mid-tool-call -> inputs are incomplete. Don't
+                # execute; tell the model to split the work into smaller writes.
+                results = []
+                note = ("Your previous response was TRUNCATED by the output token limit "
+                        "(stop_reason=max_tokens), so the tool-call inputs were incomplete. "
+                        "Do NOT retry the same large call. Break big file writes into sections: "
+                        "write the opening with write_file, then append the rest in parts using "
+                        "write_file(append=true). Keep each call well under the output limit.")
+                for tu in tool_uses:
+                    results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": note})
+                payload.append({"role": "assistant", "content": blocks})
+                payload.append({"role": "user", "content": results})
+                yield {"type": "notice", "content": "\n[Output hit the token limit mid-tool-call - asked the AI to split the write into smaller pieces (write_file + append).]", "fatal": False}
+                continue
 
             total_calls += len(tool_uses)
 

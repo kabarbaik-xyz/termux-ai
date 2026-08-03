@@ -12,7 +12,7 @@ class Tools:
 
     TOOLS = [
         {"type": "function", "function": {"name": "read_file", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-        {"type": "function", "function": {"name": "write_file", "description": "Write content to file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}},
+        {"type": "function", "function": {"name": "write_file", "description": "Write content to a file. Set append=true to ADD to an existing file instead of overwriting - use this to build LARGE files in sections so no single call exceeds the output token limit.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}}},
         {"type": "function", "function": {"name": "list_files", "description": "List files in a directory. Set recursive=true to map the whole tree (auto-skips dependency/VCS/build dirs like node_modules, .git, __pycache__, dist).", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
@@ -403,6 +403,7 @@ class Tools:
                 p = os.path.expanduser(args.get("path", ""))
                 if not p: return "Error: Path is missing."
                 content = args.get("content", "")
+                append = bool(args.get("append", False))
 
                 cwd = os.getcwd()
                 # Resolve symlinks so a link inside cwd cannot escape it.
@@ -414,6 +415,9 @@ class Tools:
                     return f"Error: Cannot write files outside current working directory ({cwd})."
 
                 Path(p).parent.mkdir(parents=True, exist_ok=True)
+                if append:
+                    with open(p, "a", encoding="utf-8") as _f: _f.write(content)
+                    return f"Appended {len(content)} chars to {p}"
                 Path(p).write_text(content)
                 return f"Written to {p}"
             elif name == "list_files":

@@ -571,6 +571,22 @@ class TestXlsxReader(_TmpHome):
         self.assertEqual(parts[2], "Engineer")
 
 
+class TestWriteFileAppend(_TmpHome):
+    def test_append_adds_without_overwriting(self):
+        app = m.App(); app.quiet = True
+        # build_mode ON so write_file is allowed
+        app.cfg.set("tools_enabled", True, save=False)
+        p = os.path.join(os.getcwd(), "chunk.html")
+        r1 = m.Tools.run("write_file", {"path": p, "content": "<html>\n<head></head>\n"}, build_mode=True)
+        r2 = m.Tools.run("write_file", {"path": p, "content": "<body>chart</body>\n", "append": True}, build_mode=True)
+        r3 = m.Tools.run("write_file", {"path": p, "content": "</html>\n", "append": True}, build_mode=True)
+        self.assertIn("Written", r1)
+        self.assertIn("Appended", r2)
+        self.assertIn("Appended", r3)
+        body = open(p).read()
+        self.assertEqual(body, "<html>\n<head></head>\n<body>chart</body>\n</html>\n")
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__
