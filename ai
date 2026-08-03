@@ -1378,12 +1378,28 @@ class Backend:
                     raise
                 time.sleep(base * (2 ** (attempt - 1)))
 
+    @staticmethod
+    def _has_payload(evt):
+        """True when an SSE event carries real content (vs whitespace-only or
+        empty deltas). Lets a drop that happened before anything meaningful was
+        streamed be retried without duplicating output."""
+        if not isinstance(evt, dict):
+            return True
+        if evt.get("type") == "content_block_delta":        # Anthropic
+            return bool((evt.get("delta") or {}).get("text") or "")
+        choices = evt.get("choices") or []                  # OpenAI
+        if choices:
+            d = (choices[0] or {}).get("delta") or {}
+            return bool((d.get("content") or "").strip() or d.get("tool_calls"))
+        return True
+
     def _stream_req(self, url, data, headers, notify=None):
         """Yield parsed SSE events for ONE request, retrying transient failures
         with exponential backoff (config: retries, retry_delay). A retry only
-        happens when NOTHING was emitted yet -- a mid-stream drop can't be
-        retried without duplicating output, so it propagates and the caller
-        tells the user to /retry."""
+        happens when NOTHING MEANINGFUL was emitted yet: whitespace-only deltas
+        and empty bodies don't count, so a flaky endpoint that drops before
+        sending real content is retried instead of erroring. A drop AFTER real
+        content propagates (retrying would duplicate output)."""
         attempts = max(1, int(self.c.get("retries", 3)))
         base = float(self.c.get("retry_delay", 1.0))
         for attempt in range(1, attempts + 1):
@@ -1391,8 +1407,11 @@ class Backend:
             try:
                 resp = self._req(url, data, headers)
                 for evt in self._sse_lines(resp):
-                    emitted = True
+                    if self._has_payload(evt):
+                        emitted = True
                     yield evt
+                if not emitted:
+                    raise BackendError("Empty response from backend (no content).", transient=True)
                 return
             except Exception as e:
                 if emitted or not self._transient(e) or attempt >= attempts:
@@ -2493,7 +2512,7 @@ class App:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
             _dbg_exc(e)
-            if current_block or did_tools or buf:
+            if (current_block or "").strip() or did_tools or any((x or "").strip() for x in buf):
                 # Mid-stream / mid-tool interruption: snapshot the in-flight
                 # state -- executed tool results are already in msgs -- so the
                 # turn can CONTINUE instead of restarting from scratch.

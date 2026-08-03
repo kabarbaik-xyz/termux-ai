@@ -297,6 +297,15 @@ session shows `[Interrupted turn pending: N tool steps completed]` and
 `/retry` continues from the checkpoint instead of restarting. A fresh user
 message clears the pending checkpoint.
 
+### Empty / flaky responses
+
+A backend that returns an **empty body** or drops before sending real content
+(whitespace-only stream) is treated as a transient failure and retried with
+backoff — it no longer fails silently ("AI went blank") or errors on output
+that was never really shown. Only a drop **after real content** streams stops
+the retry (to avoid duplicate output) and triggers the interrupt-continuation
+flow above.
+
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.

@@ -349,7 +349,7 @@ class App:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
             _dbg_exc(e)
-            if current_block or did_tools or buf:
+            if (current_block or "").strip() or did_tools or any((x or "").strip() for x in buf):
                 # Mid-stream / mid-tool interruption: snapshot the in-flight
                 # state -- executed tool results are already in msgs -- so the
                 # turn can CONTINUE instead of restarting from scratch.

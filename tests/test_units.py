@@ -706,6 +706,48 @@ class TestBackendResilience(_TmpHome):
                 list(self.b._stream_req("u", {}, {}, notify=lambda *a: None))
         self.assertEqual(calls["n"], 1)
 
+    def test_stream_req_retries_on_empty_body(self):
+        calls = {"n": 0}
+        def fake_req(url, data, headers):
+            calls["n"] += 1
+            return object()
+        def fake_sse(resp):
+            if calls["n"] >= 2:
+                yield {"choices": [{"delta": {"content": "hello"}}]}
+                return
+            return   # first attempt: empty body, no events
+        with um.patch.object(self.b, "_req", side_effect=fake_req), \
+             um.patch.object(self.b, "_sse_lines", side_effect=fake_sse), \
+             um.patch("time.sleep"):
+            evts = list(self.b._stream_req("u", {}, {}, notify=lambda *a: None))
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(evts, [{"choices": [{"delta": {"content": "hello"}}]}])
+
+    def test_stream_req_retries_when_only_whitespace_before_drop(self):
+        calls = {"n": 0}
+        def fake_req(url, data, headers):
+            calls["n"] += 1
+            return object()
+        def fake_sse(resp):
+            if calls["n"] == 1:
+                yield {"choices": [{"delta": {"content": "\n"}}]}
+                raise m.BackendError("Stream idle for too long. Aborting.", transient=True)
+            yield {"choices": [{"delta": {"content": "real"}}]}
+        with um.patch.object(self.b, "_req", side_effect=fake_req), \
+             um.patch.object(self.b, "_sse_lines", side_effect=fake_sse), \
+             um.patch("time.sleep"):
+            evts = list(self.b._stream_req("u", {}, {}, notify=lambda *a: None))
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(evts[-1], {"choices": [{"delta": {"content": "real"}}]})
+
+    def test_has_payload(self):
+        self.assertTrue(m.Backend._has_payload({"choices": [{"delta": {"content": "hi"}}]}))
+        self.assertFalse(m.Backend._has_payload({"choices": [{"delta": {"content": "   "}}]}))
+        self.assertFalse(m.Backend._has_payload({"choices": [{"delta": {}}]}))
+        self.assertTrue(m.Backend._has_payload({"type": "content_block_delta", "delta": {"text": "x"}}))
+        self.assertFalse(m.Backend._has_payload({"type": "content_block_delta", "delta": {}}))
+        self.assertTrue(m.Backend._has_payload({"type": "message_start"}))
+
     def test_transient_classification(self):
         self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
         self.assertFalse(m.Backend._transient(m.BackendError("x", transient=False)))
