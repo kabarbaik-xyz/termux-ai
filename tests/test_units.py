@@ -793,6 +793,71 @@ class TestSessionResume(_TmpHome):
         self.assertIsNone(app._get_last_cid())
 
 
+class TestNamedSessions(_TmpHome):
+    def _conv(self, app, title="default"):
+        cid = app.db.new_conv(title, "m", "openai")
+        app.db.save_msg(cid, "user", "hello")
+        return cid
+
+    def test_save_pins_and_renames(self):
+        app = m.App(); app.quiet = True
+        cid = self._conv(app, "old")
+        app.cid = cid
+        app._execute_command("/save refactor-plan")
+        conv = app.db.get_conv(cid)
+        self.assertEqual(conv["title"], "refactor-plan")
+        self.assertEqual(conv["pinned"], 1)
+
+    def test_save_no_name_keeps_title_and_pins(self):
+        app = m.App(); app.quiet = True
+        cid = self._conv(app, "keep me")
+        app.cid = cid
+        app._execute_command("/save")
+        conv = app.db.get_conv(cid)
+        self.assertEqual(conv["title"], "keep me")
+        self.assertEqual(conv["pinned"], 1)
+
+    def test_unsave_unpins_keeps_chat(self):
+        app = m.App(); app.quiet = True
+        cid = self._conv(app)
+        app.cid = cid
+        app.db.set_pinned(cid, 1)
+        app._execute_command("/unsave")
+        self.assertEqual(app.db.get_conv(cid)["pinned"], 0)
+        self.assertIsNotNone(app.db.get_conv(cid))  # chat kept
+
+    def test_sessions_lists_pinned_first(self):
+        app = m.App(); app.quiet = True
+        a = self._conv(app, "aaa"); b = self._conv(app, "bbb")
+        app.db.set_pinned(b, 1)
+        rows = app.db.list_sessions(limit=50)
+        ids = [r["id"] for r in rows]
+        # b pinned should appear before a
+        self.assertLess(ids.index(b), ids.index(a))
+        self.assertTrue(rows[ids.index(b)]["pinned"])
+
+    def test_load_by_name(self):
+        app = m.App(); app.quiet = True
+        cid = self._conv(app, "deploy-checklist")
+        app._execute_command("/load deploy")
+        self.assertEqual(app.cid, cid)
+        self.assertEqual(app._get_last_cid(), cid)
+
+    def test_load_by_name_not_found(self):
+        app = m.App(); app.quiet = True
+        self._conv(app, "other-task")
+        app._execute_command("/load nope-xyz")
+        self.assertIsNone(app.cid)
+
+    def test_pinned_column_present_and_usable(self):
+        # Fresh DB has the pinned column; the setter exercises the migration path
+        app = m.App(); app.quiet = True
+        cid = self._conv(app)
+        self.assertIn("pinned", {c[1] for c in app.db.conn.execute("PRAGMA table_info(conversations)")})
+        app.db.set_pinned(cid, 1)
+        self.assertEqual(app.db.get_conv(cid)["pinned"], 1)
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

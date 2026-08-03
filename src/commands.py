@@ -122,6 +122,34 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         for c in convs:
             print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
 
+    def _cmd_save(self, args):
+        if not self.cid: self.warn("No active session to save. Send a message first."); return
+        conv = self.db.get_conv(self.cid)
+        name = " ".join(args).strip() or conv["title"]
+        self.db.rename_conv(self.cid, name)
+        self.db.set_pinned(self.cid, 1)
+        self.success(f"Saved session as \"{name}\" (pinned). Resume with /load {self.cid} or /load {name}")
+
+    def _cmd_unsave(self, args):
+        if not self.cid: self.warn("No active session."); return
+        self.db.set_pinned(self.cid, 0)
+        self.success("Removed session bookmark (chat kept).")
+
+    def _cmd_sessions(self, args):
+        rows = self.db.list_sessions(limit=50)
+        if not rows:
+            self.info("No sessions yet. Send a message to start one.")
+            return
+        print(f"{C.BOLD}Saved & recent sessions (● = pinned):{C.RESET}")
+        for r in rows:
+            pin = f"{C.GREEN}●{C.RESET}" if r["pinned"] else " "
+            title = (r["title"] or "(untitled)").strip()
+            if len(title) > 42: title = title[:39] + "..."
+            model = (r["model"] or "").strip()
+            model_s = f" [{model}]" if model else ""
+            ago = self._ago(r["updated_at"])
+            print(f" {pin} {C.BOLD}{r['id']}{C.RESET}. {title} {C.DIM}({r['msg_count']} msg, last {ago}{model_s}){C.RESET}")
+
     def _cmd_continue(self, args):
         cid = self._get_last_cid()
         conv = self.db.get_conv(cid) if cid else None
@@ -135,15 +163,21 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             self.warn("No previous session to continue. Send a message to start one.")
 
     def _cmd_load(self, args):
-        if not args: self.warn("Usage: /load <id>"); return
-        try: cid = int(args[0])
-        except ValueError: self.err("Invalid ID."); return
-        conv = self.db.get_conv(cid)
-        if conv:
-            self.cid = cid
-            self._persist_session()
-            self.success(f"Loaded chat: {conv['title']}")
-        else: self.err("Chat not found.")
+        if not args: self.warn("Usage: /load <id|name>"); return
+        arg = " ".join(args).strip()
+        if arg.isdigit():
+            cid = int(arg)
+            conv = self.db.get_conv(cid)
+            if not conv: self.err("Chat not found."); return
+        else:
+            results = self.db.search_convs(arg)
+            if not results:
+                self.err(f"No session matching \"{arg}\"."); return
+            cid = results[0]["id"]
+            conv = self.db.get_conv(cid)
+        self.cid = cid
+        self._persist_session()
+        self.success(f"Loaded chat: {conv['title']}")
 
     def _cmd_delete(self, args):
         if not args: self.warn("Usage: /delete <id>"); return

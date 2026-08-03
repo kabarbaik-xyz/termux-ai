@@ -11,7 +11,7 @@ class Database:
         self._migrate_schema()
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT, pinned INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
@@ -35,6 +35,7 @@ class Database:
                 if "backend" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN backend TEXT")
                 if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                if "pinned" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER DEFAULT 0")
 
             msg_cols = self._table_cols("messages")
             if msg_cols:
@@ -69,6 +70,12 @@ class Database:
             "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
+    def list_sessions(self, limit=50):
+        """Saved sessions: pinned first, then most recently active, with message counts."""
+        return self.conn.execute(
+            "SELECT id, title, model, updated_at, pinned, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY pinned DESC, updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
     def search_convs(self, query):
         return self.conn.execute(
             "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
@@ -82,6 +89,10 @@ class Database:
 
     def rename_conv(self, cid, title):
         self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+        self.conn.commit()
+
+    def set_pinned(self, cid, v):
+        self.conn.execute("UPDATE conversations SET pinned = ? WHERE id = ?", (1 if v else 0, cid))
         self.conn.commit()
 
     def get_conv(self, cid):

@@ -537,7 +537,7 @@ class Database:
         self._migrate_schema()
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT, pinned INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
@@ -561,6 +561,7 @@ class Database:
                 if "backend" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN backend TEXT")
                 if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                if "pinned" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER DEFAULT 0")
 
             msg_cols = self._table_cols("messages")
             if msg_cols:
@@ -595,6 +596,12 @@ class Database:
             "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
+    def list_sessions(self, limit=50):
+        """Saved sessions: pinned first, then most recently active, with message counts."""
+        return self.conn.execute(
+            "SELECT id, title, model, updated_at, pinned, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY pinned DESC, updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
     def search_convs(self, query):
         return self.conn.execute(
             "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
@@ -608,6 +615,10 @@ class Database:
 
     def rename_conv(self, cid, title):
         self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+        self.conn.commit()
+
+    def set_pinned(self, cid, v):
+        self.conn.execute("UPDATE conversations SET pinned = ? WHERE id = ?", (1 if v else 0, cid))
         self.conn.commit()
 
     def get_conv(self, cid):
@@ -2101,7 +2112,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -2267,7 +2278,7 @@ class App:
         
         cats = {
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
-            "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
+            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
@@ -2757,7 +2768,7 @@ class App:
 
     _CMD_DISPATCH = {
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
-        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete",
+        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/unsave": "_cmd_unsave",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
@@ -2966,6 +2977,34 @@ class App:
         for c in convs:
             print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
 
+    def _cmd_save(self, args):
+        if not self.cid: self.warn("No active session to save. Send a message first."); return
+        conv = self.db.get_conv(self.cid)
+        name = " ".join(args).strip() or conv["title"]
+        self.db.rename_conv(self.cid, name)
+        self.db.set_pinned(self.cid, 1)
+        self.success(f"Saved session as \"{name}\" (pinned). Resume with /load {self.cid} or /load {name}")
+
+    def _cmd_unsave(self, args):
+        if not self.cid: self.warn("No active session."); return
+        self.db.set_pinned(self.cid, 0)
+        self.success("Removed session bookmark (chat kept).")
+
+    def _cmd_sessions(self, args):
+        rows = self.db.list_sessions(limit=50)
+        if not rows:
+            self.info("No sessions yet. Send a message to start one.")
+            return
+        print(f"{C.BOLD}Saved & recent sessions (● = pinned):{C.RESET}")
+        for r in rows:
+            pin = f"{C.GREEN}●{C.RESET}" if r["pinned"] else " "
+            title = (r["title"] or "(untitled)").strip()
+            if len(title) > 42: title = title[:39] + "..."
+            model = (r["model"] or "").strip()
+            model_s = f" [{model}]" if model else ""
+            ago = self._ago(r["updated_at"])
+            print(f" {pin} {C.BOLD}{r['id']}{C.RESET}. {title} {C.DIM}({r['msg_count']} msg, last {ago}{model_s}){C.RESET}")
+
     def _cmd_continue(self, args):
         cid = self._get_last_cid()
         conv = self.db.get_conv(cid) if cid else None
@@ -2979,15 +3018,21 @@ class App:
             self.warn("No previous session to continue. Send a message to start one.")
 
     def _cmd_load(self, args):
-        if not args: self.warn("Usage: /load <id>"); return
-        try: cid = int(args[0])
-        except ValueError: self.err("Invalid ID."); return
-        conv = self.db.get_conv(cid)
-        if conv:
-            self.cid = cid
-            self._persist_session()
-            self.success(f"Loaded chat: {conv['title']}")
-        else: self.err("Chat not found.")
+        if not args: self.warn("Usage: /load <id|name>"); return
+        arg = " ".join(args).strip()
+        if arg.isdigit():
+            cid = int(arg)
+            conv = self.db.get_conv(cid)
+            if not conv: self.err("Chat not found."); return
+        else:
+            results = self.db.search_convs(arg)
+            if not results:
+                self.err(f"No session matching \"{arg}\"."); return
+            cid = results[0]["id"]
+            conv = self.db.get_conv(cid)
+        self.cid = cid
+        self._persist_session()
+        self.success(f"Loaded chat: {conv['title']}")
 
     def _cmd_delete(self, args):
         if not args: self.warn("Usage: /delete <id>"); return

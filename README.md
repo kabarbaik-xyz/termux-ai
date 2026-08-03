@@ -253,7 +253,11 @@ a banner with the title, message count and when it was last active:
 
 - `/continue` — resume the last session explicitly
 - `/new` — start a fresh session (clears the resume pointer)
-- `/load <id>` — load any past session; `/history` lists them
+- `/load <id|name>` — load any past session by id or by name/title match
+- `/sessions` — list saved sessions, pinned first (● = bookmarked)
+- `/save [name]` — bookmark the current session (rename with a name)
+- `/unsave` — un-bookmark the current chat
+- `/history` — list all chats
 - `ai --continue` / `ai --new` / `ai -l <id>` — same, at launch
 - `ai <prompt>` one-shot calls are unaffected (never auto-resume)
 
