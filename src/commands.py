@@ -4,6 +4,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
 
     def _cmd_new(self, args):
         self.cid = None
+        self._clear_last_cid()
         self.success("Started new chat.")
 
     def _cmd_tools(self, args):
@@ -121,6 +122,18 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         for c in convs:
             print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
 
+    def _cmd_continue(self, args):
+        cid = self._get_last_cid()
+        conv = self.db.get_conv(cid) if cid else None
+        if conv:
+            self.cid = cid
+            self._persist_session()
+            n = len(self.db.get_msgs(cid))
+            ago = self._ago(conv["updated_at"])
+            print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}]{C.RESET}")
+        else:
+            self.warn("No previous session to continue. Send a message to start one.")
+
     def _cmd_load(self, args):
         if not args: self.warn("Usage: /load <id>"); return
         try: cid = int(args[0])
@@ -128,6 +141,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         conv = self.db.get_conv(cid)
         if conv:
             self.cid = cid
+            self._persist_session()
             self.success(f"Loaded chat: {conv['title']}")
         else: self.err("Chat not found.")
 
@@ -137,6 +151,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         except ValueError: self.err("Invalid ID."); return
         self.db.del_conv(cid)
         if self.cid == cid: self.cid = None
+        if self._get_last_cid() == cid: self._clear_last_cid()
         self.success("Chat deleted.")
 
     def _cmd_search(self, args):

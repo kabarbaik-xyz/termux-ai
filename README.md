@@ -244,6 +244,19 @@ docker ps | ai "which container has port 8080?"
 | `/fold on\|off` | Toggle folding of long lists/tables (default on; `fold_head` controls how many stay visible) |
 | `/clear` | Clear the screen |
 
+### Sessions & resume
+
+Every chat is saved to the local database as you go. On startup the app
+**auto-resumes your last session** (config `auto_resume`, default on) and shows
+a banner with the title, message count and when it was last active:
+`[Resumed: "campaign dashboard" — 24 messages, last active 2h ago]`.
+
+- `/continue` — resume the last session explicitly
+- `/new` — start a fresh session (clears the resume pointer)
+- `/load <id>` — load any past session; `/history` lists them
+- `ai --continue` / `ai --new` / `ai -l <id>` — same, at launch
+- `ai <prompt>` one-shot calls are unaffected (never auto-resume)
+
 ### Resilience & context
 
 Backend hiccups (connection drops, timeouts, 429/5xx) are retried automatically

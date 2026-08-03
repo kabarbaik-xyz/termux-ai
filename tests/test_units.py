@@ -733,6 +733,66 @@ class TestBackendResilience(_TmpHome):
         self.assertIsNotNone(app.cid)
 
 
+class TestSessionResume(_TmpHome):
+    def test_continue_resumes_last_session(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai")
+        app.db.save_msg(cid, "user", "hello")
+        app._set_last_cid(cid); app._resume_mode = "continue"
+        app._maybe_resume()
+        self.assertEqual(app.cid, cid)
+
+    def test_auto_resume_respects_config(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai")
+        app._set_last_cid(cid); app._resume_mode = "auto"
+        app._maybe_resume()
+        self.assertEqual(app.cid, cid)
+
+        app2 = m.App(); app2.quiet = True
+        app2.cfg.set("auto_resume", False)
+        cid2 = app2.db.new_conv("t2", "m", "openai")
+        app2._set_last_cid(cid2); app2._resume_mode = "auto"
+        app2._maybe_resume()
+        self.assertIsNone(app2.cid)
+
+    def test_continue_with_no_session_does_nothing(self):
+        app = m.App(); app.quiet = True
+        app._resume_mode = "continue"
+        app._maybe_resume()
+        self.assertIsNone(app.cid)
+
+    def test_stale_pointer_is_cleared(self):
+        app = m.App(); app.quiet = True
+        app._set_last_cid(999999); app._resume_mode = "auto"
+        app._maybe_resume()
+        self.assertIsNone(app._get_last_cid())
+        self.assertIsNone(app.cid)
+
+    def test_new_clears_pointer(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai")
+        app.cid = cid; app._set_last_cid(cid)
+        app._execute_command("/new")
+        self.assertIsNone(app.cid)
+        self.assertIsNone(app._get_last_cid())
+
+    def test_load_persists_pointer(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai")
+        app._execute_command("/load %d" % cid)
+        self.assertEqual(app.cid, cid)
+        self.assertEqual(app._get_last_cid(), cid)
+
+    def test_delete_clears_pointer(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "m", "openai")
+        app.cid = cid; app._set_last_cid(cid)
+        app._execute_command("/delete %d" % cid)
+        self.assertIsNone(app.cid)
+        self.assertIsNone(app._get_last_cid())
+
+
 class TestHelpers(unittest.TestCase):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__

@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/regen", "/retry", "/export", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -29,6 +29,8 @@ class App:
         self._auto_continue = False
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
         self._errored = False  # set when a request fails (for one-shot exit codes)
+        self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
+        self._resume_arg = None
 
     def _validate_config(self):
         name, prof = self.cfg.active_profile()
@@ -171,7 +173,7 @@ class App:
         print(f"{C.DIM}Version: {__version__}{C.RESET}\n")
         
         cats = {
-            "Chat": [("/new", "Start new chat"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
+            "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id>", "Load chat"), ("/rename <t>", "Rename chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
@@ -357,6 +359,80 @@ class App:
             # the next prompt and stack with it on small screens.
             if self.spinner: self.spinner.stop(); self.spinner = None
 
+    # ---- Session persistence (save/resume the last session across restarts) ----
+    def _last_cid_file(self):
+        return CONFIG_DIR / "last_cid"
+
+    def _get_last_cid(self):
+        try:
+            v = self._last_cid_file().read_text().strip()
+            return int(v) if v else None
+        except Exception:
+            return None
+
+    def _set_last_cid(self, cid):
+        try:
+            self._last_cid_file().write_text(str(cid))
+        except OSError:
+            pass
+
+    def _clear_last_cid(self):
+        try:
+            f = self._last_cid_file()
+            if f.exists(): f.unlink()
+        except OSError:
+            pass
+
+    def _persist_session(self):
+        if self.cid: self._set_last_cid(self.cid)
+        else: self._clear_last_cid()
+
+    @staticmethod
+    def _ago(ts):
+        try:
+            st = time.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
+            t = calendar.timegm(st)
+        except Exception:
+            return "recently"
+        d = time.time() - t
+        if d < 60: return "just now"
+        if d < 3600: return f"{int(d // 60)}m ago"
+        if d < 86400: return f"{int(d // 3600)}h ago"
+        return f"{int(d // 86400)}d ago"
+
+    def _activate(self, cid, banner=False):
+        self.cid = cid
+        self._persist_session()
+        if banner and not self.quiet:
+            conv = self.db.get_conv(cid)
+            if conv:
+                n = len(self.db.get_msgs(cid))
+                ago = self._ago(conv["updated_at"])
+                model = (conv.get("model") or "").strip()
+                model_s = f", {model}" if model else ""
+                print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{model_s}]{C.RESET}")
+
+    def _maybe_resume(self):
+        mode = self._resume_mode
+        if mode == "load" and self._resume_arg is not None:
+            try:
+                cid = int(self._resume_arg)
+            except (ValueError, TypeError):
+                self.err(f"Invalid session id: {self._resume_arg}"); return
+            conv = self.db.get_conv(cid)
+            if conv: self._activate(cid, banner=True)
+            else: self.err("Session not found.")
+            return
+        if mode == "new":
+            self.cid = None; self._clear_last_cid(); return
+        resume = (mode == "continue") or (mode == "auto" and self.cfg.get("auto_resume", True))
+        if not resume: return
+        cid = self._get_last_cid()
+        if cid and self.db.get_conv(cid):
+            self._activate(cid, banner=True)
+        elif cid:
+            self._clear_last_cid()  # stale pointer (session deleted)
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -399,6 +475,7 @@ class App:
         if reply:
             self.db.save_msg(self.cid, "assistant", reply, model, est_tok(reply))
             self.last_reply = reply
+            self._persist_session()
             if self.cfg.get("tts_replies", False): TermuxAPI.speak(reply)
             if self.cfg.get("show_tokens", True) and not self.quiet:
                 print(f"{C.DIM}[{est_tok(reply)} tokens]{C.RESET}")
@@ -586,7 +663,7 @@ class App:
         return 0
 
     _CMD_DISPATCH = {
-        "/new": "_cmd_new", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
+        "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
@@ -616,6 +693,7 @@ class App:
 
     def main_loop(self):
         self.print_startup_status()
+        self._maybe_resume()
         
         last_ctrl_c = 0.0
         

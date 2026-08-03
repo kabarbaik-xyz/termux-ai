@@ -21,10 +21,20 @@ def main():
                         help="generate a shell command for TASK (confirm & run in a TTY; print only when piped)")
     parser.add_argument("-j", "--json", action="store_true",
                         help="ask the model to answer with JSON only")
+    parser.add_argument("--continue", dest="resume_continue", action="store_true",
+                        help="resume the last session before the REPL")
+    parser.add_argument("--new", dest="resume_new", action="store_true",
+                        help="start a fresh session (do not resume)")
+    parser.add_argument("-l", "--load", dest="load_cid", default=None, metavar="ID",
+                        help="load a saved session by id before the REPL")
     args = parser.parse_args()
 
     app = App()
     app._override_model(args.model)
+    if args.load_cid:
+        app._resume_mode = "load"; app._resume_arg = args.load_cid
+    elif args.resume_new: app._resume_mode = "new"
+    elif args.resume_continue: app._resume_mode = "continue"
 
     stdin_data = app._read_stdin()
 
