@@ -9,4 +9,4 @@ import select, tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "6.8.0"
+__version__ = "7.0.0"

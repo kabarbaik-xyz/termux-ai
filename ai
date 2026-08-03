@@ -10,7 +10,7 @@ import select, tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "6.8.0"
+__version__ = "7.0.0"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -2368,6 +2368,15 @@ class App:
         try: self.backend = get_backend(self.cfg)
         except Exception as e: self.err(str(e))
 
+    @staticmethod
+    def _ver_tuple(v):
+        parts = []
+        for seg in (v or "").split("."):
+            try: parts.append(int(seg))
+            except ValueError:
+                parts.append(sum(int(c) for c in seg if c.isdigit()) or 0)
+        return tuple(parts + [0, 0, 0])[:3]
+
     def _self_update(self):
         import urllib.request
         url = "https://raw.githubusercontent.com/kabarbaik-xyz/termux-ai/main/ai"
@@ -2381,19 +2390,33 @@ class App:
             if not m or len(new_code) < 10000:
                 self.err("Downloaded file looks invalid; update aborted.")
                 return
+            remote = m.group(1)
 
             current_file = Path(__file__).resolve()
-            old_code = current_file.read_text(encoding='utf-8')
-            
+            try:
+                old_code = current_file.read_text(encoding='utf-8')
+            except OSError:
+                old_code = ""
+            local = __version__
+            self.info(f"local v{local} \u2192 remote v{remote}")
+
             if new_code == old_code:
-                self.info("Already up to date.")
+                self.info(f"Already up to date (v{local}).")
+                self.info("Run /status to see what\u2019s installed and configured.")
                 return
-                
+
+            # Never silently downgrade: if the remote is an older version,
+            # something is out of sync -- warn instead of regressing this build.
+            if self._ver_tuple(local) > self._ver_tuple(remote):
+                self.warn(f"Remote v{remote} is OLDER than this build (v{local}); not downgrading.")
+                self.warn("Your local build is newer than GitHub. Push your commits (git push) if you intended to publish them.")
+                return
+
             backup = current_file.with_suffix('.bak')
             shutil.copy2(current_file, backup)
             current_file.write_text(new_code, encoding='utf-8')
             os.chmod(current_file, 0o755)
-            self.success(f"Updated to v{m.group(1)}! Backup saved to {backup.name}. Please restart.")
+            self.success(f"Updated to v{remote}! Backup saved to {backup.name}. Please restart.")
         except Exception as e:
             self.err(f"Update failed: {e}")
 

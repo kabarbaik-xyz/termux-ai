@@ -5,6 +5,8 @@ import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
 import io
 import json
 import unittest.mock as um
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -819,6 +821,47 @@ class TestBackendResilience(_TmpHome):
              um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
         self.assertFalse(any("Context phase" in e.get("content", "") for e in evts if e["type"] == "notice"))
+
+    def test_ver_tuple(self):
+        self.assertEqual(m.App._ver_tuple("7.0.0"), (7, 0, 0))
+        self.assertEqual(m.App._ver_tuple("6.9"), (6, 9, 0))
+        self.assertTrue(m.App._ver_tuple("7.0.0") > m.App._ver_tuple("6.8.0"))
+        self.assertFalse(m.App._ver_tuple("6.8.0") > m.App._ver_tuple("7.0.0"))
+
+    def test_self_update_refuses_downgrade(self):
+        app = m.App(); app.quiet = True
+        body = b'__version__ = "6.8.0"\n' + b"x" * 10000
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return body
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            with um.patch("urllib.request.urlopen", return_value=_Resp()):
+                app._self_update()
+        finally:
+            sys.stdout = old
+        out = buf.getvalue()
+        self.assertIn("OLDER", out)
+        self.assertIn("not downgrading", out)
+
+    def test_self_update_reports_up_to_date_with_version(self):
+        app = m.App(); app.quiet = True
+        os.chdir(_REPO)   # Path(__file__).resolve() must point at the real repo ai
+        body = open(os.path.join(_REPO, "ai"), "rb").read()
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return body
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            with um.patch("urllib.request.urlopen", return_value=_Resp()):
+                app._self_update()
+        finally:
+            sys.stdout = old
+        out = buf.getvalue()
+        self.assertIn("local v7.0.0", out)
+        self.assertIn("Already up to date", out)
 
     def test_transient_classification(self):
         self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
