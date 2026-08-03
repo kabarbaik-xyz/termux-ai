@@ -26,6 +26,7 @@ class App:
         self.setup_rl()
         self.spinner = None
         self._auto_approve_all = False
+        self._auto_continue = False
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
         self._errored = False  # set when a request fails (for one-shot exit codes)
 
@@ -261,16 +262,24 @@ class App:
 
     def _continue_fn(self, iters, calls):
         if self.quiet:
-            return True  # non-interactive one-shot: keep going (bounded by MAX_ITERATIONS)
+            return True  # non-interactive one-shot: keep going (bounded by max_iterations)
+        if self._auto_continue:
+            return True  # user already chose "don't ask again" for this task
         if self.spinner: self.spinner.stop(); self.spinner = None  # stop before prompting
-        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far. Continue? [Y/n]{C.RESET}")
+        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far.{C.RESET}")
+        print(f"{C.DIM}[y] Yes  [a] Yes, don't ask again this task  [n] No{C.RESET}")
         try:
-            return input("> ").strip().lower() in ("y", "")
+            choice = input("> ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return False
+        if choice == "a":
+            self._auto_continue = True
+            return True
+        return choice in ("y", "")
 
     def _stream_tool_chat(self, msgs):
         self.spinner = None
+        self._auto_continue = False  # reset per task: re-confirm long-task continuation each turn
         if not self.quiet:
             self.spinner = Spinner("thinking")
             self.spinner.start()

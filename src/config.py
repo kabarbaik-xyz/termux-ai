@@ -37,6 +37,8 @@ class Config:
         "auto_compact": True,
         "max_file_chars": 20000,
         "max_tool_result": 10000,
+        "max_iterations": 50,
+        "continue_every": 10,
         "attach_files": True,
         "api_keys": {"anthropic": ""},
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},

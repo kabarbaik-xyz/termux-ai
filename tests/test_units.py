@@ -304,6 +304,23 @@ class TestConfirmStopsSpinner(_TmpHome):
         self.assertTrue(result)                 # 'y' -> continue
         self.assertIsNone(app.spinner)
 
+    def test_continue_auto_option_skips_future_prompts(self):
+        app = m.App(); app.quiet = False
+        app._auto_continue = False
+        with um.patch("builtins.input", return_value="a"):
+            r1 = app._continue_fn(12, 24)
+        self.assertTrue(r1)
+        self.assertTrue(app._auto_continue)     # 'a' sets the flag
+        # subsequent calls must NOT prompt (flag set) and just continue
+        with um.patch("builtins.input", side_effect=AssertionError("should not prompt")):
+            r2 = app._continue_fn(40, 80)
+        self.assertTrue(r2)
+
+    def test_continue_no_stops(self):
+        app = m.App(); app.quiet = False
+        with um.patch("builtins.input", return_value="n"):
+            self.assertFalse(app._continue_fn(12, 24))
+
     def test_stream_chat_stops_spinner_on_empty_reply(self):
         # The reported bug: an empty/broken reply streams no events, so the
         # spinner was never stopped and stacked with the next prompt.

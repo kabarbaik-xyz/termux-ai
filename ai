@@ -662,6 +662,8 @@ class Config:
         "auto_compact": True,
         "max_file_chars": 20000,
         "max_tool_result": 10000,
+        "max_iterations": 50,
+        "continue_every": 10,
         "attach_files": True,
         "api_keys": {"anthropic": ""},
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
@@ -1344,8 +1346,9 @@ class OpenAICompatible(Backend):
 
         iterations = 0
         total_calls = 0
-        MAX_ITERATIONS = 25
-        next_prompt_at = 10
+        MAX_ITERATIONS = self.c.get("max_iterations", 50)
+        _continue_every = self.c.get("continue_every", 10)
+        next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
 
@@ -1463,7 +1466,7 @@ class OpenAICompatible(Backend):
                 if continue_fn and not continue_fn(iterations, total_calls):
                     yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
                     return
-                next_prompt_at += 10
+                next_prompt_at += _continue_every
 
 class AnthropicBackend(Backend):
     def __init__(self, cfg):
@@ -1508,8 +1511,9 @@ class AnthropicBackend(Backend):
 
         iterations = 0
         total_calls = 0
-        MAX_ITERATIONS = 25
-        next_prompt_at = 10
+        MAX_ITERATIONS = self.c.get("max_iterations", 50)
+        _continue_every = self.c.get("continue_every", 10)
+        next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
 
@@ -1644,7 +1648,7 @@ class AnthropicBackend(Backend):
                 if continue_fn and not continue_fn(iterations, total_calls):
                     yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
                     return
-                next_prompt_at += 10
+                next_prompt_at += _continue_every
 
 def get_backend(cfg):
     name, profile = cfg.active_profile()
@@ -2021,6 +2025,7 @@ class App:
         self.setup_rl()
         self.spinner = None
         self._auto_approve_all = False
+        self._auto_continue = False
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
         self._errored = False  # set when a request fails (for one-shot exit codes)
 
@@ -2256,16 +2261,24 @@ class App:
 
     def _continue_fn(self, iters, calls):
         if self.quiet:
-            return True  # non-interactive one-shot: keep going (bounded by MAX_ITERATIONS)
+            return True  # non-interactive one-shot: keep going (bounded by max_iterations)
+        if self._auto_continue:
+            return True  # user already chose "don't ask again" for this task
         if self.spinner: self.spinner.stop(); self.spinner = None  # stop before prompting
-        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far. Continue? [Y/n]{C.RESET}")
+        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far.{C.RESET}")
+        print(f"{C.DIM}[y] Yes  [a] Yes, don't ask again this task  [n] No{C.RESET}")
         try:
-            return input("> ").strip().lower() in ("y", "")
+            choice = input("> ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return False
+        if choice == "a":
+            self._auto_continue = True
+            return True
+        return choice in ("y", "")
 
     def _stream_tool_chat(self, msgs):
         self.spinner = None
+        self._auto_continue = False  # reset per task: re-confirm long-task continuation each turn
         if not self.quiet:
             self.spinner = Spinner("thinking")
             self.spinner.start()

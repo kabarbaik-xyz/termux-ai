@@ -146,8 +146,9 @@ class OpenAICompatible(Backend):
 
         iterations = 0
         total_calls = 0
-        MAX_ITERATIONS = 25
-        next_prompt_at = 10
+        MAX_ITERATIONS = self.c.get("max_iterations", 50)
+        _continue_every = self.c.get("continue_every", 10)
+        next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
 
@@ -265,7 +266,7 @@ class OpenAICompatible(Backend):
                 if continue_fn and not continue_fn(iterations, total_calls):
                     yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
                     return
-                next_prompt_at += 10
+                next_prompt_at += _continue_every
 
 class AnthropicBackend(Backend):
     def __init__(self, cfg):
@@ -310,8 +311,9 @@ class AnthropicBackend(Backend):
 
         iterations = 0
         total_calls = 0
-        MAX_ITERATIONS = 25
-        next_prompt_at = 10
+        MAX_ITERATIONS = self.c.get("max_iterations", 50)
+        _continue_every = self.c.get("continue_every", 10)
+        next_prompt_at = _continue_every
         MAX_FAILURES = 3
         consecutive_failures = 0
 
@@ -446,7 +448,7 @@ class AnthropicBackend(Backend):
                 if continue_fn and not continue_fn(iterations, total_calls):
                     yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
                     return
-                next_prompt_at += 10
+                next_prompt_at += _continue_every
 
 def get_backend(cfg):
     name, profile = cfg.active_profile()
