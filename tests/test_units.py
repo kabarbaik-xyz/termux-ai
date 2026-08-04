@@ -521,6 +521,26 @@ class TestTrimHistory(_TmpHome):
         m.Backend._trim_iteration_history(msgs, budget=400)  # tiny budget -> would trim
         self.assertEqual(msgs[3]["content"], "X" * 5000)    # but latest is protected
 
+    def test_low_value_trimmed_before_read_file(self):
+        rf = "read-content-here " * 300   # high-value (read_file)
+        lf = "listing-content " * 300    # low-value  (list_files)
+        lf_head = m.est_tok(lf[:2500] + "\n...[older tool result trimmed]")
+        # Budget where trimming ONLY the low-value result suffices.
+        budget = m.est_tok(rf) + lf_head + 10
+        msgs = [
+            self._msg("system", "s"),
+            self._msg("user", "go"),
+            self._msg("assistant", "r1", tool_calls=self._tc("1", name="read_file")),
+            self._msg("tool", rf, tool_call_id="1"),
+            self._msg("assistant", "r2", tool_calls=self._tc("2", name="list_files")),
+            self._msg("tool", lf, tool_call_id="2"),
+            self._msg("assistant", "r3", tool_calls=self._tc("3", name="read_file")),
+            self._msg("tool", "latest small", tool_call_id="3"),
+        ]
+        m.Backend._trim_iteration_history(msgs, budget=budget)
+        self.assertNotIn("trimmed", msgs[3]["content"].lower())   # read_file kept intact
+        self.assertIn("trimmed", msgs[5]["content"].lower())      # list_files trimmed first
+
     def test_older_results_snippet_trimmed_latest_kept(self):
         old_big = "IMPORTANT-HEAD" + ("Y" * 5000)
         msgs = [
@@ -534,7 +554,7 @@ class TestTrimHistory(_TmpHome):
         m.Backend._trim_iteration_history(msgs, budget=400)
         self.assertIn("IMPORTANT-HEAD", msgs[3]["content"])   # head snippet survives
         self.assertIn("trimmed", msgs[3]["content"].lower())
-        self.assertLess(len(msgs[3]["content"]), 700)
+        self.assertLess(len(msgs[3]["content"]), 2700)
         self.assertEqual(msgs[5]["content"], "Z" * 5000)      # latest untouched
 
 

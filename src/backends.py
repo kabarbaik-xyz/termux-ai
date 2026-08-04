@@ -208,41 +208,70 @@ class Backend:
     @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
         """Bound accumulated tool-result size for long agentic loops so context
-        doesn't balloon. Truncates OLDER tool results to a head snippet -- but
-        NEVER touches the results of the most recent tool-call round: the model
-        must see what it just fetched to continue (trimming the latest result
-        starves it and causes runaway re-reads, never completing the task).
+        doesn't balloon. When the budget IS exceeded, trims by VALUE: cheap,
+        reproducible results (list_files / search_files / run_command) are cut
+        FIRST; file contents (read_file) survive as long as possible. The most
+        recent round is always protected -- the model must see what it just
+        fetched (trimming the latest starves it and causes runaway re-reads).
 
         The budget defaults high (30k) so the model KEEPS what it read and
         doesn't spiral into re-reading; lower it via iteration_history_budget
         only if your model has a genuinely small context window."""
+        LOW_VALUE = {"list_files", "search_files", "run_command"}
+        HEAD = 2500  # chars kept when a result is trimmed (was 600 -- too little)
+
         def _tok(x):
             return est_tok(x if isinstance(x, str) else str(x))
         current = sum(_tok(m.get("content", "")) for m in msgs)
         if current <= budget:
             return
-        # Protect everything after the last assistant message that requested
-        # tools (OpenAI tool_calls OR Anthropic tool_use blocks): that is the
-        # pending round whose results the model hasn't acted on yet.
+
+        # Map tool_call_id -> tool name so we can trim by value.
+        id_to_name = {}
+        for m in msgs:
+            if m.get("role") != "assistant":
+                continue
+            for tc in (m.get("tool_calls") or []):
+                if tc.get("id"):
+                    id_to_name[tc["id"]] = (tc.get("function") or {}).get("name", "")
+            if isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                        id_to_name[b["id"]] = b.get("name", "")
+
+        # Protect the latest pending round (results the model hasn't acted on).
         protect_from = 0
         for i, mm in enumerate(msgs):
             if mm.get("role") == "assistant" and (mm.get("tool_calls") or (
                     isinstance(mm.get("content"), list) and
                     any(isinstance(b, dict) and b.get("type") == "tool_use" for b in mm["content"]))):
                 protect_from = i + 1
+
+        # Collect trimmable results: (priority, order_index, target_dict).
+        # priority 0 = low-value (trim first), 1 = high-value (trim last).
+        targets = []
         for i, mm in enumerate(msgs):
-            if current <= budget or i >= protect_from:
+            if i >= protect_from:
                 break
-            if mm.get("role") == "tool" and isinstance(mm.get("content"), str) and len(mm["content"]) > 200:
-                old = _tok(mm["content"])
-                mm["content"] = mm["content"][:600] + "\n...[older tool result trimmed]"
-                current -= old - _tok(mm["content"])
+            if mm.get("role") == "tool" and isinstance(mm.get("content"), str) and len(mm["content"]) > HEAD:
+                is_low = id_to_name.get(mm.get("tool_call_id", ""), "") in LOW_VALUE
+                targets.append((0 if is_low else 1, i, mm))
             elif mm.get("role") == "user" and isinstance(mm.get("content"), list):
                 for block in mm["content"]:
-                    if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("content"), str) and len(block["content"]) > 200:
-                        old = _tok(block["content"])
-                        block["content"] = block["content"][:600] + "\n...[older tool result trimmed]"
-                        current -= old - _tok(block["content"])
+                    if isinstance(block, dict) and block.get("type") == "tool_result" \
+                            and isinstance(block.get("content"), str) and len(block["content"]) > HEAD:
+                        is_low = id_to_name.get(block.get("tool_use_id", ""), "") in LOW_VALUE
+                        targets.append((0 if is_low else 1, i, block))
+        # Low-value first, then high-value; within each, oldest first.
+        targets.sort(key=lambda t: (t[0], t[1]))
+
+        for _prio, _idx, target in targets:
+            if current <= budget:
+                break
+            c = target["content"]
+            old = _tok(c)
+            target["content"] = c[:HEAD] + "\n...[older tool result trimmed]"
+            current -= old - _tok(target["content"])
 
 class OpenAICompatible(Backend):
     def __init__(self, cfg, profile_name, profile):
