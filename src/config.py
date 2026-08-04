@@ -30,6 +30,7 @@ class Config:
         # already read, forcing re-reads -- the #1 cause of tool-loop spirals.
         "context_window": 32000,
         "iteration_history_budget": 30000,
+        "compact_keep_recent": 8000,
         "stream": True,
         "show_tokens": True,
         "tools_enabled": False,

@@ -212,6 +212,97 @@ class Backend:
             lo, hi = 1, n
         coverage[path] = Backend._read_union(coverage.get(path, []), lo, hi)
 
+    def _compact_iteration_history(self, msgs, budget=None, keep_recent=None):
+        """When accumulated tool results exceed the budget, SUMMARIZE old rounds
+        via a quick LLM call instead of crudely truncating — like pi's
+        auto-compaction. The model sees a coherent summary + recent results
+        intact, so it stays oriented and doesn't spiral into re-reading.
+
+        Returns the number of old messages compacted (0 if none needed).
+        Falls back to _trim_iteration_history if the summary call fails."""
+        if budget is None:
+            budget = self.c.get("iteration_history_budget", 30000)
+        if keep_recent is None:
+            keep_recent = self.c.get("compact_keep_recent", 8000)
+
+        def _tok(x):
+            return est_tok(x if isinstance(x, str) else str(x))
+        total = sum(_tok(m.get("content", "")) for m in msgs)
+        if total <= budget:
+            return 0
+
+        # Find the first assistant message that started a tool round.
+        first_round = None
+        for i, m in enumerate(msgs):
+            if m.get("role") == "assistant" and (m.get("tool_calls") or (
+                    isinstance(m.get("content"), list) and
+                    any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"]))):
+                first_round = i
+                break
+        if first_round is None:
+            return 0
+
+        # Walk backwards to find how much to keep (keep_recent tokens).
+        acc = 0
+        keep_from = len(msgs)
+        for i in range(len(msgs) - 1, first_round - 1, -1):
+            acc += _tok(msgs[i].get("content", ""))
+            if acc >= keep_recent:
+                keep_from = i
+                break
+
+        # Adjust keep_from forward to the next assistant-with-tools boundary
+        # (can't split a tool round — tool results need their preceding assistant).
+        for i in range(keep_from, len(msgs)):
+            m = msgs[i]
+            if m.get("role") == "assistant" and (m.get("tool_calls") or (
+                    isinstance(m.get("content"), list) and
+                    any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"]))):
+                keep_from = i
+                break
+
+        if keep_from <= first_round + 1:
+            return 0  # not enough old rounds to compact
+
+        old = msgs[first_round:keep_from]
+
+        # Build a compact summarization prompt from the old tool results.
+        parts = []
+        for m in old:
+            c = m.get("content", "")
+            if isinstance(c, list):  # Anthropic content blocks
+                c = " ".join(str(b.get("text", b.get("content", ""))) for b in c if isinstance(b, dict))
+            if m.get("role") == "tool":
+                parts.append("[tool result]: " + str(c)[:1500])
+            elif m.get("role") == "user" and isinstance(m.get("content"), list):
+                parts.append("[tool result]: " + str(c)[:1500])
+            elif m.get("role") == "assistant" and c:
+                parts.append("[reasoning]: " + str(c)[:300])
+        if not parts:
+            return 0
+
+        compact_msgs = [
+            {"role": "system", "content": (
+                "Summarize these tool results from a coding session concisely. "
+                "For each file read, note: filename, purpose, key sections/functions, important values. "
+                "For each command/action, note what was done and the result. "
+                "Preserve all filenames, function names, and key data points. Under 400 words.")},
+            {"role": "user", "content": "\n\n".join(parts[:30])},
+        ]
+
+        try:
+            summary = "".join(self.chat(compact_msgs, stream=False))
+        except Exception:
+            return self._trim_iteration_history(msgs, budget)
+        if not summary or len(summary) < 20:
+            return self._trim_iteration_history(msgs, budget)
+
+        # Replace old rounds with a single summary message.
+        msgs[first_round:keep_from] = [
+            {"role": "user", "content": "[Summary of earlier tool work in this session]\n" + summary}
+        ]
+        return len(old)
+
     @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
         """Bound accumulated tool-result size for long agentic loops so context
@@ -350,9 +441,9 @@ class OpenAICompatible(Backend):
                 yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
                 return
 
-            trimmed = self._trim_iteration_history(msgs, self.c.get("iteration_history_budget", 30000))
-            if trimmed:
-                yield {"type": "notice", "content": f"[context: trimmed {trimmed} older tool result(s) to stay within budget]", "fatal": False}
+            compacted = self._compact_iteration_history(msgs)
+            if compacted:
+                yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             d = {"model": self._model(), "messages": msgs, "temperature": temp, "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
 
@@ -553,9 +644,9 @@ class AnthropicBackend(Backend):
                 yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
                 return
 
-            trimmed = self._trim_iteration_history(payload, self.c.get("iteration_history_budget", 30000))
-            if trimmed:
-                yield {"type": "notice", "content": f"[context: trimmed {trimmed} older tool result(s) to stay within budget]", "fatal": False}
+            compacted = self._compact_iteration_history(payload)
+            if compacted:
+                yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             thinking_on = bool(self.c.get("extended_thinking", False))
             d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if thinking_on:

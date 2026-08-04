@@ -521,6 +521,42 @@ class TestTrimHistory(_TmpHome):
         m.Backend._trim_iteration_history(msgs, budget=400)  # tiny budget -> would trim
         self.assertEqual(msgs[3]["content"], "X" * 5000)    # but latest is protected
 
+    def test_compact_summarizes_old_rounds(self):
+        """When context exceeds budget, old tool rounds are LLM-summarized into
+        a single message; recent rounds are kept intact."""
+        b = m.OpenAICompatible({"iteration_history_budget": 500, "compact_keep_recent": 100}, "t", {"base_url": "http://localhost", "model": "x"})
+        with um.patch.object(b, "chat", return_value=iter(["SUMMARY OF FILES READ"])):
+            msgs = [
+                self._msg("system", "sys"),
+                self._msg("user", "do task"),
+                self._msg("assistant", "reading", tool_calls=self._tc("1")),
+                self._msg("tool", "X" * 5000, tool_call_id="1"),   # old, big
+                self._msg("assistant", "more", tool_calls=self._tc("2")),
+                self._msg("tool", "Y" * 200, tool_call_id="2"),    # recent, small
+            ]
+            n = b._compact_iteration_history(msgs)
+        self.assertGreater(n, 0)                                       # something compacted
+        summaries = [m for m in msgs if m["role"] == "user" and "Summary" in m.get("content", "")]
+        self.assertTrue(summaries)                                     # summary message exists
+        self.assertIn("SUMMARY OF FILES READ", summaries[0]["content"])
+        recent_tools = [m for m in msgs if m.get("role") == "tool"]
+        self.assertEqual(len(recent_tools), 1)                         # only recent kept
+
+    def test_compact_falls_back_to_trim_on_failure(self):
+        """If the summarization LLM call fails, fall back to crude trim."""
+        b = m.OpenAICompatible({"iteration_history_budget": 500, "compact_keep_recent": 100}, "t", {"base_url": "http://localhost", "model": "x"})
+        with um.patch.object(b, "chat", side_effect=Exception("network error")):
+            msgs = [
+                self._msg("system", "sys"),
+                self._msg("user", "do task"),
+                self._msg("assistant", "r1", tool_calls=self._tc("1")),
+                self._msg("tool", "X" * 5000, tool_call_id="1"),
+                self._msg("assistant", "r2", tool_calls=self._tc("2")),
+                self._msg("tool", "Y" * 200, tool_call_id="2"),
+            ]
+            n = b._compact_iteration_history(msgs)
+        self.assertGreater(n, 0)  # fell back to trim, still compacted something
+
     def test_low_value_trimmed_before_read_file(self):
         rf = "read-content-here " * 300   # high-value (read_file)
         lf = "listing-content " * 300    # low-value  (list_files)
