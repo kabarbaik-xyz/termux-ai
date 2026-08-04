@@ -801,6 +801,23 @@ class Config:
                 sys.stderr.write(f"[termux-ai] warning: could not read {CONFIG_FILE} ({e}); using defaults.\n")
         _secure_file(CONFIG_FILE)
 
+        # One-time migration: older installs saved capacity caps at the old
+        # defaults (max_tokens=4096, max_tool_result=10000), which starved the
+        # model and caused read-spirals. Bump them once; users who explicitly
+        # set a DIFFERENT custom value are unaffected.
+        if not self.cfg.get("_cap_v2"):
+            changed = False
+            if self.cfg.get("max_tokens") == 4096:
+                self.cfg["max_tokens"] = 8192; changed = True
+            if self.cfg.get("max_tool_result") == 10000:
+                self.cfg["max_tool_result"] = 30000; changed = True
+            self.cfg["_cap_v2"] = True
+            if changed:
+                try:
+                    self.save()
+                except OSError:
+                    pass
+
     @staticmethod
     def _deep_update(base, new):
         for k, v in new.items():
