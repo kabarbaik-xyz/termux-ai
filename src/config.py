@@ -42,7 +42,7 @@ class Config:
         "auto_compact": True,
         "max_file_chars": 20000,
         "max_tool_result": 30000,
-        "max_iterations": 50,
+        "max_iterations": 100,
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,

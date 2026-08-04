@@ -184,26 +184,33 @@ class Backend:
         out.append((lo, hi))
         return out
 
-    def _read_spiral_check(self, norm_calls, coverage, re_read, limit):
-        """Detect when the model re-reads lines of a file it has ALREADY shown
-        (overlapping ranges) rather than fresh ground. When the same file's
-        already-covered region is revisited ``limit`` times, return the path so
-        the loop can stop -- a model that only *re-reads* makes no progress."""
-        for c in norm_calls:
-            if c.get("name") != "read_file":
-                continue
-            args = c.get("args") or {}
-            p = args.get("path") or ""
+    @staticmethod
+    def _is_redundant_read(args, coverage):
+        """True if the requested line range was already fetched this turn.
+        Full reads (no start/end) are never flagged redundant -- we track the
+        ACTUAL lines returned for those, so the model can always page further."""
+        if args.get("start") is None and args.get("end") is None:
+            return False
+        path = args.get("path", "")
+        lo = int(args.get("start") or 1)
+        hi = int(args.get("end") or 2000000000)
+        return Backend._read_covered(coverage.get(path, []), lo, hi)
+
+    @staticmethod
+    def _track_read(args, result, coverage):
+        """Mark the ACTUALLY-returned lines as covered -- not the theoretical
+        whole file. For a full read, count newlines in the result so paging
+        further is never falsely blocked."""
+        path = args.get("path", "")
+        if not path:
+            return
+        if args.get("start") is not None or args.get("end") is not None:
             lo = int(args.get("start") or 1)
             hi = int(args.get("end") or 2000000000)
-            iv = coverage.get(p, [])
-            if Backend._read_covered(iv, lo, hi):
-                re_read[p] = re_read.get(p, 0) + 1
-                if re_read[p] >= limit:
-                    return p
-            else:
-                coverage[p] = Backend._read_union(iv, lo, hi)
-        return None
+        else:
+            n = (result or "").count("\n") + 1 if result else 0
+            lo, hi = 1, n
+        coverage[path] = Backend._read_union(coverage.get(path, []), lo, hi)
 
     @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
@@ -329,26 +336,13 @@ class OpenAICompatible(Backend):
         consecutive_failures = 0
         REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
         repeat_count = {}
-        GATHER_N = max(2, int(self.c.get("gather_threshold", 3)))
+        GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
-        RE_LIMIT = max(2, int(self.c.get("re_read_limit", 3)))
-        coverage = {}
-        re_read = {}
-
-        def _repeat_check(calls):
-            """Stop early if the model repeats the exact same tool call. A free
-            mirror with tiny context can 'forget' it already made a call and
-            re-issue it forever; this turns that 50-iteration burn into a
-            clear, immediate stop."""
-            for c in calls:
-                key = (c["name"], json.dumps(c.get("args") or {}, sort_keys=True))
-                repeat_count[key] = repeat_count.get(key, 0) + 1
-                n = repeat_count[key]
-                if n >= REPEAT_LIMIT:
-                    shown = (json.dumps(c.get("args") or {}, sort_keys=True))[:120]
-                    return True, (c["name"], shown, n)
-            return False, None
+        done_calls = set()       # (name, args) already executed this turn
+        coverage = {}            # path -> covered line intervals
+        stuck_streak = 0         # consecutive iterations with ZERO new work
+        STUCK_LIMIT = 5          # backstop: stop only if truly no progress
 
         while True:
             iterations += 1
@@ -426,17 +420,6 @@ class OpenAICompatible(Backend):
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
 
-            spiral_file = self._read_spiral_check(norm_calls, coverage, re_read, RE_LIMIT)
-            if spiral_file:
-                yield {"type": "notice", "content": f"[Stopped: you've re-read {spiral_file} {re_read[spiral_file]} times over ground already shown this turn. This read isn't progressing \u2014 stop re-reading and work from what you have, or /retry with a more specific request.]", "fatal": True}
-                return
-
-            stuck, stuck_call = _repeat_check(norm_calls)
-            if stuck:
-                name, shown, n = stuck_call
-                yield {"type": "notice", "content": f"[Stopped: you've called {name}({shown}) {n} times unchanged and nothing is changing. \u2014 /retry to resume with a different action, or rephrase the task.]", "fatal": True}
-                return
-
             if not confirm_batch_fn(norm_calls):
                 msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
                 for c in calls:
@@ -449,6 +432,7 @@ class OpenAICompatible(Backend):
 
             total = len(calls)
             batch_results = []
+            any_productive = False
             for i, c in enumerate(calls):
                 fn = c["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
@@ -456,10 +440,31 @@ class OpenAICompatible(Backend):
 
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": fn["name"], "args": args}
 
-                result = Tools.run(fn["name"], args, build_mode, max_res)
+                # Short-circuit: don't re-execute work already done this turn.
+                # Redirect the model instead of killing the task.
+                key = (fn["name"], json.dumps(args, sort_keys=True))
+                if key in done_calls:
+                    result = "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]"
+                elif fn["name"] == "read_file" and Backend._is_redundant_read(args, coverage):
+                    result = "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]"
+                else:
+                    result = Tools.run(fn["name"], args, build_mode, max_res)
+                    done_calls.add(key)
+                    if fn["name"] == "read_file":
+                        Backend._track_read(args, result, coverage)
+                    any_productive = True
+
                 yield {"type": "tool_result", "name": fn["name"], "result": result}
-                msgs.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+                msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
                 batch_results.append((fn["name"], result))
+
+            if any_productive:
+                stuck_streak = 0
+            else:
+                stuck_streak += 1
+                if stuck_streak >= STUCK_LIMIT:
+                    yield {"type": "notice", "content": "[Stopped: the last %d rounds were all repeats of work already done \u2014 no new progress. /retry or rephrase the task.]" % STUCK_LIMIT, "fatal": True}
+                    return
 
             failed = [n for n, r in batch_results if Backend._is_failure(r)]
             if failed:
@@ -534,22 +539,13 @@ class AnthropicBackend(Backend):
         consecutive_failures = 0
         REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
         repeat_count = {}
-        GATHER_N = max(2, int(self.c.get("gather_threshold", 3)))
+        GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
-        RE_LIMIT = max(2, int(self.c.get("re_read_limit", 3)))
+        done_calls = set()
         coverage = {}
-        re_read = {}
-
-        def _repeat_check(calls):
-            for c in calls:
-                key = (c["name"], json.dumps(c.get("args") or {}, sort_keys=True))
-                repeat_count[key] = repeat_count.get(key, 0) + 1
-                n = repeat_count[key]
-                if n >= REPEAT_LIMIT:
-                    shown = (json.dumps(c.get("args") or {}, sort_keys=True))[:120]
-                    return True, (c["name"], shown, n)
-            return False, None
+        stuck_streak = 0
+        STUCK_LIMIT = 5
 
         while True:
             iterations += 1
@@ -642,17 +638,6 @@ class AnthropicBackend(Backend):
             for tu in tool_uses:
                 norm_calls.append({"id": tu["id"], "name": tu["name"], "args": tu.get("input", {}) or {}})
 
-            spiral_file = self._read_spiral_check(norm_calls, coverage, re_read, RE_LIMIT)
-            if spiral_file:
-                yield {"type": "notice", "content": f"[Stopped: you've re-read {spiral_file} {re_read[spiral_file]} times over ground already shown this turn. This read isn't progressing \u2014 stop re-reading and work from what you have, or /retry with a more specific request.]", "fatal": True}
-                return
-
-            stuck, stuck_call = _repeat_check(norm_calls)
-            if stuck:
-                name, shown, n = stuck_call
-                yield {"type": "notice", "content": f"[Stopped: you've called {name}({shown}) {n} times unchanged and nothing is changing. \u2014 /retry to resume with a different action, or rephrase the task.]", "fatal": True}
-                return
-
             if not confirm_batch_fn(norm_calls):
                 results = []
                 for tu in tool_uses:
@@ -667,16 +652,36 @@ class AnthropicBackend(Backend):
 
             total = len(tool_uses)
             batch_results = []
+            any_productive = False
             for i, tu in enumerate(tool_uses):
                 args = tu.get("input", {}) or {}
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
 
-                result = Tools.run(tu["name"], args, build_mode, max_res)
+                key = (tu["name"], json.dumps(args, sort_keys=True))
+                if key in done_calls:
+                    result = "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]"
+                elif tu["name"] == "read_file" and Backend._is_redundant_read(args, coverage):
+                    result = "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]"
+                else:
+                    result = Tools.run(tu["name"], args, build_mode, max_res)
+                    done_calls.add(key)
+                    if tu["name"] == "read_file":
+                        Backend._track_read(args, result, coverage)
+                    any_productive = True
+
                 yield {"type": "tool_result", "name": tu["name"], "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
                 batch_results.append((tu["name"], result))
 
             payload.append({"role": "user", "content": results})
+
+            if any_productive:
+                stuck_streak = 0
+            else:
+                stuck_streak += 1
+                if stuck_streak >= STUCK_LIMIT:
+                    yield {"type": "notice", "content": "[Stopped: the last %d rounds were all repeats of work already done \u2014 no new progress. /retry or rephrase the task.]" % STUCK_LIMIT, "fatal": True}
+                    return
 
             failed = [n for n, r in batch_results if Backend._is_failure(r)]
             if failed:

@@ -770,18 +770,26 @@ class TestBackendResilience(_TmpHome):
         self.assertFalse(m.Backend._has_payload({"type": "content_block_delta", "delta": {}}))
         self.assertTrue(m.Backend._has_payload({"type": "message_start"}))
 
-    def test_repeat_guard_stops_identical_call_early(self):
+    def test_identical_call_short_circuits_not_stops(self):
+        """Repeating the exact same call returns 'already done' and keeps the
+        model working -- it does NOT kill the task."""
         b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
-        calls = {"n": 0}
+        calls = {"n": 0}; run_count = {"n": 0}
         def fake_stream(url, data, headers, notify=None):
             calls["n"] += 1
-            yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"app.js","start":600}'}}]}, "finish_reason": "tool_calls"}]}
-        with um.patch.object(b, "_stream_req", side_effect=fake_stream):
+            if calls["n"] <= 3:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"app.js","start":600}'}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {}}]}
+        def fake_run(name, args, bm, mr):
+            run_count["n"] += 1; return "ok"
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
+             um.patch.object(m.Tools, "run", side_effect=fake_run):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
-        self.assertLess(calls["n"], 50)  # stopped far before max_iterations
-        notice = [e for e in evts if e["type"] == "notice"]
-        self.assertTrue(notice and notice[-1].get("fatal"))
-        self.assertIn("read_file", notice[-1]["content"])
+        results = [e["result"] for e in evts if e["type"] == "tool_result"]
+        self.assertEqual(run_count["n"], 1)                          # executed ONCE
+        self.assertTrue(any("ALREADY DONE" in r for r in results[1:]))  # 2nd+ redirected
+        self.assertFalse(any(e.get("fatal") for e in evts))           # no hard stop
 
     def test_read_file_offset_paging(self):
         p = os.path.join(tempfile.gettempdir(), "_f_tool_paging.txt")
@@ -883,24 +891,28 @@ class TestBackendResilience(_TmpHome):
         self.assertIn("local v7.0.0", out)
         self.assertIn("Already up to date", out)
 
-    def test_read_spiral_stops_overlapping_re_reads(self):
+    def test_redundant_read_short_circuits_not_stops(self):
+        """Reading lines already fetched returns 'already read' and continues --
+        does NOT kill the task."""
         b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
-        calls = {"n": 0}
-        ranges = [("a", 100, 500), ("a", 200, 400), ("a", 250, 350), ("a", 300, 380)]
+        calls = {"n": 0}; run_count = {"n": 0}
+        ranges = [(100, 500), (200, 400), (250, 350)]
         def fake_stream(url, data, headers, notify=None):
-            n = calls["n"]; calls["n"] += 1
-            if n < len(ranges):
-                path, lo, hi = ranges[n]
-                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t%d" % n, "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": path, "start": lo, "end": hi})}}]}, "finish_reason": "tool_calls"}]}
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                lo, hi = ranges[calls["n"] - 1]
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t%d" % calls["n"], "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": "a", "start": lo, "end": hi})}}]}, "finish_reason": "tool_calls"}]}
             else:
-                yield {"choices": [{"delta": {}} ]}
+                yield {"choices": [{"delta": {}}]}
+        def fake_run(name, args, bm, mr):
+            run_count["n"] += 1; return "line content here\n" * 10
         with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
-             um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
+             um.patch.object(m.Tools, "run", side_effect=fake_run):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
-        notices = [e for e in evts if e["type"] == "notice"]
-        self.assertTrue(notices and notices[-1].get("fatal"))
-        self.assertIn("re-read", notices[-1]["content"])
-        self.assertEqual(calls["n"], 4)   # 1st fresh, then 3 redundant re-reads -> stop
+        results = [e["result"] for e in evts if e["type"] == "tool_result"]
+        self.assertEqual(run_count["n"], 1)                          # only first (fresh) executed
+        self.assertTrue(any("ALREADY READ" in r for r in results[1:]))  # 2nd+ redirected
+        self.assertFalse(any(e.get("fatal") for e in evts))           # no hard stop
 
     def test_transient_classification(self):
         self.assertTrue(m.Backend._transient(m.BackendError("x", transient=True)))
