@@ -22,6 +22,11 @@ class App:
         self.multi_line = self.cfg.get("multi_line", False)
         self.skills = Skills(CONFIG_DIR / "skills")
         self.active_session_skills = []  # [(name, body)] toggled on via /skill <session>
+        # Auto-seed: silently copy any bundled example skills missing from the
+        # user's dir, so new skills from an /update appear after restart with
+        # zero manual steps (no /skill seed needed).
+        self.skills.ensure_dir()
+        self._seeded = self.skills.seed()
         self._validate_config()
         self.setup_rl()
         self.spinner = None
@@ -192,6 +197,8 @@ class App:
         ctx_win = int(self.cfg.get("context_window", 32000))
         print(f" {C.BOLD}Window{C.RESET} : {ctx_win // 1000}k context (trim tool results at {int(self.cfg.get('iteration_history_budget', 30000)) // 1000}k)")
         if not IS_TTY: self.warn("Output is piped, UI disabled.")
+        if getattr(self, "_seeded", None):
+            print(f" {C.DIM}New skills: {', '.join(self._seeded)} \u2014 /skill to list, /skill <name> to activate{C.RESET}")
         print(f"{C.DIM}----------------------------------------------------------{C.RESET}")
 
     def print_help(self):
