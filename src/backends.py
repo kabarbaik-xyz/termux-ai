@@ -206,12 +206,16 @@ class Backend:
         return None
 
     @staticmethod
-    def _trim_iteration_history(msgs, budget=8000):
+    def _trim_iteration_history(msgs, budget=30000):
         """Bound accumulated tool-result size for long agentic loops so context
         doesn't balloon. Truncates OLDER tool results to a head snippet -- but
         NEVER touches the results of the most recent tool-call round: the model
         must see what it just fetched to continue (trimming the latest result
-        starves it and causes runaway re-reads, never completing the task)."""
+        starves it and causes runaway re-reads, never completing the task).
+
+        The budget defaults high (30k) so the model KEEPS what it read and
+        doesn't spiral into re-reading; lower it via iteration_history_budget
+        only if your model has a genuinely small context window."""
         def _tok(x):
             return est_tok(x if isinstance(x, str) else str(x))
         current = sum(_tok(m.get("content", "")) for m in msgs)
@@ -320,7 +324,7 @@ class OpenAICompatible(Backend):
                 yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
                 return
 
-            self._trim_iteration_history(msgs)
+            self._trim_iteration_history(msgs, self.c.get("iteration_history_budget", 30000))
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             d = {"model": self._model(), "messages": msgs, "temperature": temp, "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
 
@@ -519,7 +523,7 @@ class AnthropicBackend(Backend):
                 yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
                 return
 
-            self._trim_iteration_history(payload)
+            self._trim_iteration_history(payload, self.c.get("iteration_history_budget", 30000))
             thinking_on = bool(self.c.get("extended_thinking", False))
             d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if thinking_on:

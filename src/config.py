@@ -24,7 +24,12 @@ class Config:
         ),
         "system_instruction": "",
         "temperature": 0.7,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
+        # Context capacity: these should fit comfortably inside the model's real
+        # context window. Setting them too low starves the model of files it
+        # already read, forcing re-reads -- the #1 cause of tool-loop spirals.
+        "context_window": 32000,
+        "iteration_history_budget": 30000,
         "stream": True,
         "show_tokens": True,
         "tools_enabled": False,
@@ -36,7 +41,7 @@ class Config:
         "multi_line": False,
         "auto_compact": True,
         "max_file_chars": 20000,
-        "max_tool_result": 10000,
+        "max_tool_result": 30000,
         "max_iterations": 50,
         "repeat_limit": 3,
         "re_read_limit": 3,
