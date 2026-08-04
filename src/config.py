@@ -46,7 +46,7 @@ class Config:
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,
-        "gather_threshold": 3,
+        "gather_threshold": 5,
         "continue_every": 10,
         "auto_resume": True,
         "prune_days": 0,

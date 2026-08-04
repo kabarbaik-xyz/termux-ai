@@ -189,6 +189,8 @@ class App:
         print(f" {C.BOLD}Model{C.RESET}   : {C.GREEN}{model}{C.RESET}")
         print(f" {C.BOLD}Tools{C.RESET}   : {tools} Mode")
         print(f" {C.BOLD}Tokens{C.RESET}  : {conv_toks} (current) / {total_toks} (total)")
+        ctx_win = int(self.cfg.get("context_window", 32000))
+        print(f" {C.BOLD}Window{C.RESET} : {ctx_win // 1000}k context (trim tool results at {int(self.cfg.get('iteration_history_budget', 30000)) // 1000}k)")
         if not IS_TTY: self.warn("Output is piped, UI disabled.")
         print(f"{C.DIM}----------------------------------------------------------{C.RESET}")
 

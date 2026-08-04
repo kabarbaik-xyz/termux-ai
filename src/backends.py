@@ -265,6 +265,7 @@ class Backend:
         # Low-value first, then high-value; within each, oldest first.
         targets.sort(key=lambda t: (t[0], t[1]))
 
+        trimmed_n = 0
         for _prio, _idx, target in targets:
             if current <= budget:
                 break
@@ -272,6 +273,8 @@ class Backend:
             old = _tok(c)
             target["content"] = c[:HEAD] + "\n...[older tool result trimmed]"
             current -= old - _tok(target["content"])
+            trimmed_n += 1
+        return trimmed_n
 
 class OpenAICompatible(Backend):
     def __init__(self, cfg, profile_name, profile):
@@ -353,7 +356,9 @@ class OpenAICompatible(Backend):
                 yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
                 return
 
-            self._trim_iteration_history(msgs, self.c.get("iteration_history_budget", 30000))
+            trimmed = self._trim_iteration_history(msgs, self.c.get("iteration_history_budget", 30000))
+            if trimmed:
+                yield {"type": "notice", "content": f"[context: trimmed {trimmed} older tool result(s) to stay within budget]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
             d = {"model": self._model(), "messages": msgs, "temperature": temp, "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
 
@@ -552,7 +557,9 @@ class AnthropicBackend(Backend):
                 yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
                 return
 
-            self._trim_iteration_history(payload, self.c.get("iteration_history_budget", 30000))
+            trimmed = self._trim_iteration_history(payload, self.c.get("iteration_history_budget", 30000))
+            if trimmed:
+                yield {"type": "notice", "content": f"[context: trimmed {trimmed} older tool result(s) to stay within budget]", "fatal": False}
             thinking_on = bool(self.c.get("extended_thinking", False))
             d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if thinking_on:

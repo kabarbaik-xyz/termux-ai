@@ -798,7 +798,7 @@ class TestBackendResilience(_TmpHome):
         self.assertIn("line 1", full)
 
     def test_phase_nudge_injected_after_read_streak(self):
-        b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
+        b = m.OpenAICompatible({"gather_threshold": 3}, "t", {"base_url": "http://localhost", "model": "x"})
         calls = {"n": 0}; seen = []
         def fake_stream(url, data, headers, notify=None):
             n = calls["n"]; calls["n"] += 1
