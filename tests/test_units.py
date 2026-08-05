@@ -970,6 +970,26 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(st("plain"), [("text", "plain")])
         self.assertEqual(st(""), [])
 
+    def test_compact_schemas_shrink_prompt_preserve_safety(self):
+        """Local Ollama re-evaluates the tool schema every request (its prompt
+        cache doesn't reliably hold the tools prefix), so compact=True trims
+        verbose descriptions + per-param docs to cut ~250 tokens/call. The
+        run_command Plan-mode allowlist must stay intact (security-relevant)."""
+        full = m.Tools.get_schemas(False)
+        comp = m.Tools.get_schemas(False, compact=True)
+        self.assertLess(len(json.dumps(comp)), len(json.dumps(full)))
+        # run_command keeps its full allowlist description in BOTH modes
+        rc_f = next(t for t in full if t["function"]["name"] == "run_command")["function"]["description"]
+        rc_c = next(t for t in comp if t["function"]["name"] == "run_command")["function"]["description"]
+        self.assertGreater(len(rc_c), 100)            # still carries the allowlist
+        self.assertIn("ALLOWED", rc_c)                # compact allowlist present
+        # per-parameter descriptions stripped in compact mode
+        rf = next(t for t in comp if t["function"]["name"] == "read_file")
+        for p in rf["function"]["parameters"]["properties"].values():
+            self.assertNotIn("description", p)
+        # compact=False (cloud) is unchanged
+        self.assertEqual(full, m.Tools.get_schemas(False))
+
     def test_chat_with_tools_routes_think_blocks_to_thinking_events(self):
         """A reasoning model's <think>...</think> in the streamed answer is split
         into dim 'thinking' events instead of mixing the chain-of-thought into

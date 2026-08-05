@@ -614,6 +614,12 @@ class OpenAICompatible(Backend):
             nctx = self.c.get("num_ctx") or 0
             if nctx: opts["num_ctx"] = int(nctx)
             if opts: d["options"] = opts
+            # Keep the model resident so a slow tool mid-skill (graphify/fetch
+            # can take minutes) doesn't force a ~30s cold reload on the next
+            # request -- the #1 cause of "stuck in thinking" with skills.
+            ka = self.c.get("ollama_keep_alive", "30m")
+            if ka not in (0, None, "", "0"):
+                d["keep_alive"] = ka
         else:
             if temp is not None: d["temperature"] = temp
             if mt: d["max_tokens"] = mt
@@ -740,7 +746,7 @@ class OpenAICompatible(Backend):
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode), temperature=temp,
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp,
                               max_tokens=self.c.get("max_tokens", 4096))
             mapper = self._native_to_openai if self._native_ollama() else None
 

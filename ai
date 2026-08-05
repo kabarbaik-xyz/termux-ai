@@ -787,6 +787,7 @@ class Config:
         "retries": 3,
         "retry_delay": 1.0,
         "ollama_no_think": True,   # qwen3 on local Ollama: disable thinking via native API (the /v1 compat endpoint ignores `think` and qwen3 burns minutes of phone CPU thinking)
+        "ollama_keep_alive": "30m", # keep the model loaded between requests so a slow tool (graphify, fetch) mid-skill doesn't force a ~30s cold reload (Ollama's default ~5min idle unload)
         "num_ctx": 0,              # optional Ollama context-length override (0 = Ollama default)
         "fold_long_blocks": True,
         "fold_head": 8,
@@ -1087,7 +1088,7 @@ class Tools:
                 except Exception: pass
 
     @staticmethod
-    def _run_command_desc(build_mode: bool):
+    def _run_command_desc(build_mode: bool, compact=False):
         """Description sent to the model so it knows the EXACT Plan-mode rules up
         front and never proposes a command that would be blocked (avoids wasted
         turns thrashing on blocked commands). Built from the live allowlist."""
@@ -1096,6 +1097,12 @@ class Tools:
                     "may run after the user approves. Say what you intend, then call.")
         allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
         git_ro = ", ".join(sorted(Tools.PLAN_GIT_RO))
+        if compact:
+            return ("Run a shell command (Plan mode: read-only, no shell). "
+                    "ALLOWED: " + allowed + "; git: " + git_ro + ". Pipes (|) work. "
+                    "REJECTED: interpreters (python/node/...), redirects > >>, $() backticks, "
+                    "&& ; ||, globs * ?, mutating cmds (rm/cp/mkdir/chmod/...). "
+                    "Enable Build mode (/tools) to run anything else.")
         return ("Run a shell command and return stdout/stderr.\n"
                 "PLAN MODE is read-only and runs WITHOUT a shell. ONLY these programs are "
                 "permitted: " + allowed + "; git is limited to: " + git_ro + ". Pipes (|) work.\n"
@@ -1105,13 +1112,34 @@ class Tools:
                 "and any mutating command (rm mv cp touch mkdir chmod tee dd pip npm apt ...). "
                 "If a task truly needs them, stop and ask the user to enable Build mode (/tools on).")
 
+    _COMPACT_DESC = {
+        "read_file": "Read a file. start/end = 1-based line range (for paging large files).",
+        "write_file": "Write a file. append=true to add to an existing file (build large files in parts).",
+        "list_files": "List a directory. recursive=true for the full tree (skips node_modules/.git/build dirs).",
+        "search_files": "Search text in files (grep).",
+        "fetch_url": "Fetch a URL, return readable text (~500KB cap). Prefer over curl for URLs.",
+        "clone_repo": "Clone a public git repo to a temp dir. depth=0 for full history.",
+        "graphify": "Code graph (deps, defs, API, models). Call first to map a codebase.",
+        # run_command keeps its full description: the Plan-mode allowlist it
+        # carries is security-relevant and must reach the model verbatim.
+    }
+
     @staticmethod
-    def get_schemas(build_mode: bool):
+    def get_schemas(build_mode, compact=False):
         schemas = json.loads(json.dumps(Tools.TOOLS if build_mode else Tools.PLAN_TOOLS))
-        desc = Tools._run_command_desc(build_mode)
+        desc = Tools._run_command_desc(build_mode, compact=compact)
         for t in schemas:
-            if t["function"]["name"] == "run_command":
-                t["function"]["description"] = desc
+            fn = t["function"]
+            if fn["name"] == "run_command":
+                fn["description"] = desc
+            elif compact and fn["name"] in Tools._COMPACT_DESC:
+                fn["description"] = Tools._COMPACT_DESC[fn["name"]]
+            if compact:
+                # Drop per-parameter descriptions: the names are self-
+                # explanatory and they bloat every request's prompt (887 -> ~430
+                # tokens), which a small local model re-evaluates each call.
+                for p in (fn.get("parameters", {}).get("properties") or {}).values():
+                    p.pop("description", None)
         return schemas
 
     @staticmethod
@@ -2093,6 +2121,12 @@ class OpenAICompatible(Backend):
             nctx = self.c.get("num_ctx") or 0
             if nctx: opts["num_ctx"] = int(nctx)
             if opts: d["options"] = opts
+            # Keep the model resident so a slow tool mid-skill (graphify/fetch
+            # can take minutes) doesn't force a ~30s cold reload on the next
+            # request -- the #1 cause of "stuck in thinking" with skills.
+            ka = self.c.get("ollama_keep_alive", "30m")
+            if ka not in (0, None, "", "0"):
+                d["keep_alive"] = ka
         else:
             if temp is not None: d["temperature"] = temp
             if mt: d["max_tokens"] = mt
@@ -2219,7 +2253,7 @@ class OpenAICompatible(Backend):
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode), temperature=temp,
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp,
                               max_tokens=self.c.get("max_tokens", 4096))
             mapper = self._native_to_openai if self._native_ollama() else None
 
@@ -3978,6 +4012,11 @@ class App:
         self.info(f"Suggested num_ctx: {sugg}  (current: {cur or 'default'})")
         if not cur:
             self.info(f"  Set with: {C.CYAN}/config set num_ctx {sugg}{C.RESET}")
+        # max_tokens heads-up: a high cap on a slow phone CPU is the other half
+        # of "stuck in thinking" (8192 tokens @ ~6 tok/s = ~20 min worst case).
+        mt = self.cfg.get("max_tokens", 4096) or 4096
+        if mt > 2048:
+            self.info(f"max_tokens: {mt} \u2014 high for phone CPU. Lower for snappier replies: {C.CYAN}/config set max_tokens 2048{C.RESET}")
 
     def _cmd_backend(self, args):
         if not args:

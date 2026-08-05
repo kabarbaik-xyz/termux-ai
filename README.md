@@ -144,6 +144,18 @@ Vulkan acceleration works on your chip (most Snapdragon 8xx / Dimensity). Avoid
 > Suggested num_ctx: 4096  (current: default)
 >   Set with: /config set num_ctx 4096
 > ```
+>
+> **Why local models feel "stuck".** A small model on phone CPU generates at
+> only ~6 tok/s, and every request re-evaluates the tool list (~700 tokens)
+> because Ollama's prompt cache doesn't reliably hold it. termux-ai applies
+> three fixes automatically for local Ollama: (1) `keep_alive: 30m` keeps the
+> model resident so a slow tool mid-skill doesn't force a ~30s reload; (2) a
+> **compact tool schema** (terse descriptions, no per-param docs) trims ~250
+> tokens off every request; (3) `/models` warns when `max_tokens` is high (8192
+> tokens × 6 tok/s ≈ 20 min worst case — lower it with `/config set max_tokens
+> 2048`). Even so, expect the *first* reply of a session to take ~20s (cold
+> model load + schema eval); later replies are faster. Cloud backends are
+> unaffected (full schemas, no keep_alive needed).
 
 ### Option B: Anthropic Claude
 
@@ -428,6 +440,7 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `max_tokens` | `4096` | Max response tokens |
 | `stream` | `true` | Stream responses |
 | `ollama_no_think` | `true` | For a LOCAL **reasoning model** on Ollama (any model that reports a `thinking` capability — qwen3, qwq, deepseek-r1 if Ollama marks it, etc.): route through the native `/api/chat` endpoint with `think:false`. The OpenAI-compat `/v1` endpoint ignores `think`, and reasoning models burn minutes of phone CPU before answering (measured **247s → 10s** on qwen3). Auto-detected per-model via Ollama's `/api/show` capabilities; no effect on cloud backends or non-thinking models. |
+| `ollama_keep_alive` | `30m` | Keep the model resident between requests so a slow tool mid-skill (graphify/fetch can take minutes) doesn't force a ~30s cold reload on the next step — the #1 cause of "stuck in thinking". Ollama's default ~5-min idle unload is too short for multi-step skills. Set `0` to disable. |
 | `num_ctx` | `0` | Optional Ollama context-length override (0 = Ollama default). Lower this on memory-constrained devices, e.g. `4096`. |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |

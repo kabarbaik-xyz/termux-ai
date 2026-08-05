@@ -224,7 +224,7 @@ class Tools:
                 except Exception: pass
 
     @staticmethod
-    def _run_command_desc(build_mode: bool):
+    def _run_command_desc(build_mode: bool, compact=False):
         """Description sent to the model so it knows the EXACT Plan-mode rules up
         front and never proposes a command that would be blocked (avoids wasted
         turns thrashing on blocked commands). Built from the live allowlist."""
@@ -233,6 +233,12 @@ class Tools:
                     "may run after the user approves. Say what you intend, then call.")
         allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
         git_ro = ", ".join(sorted(Tools.PLAN_GIT_RO))
+        if compact:
+            return ("Run a shell command (Plan mode: read-only, no shell). "
+                    "ALLOWED: " + allowed + "; git: " + git_ro + ". Pipes (|) work. "
+                    "REJECTED: interpreters (python/node/...), redirects > >>, $() backticks, "
+                    "&& ; ||, globs * ?, mutating cmds (rm/cp/mkdir/chmod/...). "
+                    "Enable Build mode (/tools) to run anything else.")
         return ("Run a shell command and return stdout/stderr.\n"
                 "PLAN MODE is read-only and runs WITHOUT a shell. ONLY these programs are "
                 "permitted: " + allowed + "; git is limited to: " + git_ro + ". Pipes (|) work.\n"
@@ -242,13 +248,34 @@ class Tools:
                 "and any mutating command (rm mv cp touch mkdir chmod tee dd pip npm apt ...). "
                 "If a task truly needs them, stop and ask the user to enable Build mode (/tools on).")
 
+    _COMPACT_DESC = {
+        "read_file": "Read a file. start/end = 1-based line range (for paging large files).",
+        "write_file": "Write a file. append=true to add to an existing file (build large files in parts).",
+        "list_files": "List a directory. recursive=true for the full tree (skips node_modules/.git/build dirs).",
+        "search_files": "Search text in files (grep).",
+        "fetch_url": "Fetch a URL, return readable text (~500KB cap). Prefer over curl for URLs.",
+        "clone_repo": "Clone a public git repo to a temp dir. depth=0 for full history.",
+        "graphify": "Code graph (deps, defs, API, models). Call first to map a codebase.",
+        # run_command keeps its full description: the Plan-mode allowlist it
+        # carries is security-relevant and must reach the model verbatim.
+    }
+
     @staticmethod
-    def get_schemas(build_mode: bool):
+    def get_schemas(build_mode, compact=False):
         schemas = json.loads(json.dumps(Tools.TOOLS if build_mode else Tools.PLAN_TOOLS))
-        desc = Tools._run_command_desc(build_mode)
+        desc = Tools._run_command_desc(build_mode, compact=compact)
         for t in schemas:
-            if t["function"]["name"] == "run_command":
-                t["function"]["description"] = desc
+            fn = t["function"]
+            if fn["name"] == "run_command":
+                fn["description"] = desc
+            elif compact and fn["name"] in Tools._COMPACT_DESC:
+                fn["description"] = Tools._COMPACT_DESC[fn["name"]]
+            if compact:
+                # Drop per-parameter descriptions: the names are self-
+                # explanatory and they bloat every request's prompt (887 -> ~430
+                # tokens), which a small local model re-evaluates each call.
+                for p in (fn.get("parameters", {}).get("properties") or {}).values():
+                    p.pop("description", None)
         return schemas
 
     @staticmethod
