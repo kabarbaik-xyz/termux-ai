@@ -970,6 +970,37 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(st("plain"), [("text", "plain")])
         self.assertEqual(st(""), [])
 
+    def test_cloud_path_is_byte_identical_to_pre_change(self):
+        """Regression guard: every local-Ollama optimization (native shim,
+        think:false, keep_alive, compact schemas, ThinkFilter, NDJSON) must be
+        a NO-OP for cloud backends. The remote OpenAI-compat path keeps the
+        original URL, payload shape, full schemas, and plain-SSE streaming."""
+        b = m.OpenAICompatible({"temperature": 0.7, "max_tokens": 4096}, "openai",
+                              {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini", "api_key": "sk-x"})
+        self.assertFalse(b._native_ollama())
+        self.assertEqual(b._url(), "https://api.openai.com/v1/chat/completions")
+        d = b._payload([{"role": "user", "content": "hi"}], True, tools=[{"type": "function"}])
+        self.assertNotIn("think", d)            # no native-only fields leak
+        self.assertNotIn("options", d)
+        self.assertNotIn("keep_alive", d)
+        self.assertEqual(d["temperature"], 0.7)  # top-level, original position
+        self.assertEqual(d["max_tokens"], 4096)
+        # schemas stay full for cloud (compact is local-Ollama only)
+        self.assertEqual(m.Tools.get_schemas(False, compact=b._native_ollama()),
+                         m.Tools.get_schemas(False))
+        # streamed content with no <think> passes through UNCHANGED, and the
+        # stream uses plain SSE (mapper=None, ndjson=False), not the native shim
+        seen = {}
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
+            seen["mapper"] = mapper; seen["ndjson"] = ndjson
+            for c in ["Hello ", "world", "! <not a think tag>"]:
+                yield {"choices": [{"delta": {"content": c}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream):
+            got = "".join(b.chat([{"role": "user", "content": "hi"}], stream=True))
+        self.assertEqual(got, "Hello world! <not a think tag>")
+        self.assertIsNone(seen["mapper"])
+        self.assertFalse(seen["ndjson"])
+
     def test_compact_schemas_shrink_prompt_preserve_safety(self):
         """Local Ollama re-evaluates the tool schema every request (its prompt
         cache doesn't reliably hold the tools prefix), so compact=True trims
