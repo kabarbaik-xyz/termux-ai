@@ -127,6 +127,23 @@ Vulkan acceleration works on your chip (most Snapdragon 8xx / Dimensity). Avoid
 > thinking often can't be disabled server-side — they're inherently slower. For
 > an 8 GB phone prefer a non-reasoning model (`qwen2.5:3b`, `llama3.2:3b`) or
 > `qwen3` (where thinking IS controllable) for interactive use.
+>
+> termux-ai strips `<think>...</think>` blocks from the streamed output
+> automatically, so reasoning models don't dump their raw chain-of-thought onto
+> your screen. In BUILD mode the reasoning is shown dim (as a `thinking` event)
+> so you can still follow along; in plain chat it's hidden for a clean answer.
+>
+> **Pick a model with `/models`.** It lists every pulled Ollama model with its
+> file size, capabilities (`reasoning` / `tools`), marks the active one, and
+> reads free RAM to suggest an OOM-safe `num_ctx`:
+> ```
+> $ ai -c "/models"
+> Local Ollama models (1):
+>   qwen3:1.7b                   1.4 GB  [reasoning, tools] ← active
+> Free RAM: 3.5 GB  |  headroom after model load: ~1.6 GB
+> Suggested num_ctx: 4096  (current: default)
+>   Set with: /config set num_ctx 4096
+> ```
 
 ### Option B: Anthropic Claude
 

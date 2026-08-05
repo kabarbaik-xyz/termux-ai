@@ -267,6 +267,26 @@ class TestServerManager(_TmpHome):
         self.assertIn(["ollama", "serve"], calls)  # auto-started
         self.assertIn(["ollama", "list"], calls)
 
+    def test_cmd_models_lists_models_and_ram_advice(self):
+        app = m.App(); app.quiet = True
+        # default profile is local Ollama (localhost:11434)
+        tags = {"models": [{"name": "qwen3:1.7b", "size": int(1.4e9)},
+                          {"name": "llama3.2:3b", "size": int(2.0e9)}]}
+        class R:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+            def read(self): return json.dumps(tags).encode()
+        with um.patch("urllib.request.urlopen", return_value=R()), \
+             um.patch.object(m, "_free_ram_gb", return_value=3.5):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try: app._execute_command("/models")
+            finally: sys.stdout = old
+        out = buf.getvalue()
+        self.assertIn("qwen3:1.7b", out)
+        self.assertIn("llama3.2:3b", out)
+        self.assertIn("Free RAM: 3.5 GB", out)
+        self.assertIn("num_ctx", out)          # the RAM-based suggestion
+
     def test_cmd_server_dispatch(self):
         app = m.App(); app.quiet = True
         with um.patch.object(m.shutil, "which", return_value=None):
@@ -919,6 +939,50 @@ class TestBackendResilience(_TmpHome):
         self.assertTrue(m.Backend._has_payload({"type": "content_block_delta", "delta": {"text": "x"}}))
         self.assertFalse(m.Backend._has_payload({"type": "content_block_delta", "delta": {}}))
         self.assertTrue(m.Backend._has_payload({"type": "message_start"}))
+
+    def test_think_filter_strips_reasoning_split_across_chunks(self):
+        """Reasoning models (deepseek-r1, phi-reasoning) wrap chain-of-thought in
+        <think>...</think>. ThinkFilter strips it from the stream even when the
+        tag is split across chunk boundaries, so raw reasoning isn't dumped to
+        the screen."""
+        tf = m.ThinkFilter()
+        out = []
+        for c in ["Hello <th", "ink>secret reasoning", "</think>", " world <think>", "x", "</think>!"]:
+            p = tf.feed(c)
+            if p: out.append(p)
+        p = tf.flush()
+        if p: out.append(p)
+        self.assertEqual("".join(out), "Hello  world !")
+        # unclosed <think> at end of stream -> reasoning discarded
+        tf2 = m.ThinkFilter()
+        self.assertEqual(tf2.feed("hi <think>endless reasoning"), "hi ")
+        self.assertEqual(tf2.flush(), "")
+        # no tags -> passthrough
+        self.assertEqual(m.ThinkFilter().feed("plain text"), "plain text")
+
+    def test_split_think_routes_reasoning_into_events(self):
+        """_split_think separates a complete content buffer into text/thinking
+        segments; chat_with_tools uses it to yield dim 'thinking' events instead
+        of mixing reasoning into the answer."""
+        st = m.OpenAICompatible._split_think
+        self.assertEqual(st("a<think>r</think>b<think>unclosed"),
+                         [("text", "a"), ("thinking", "r"), ("text", "b"), ("thinking", "unclosed")])
+        self.assertEqual(st("plain"), [("text", "plain")])
+        self.assertEqual(st(""), [])
+
+    def test_chat_with_tools_routes_think_blocks_to_thinking_events(self):
+        """A reasoning model's <think>...</think> in the streamed answer is split
+        into dim 'thinking' events instead of mixing the chain-of-thought into
+        the visible answer."""
+        b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
+            yield {"choices": [{"delta": {"content": "Let me think. <think>secret reasoning</think> Done."}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        segs = [(e["type"], e["content"]) for e in evts if e["type"] in ("text", "thinking")]
+        self.assertIn(("text", "Let me think. "), segs)
+        self.assertIn(("thinking", "secret reasoning"), segs)
+        self.assertIn(("text", " Done."), segs)
 
     def test_identical_call_short_circuits_not_stops(self):
         """Repeating the exact same call returns 'already done' and keeps the

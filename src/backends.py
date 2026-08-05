@@ -6,6 +6,75 @@ class BackendError(Exception):
         super().__init__(message)
         self.transient = transient
 
+
+class ThinkFilter:
+    """Streaming filter that strips <think>...</think> reasoning blocks
+    (deepseek-r1, phi-reasoning, ...) out of a content stream so the raw
+    chain-of-thought isn't dumped to the screen. Handles tags split across
+    chunk boundaries. feed() returns the safe-to-emit text; flush() drains the
+    tail (discarded if still inside an open <think> block)."""
+    _OPEN, _CLOSE = "<think>", "</think>"
+
+    def __init__(self):
+        self.in_think = False
+        self.tail = ""
+
+    def feed(self, chunk):
+        self.tail += chunk
+        out = []
+        while self.tail:
+            tag = self._CLOSE if self.in_think else self._OPEN
+            idx = self.tail.find(tag)
+            if idx == -1:
+                # Hold back a suffix that could be the start of a partial tag,
+                # so a split "<thi" + "nk>" isn't emitted as visible text.
+                hold = 0
+                for n in range(min(len(self.tail), len(tag) - 1), 0, -1):
+                    if self.tail[-n:] == tag[:n]:
+                        hold = n; break
+                safe = self.tail[:-hold] if hold else self.tail
+                self.tail = self.tail[-hold:] if hold else ""
+                if not self.in_think:        # inside <think>: suppress reasoning
+                    out.append(safe)
+                break
+            if not self.in_think and idx > 0:
+                out.append(self.tail[:idx])
+            self.in_think = not self.in_think
+            self.tail = self.tail[idx + len(tag):]
+        return "".join(out)
+
+    def flush(self):
+        """End of stream: emit any pending text outside a think block."""
+        r = "" if self.in_think else self.tail
+        self.tail = ""
+        return r
+
+
+def _free_ram_gb():
+    """Free RAM in GB from /proc/meminfo (Linux/Android), or None when
+    unavailable. Used to suggest an OOM-safe Ollama num_ctx."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1048576.0
+    except Exception:
+        return None
+    return None
+
+
+def _suggest_num_ctx(free_gb, model_gb):
+    """Conservative Ollama context-length suggestion (tokens) given free RAM
+    and the model file size. KV-cache sizing is model-dependent, so this picks
+    a safe tier from the headroom after the model loads rather than pretending
+    to compute it exactly."""
+    head = (free_gb or 0) - (model_gb or 0) - 0.5   # OS + process overhead
+    if head < 1.0:  return 2048
+    if head < 2.0:  return 4096
+    if head < 4.0:  return 8192
+    return 16384
+
+
 class Backend:
     def __init__(self, cfg): self.c = cfg
     API_KEY_ENV = "OPENAI_API_KEY"
@@ -361,6 +430,29 @@ class Backend:
         return True
 
     @staticmethod
+    def _split_think(content):
+        """Split complete content into [(kind, text)] segments on <think>...
+        </think> reasoning blocks (deepseek-r1, phi-reasoning). Returns a list
+        of ('text', s) / ('thinking', s) tuples; an unclosed <think> (output
+        truncated mid-thought) is treated as thinking to the end."""
+        if not content:
+            return []
+        parts = []
+        pos = 0
+        while pos < len(content):
+            oi = content.find("<think>", pos)
+            if oi == -1:
+                parts.append(("text", content[pos:])); break
+            if oi > pos:
+                parts.append(("text", content[pos:oi]))
+            ci = content.find("</think>", oi + 7)
+            if ci == -1:                       # unclosed -> rest is thinking
+                parts.append(("thinking", content[oi + 7:])); break
+            parts.append(("thinking", content[oi + 7:ci]))
+            pos = ci + 8
+        return parts
+
+    @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
         """Bound accumulated tool-result size for long agentic loops so context
         doesn't balloon. When the budget IS exceeded, trims by VALUE: cheap,
@@ -601,9 +693,14 @@ class OpenAICompatible(Backend):
         h = self._headers()
         mapper = self._native_to_openai if self._native_ollama() else None
         if stream:
+            tf = ThinkFilter()
             for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 choices = chunk.get("choices") or [{}]
-                if t := choices[0].get("delta", {}).get("content", ""): yield t
+                if t := choices[0].get("delta", {}).get("content", ""):
+                    piece = tf.feed(t)
+                    if piece: yield piece
+            piece = tf.flush()
+            if piece: yield piece
         elif mapper:
             body = json.loads(self._with_retry(lambda: self._req(self._url(), d, h).read()))
             yield (body.get("message") or {}).get("content", "")
@@ -681,7 +778,12 @@ class OpenAICompatible(Backend):
             calls = list(tool_calls_buf.values())
 
             if content_buf:
-                yield {"type": "text", "content": content_buf}
+                # Route <think> reasoning blocks (deepseek-r1, ...) into dim
+                # 'thinking' events; the assistant message keeps the full
+                # content_buf (tags included) so the model sees its own format.
+                for kind, text in self._split_think(content_buf):
+                    if text:
+                        yield {"type": kind, "content": text}
 
             if not calls:
                 return

@@ -231,6 +231,42 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             b_model = backends[b].get("model", "N/A")
             print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
 
+    def _cmd_models(self, args):
+        """List local Ollama models with size, capabilities, and a num_ctx
+        suggestion based on free RAM (helps avoid the Android OOM killer)."""
+        name, prof = self.cfg.active_profile()
+        base = (prof.get("base_url") or "").rstrip("/")
+        if not base or ("localhost" not in base and "127.0.0.1" not in base):
+            self.err("Active backend isn't a local Ollama server.")
+            self.info("Switch with /backend <name>, or list with /backends.")
+            return
+        base = base[:-3] if base.endswith("/v1") else base
+        try:
+            with urllib.request.urlopen(base + "/api/tags", timeout=8) as r:
+                models = (json.loads(r.read()) or {}).get("models", [])
+        except Exception as e:
+            self.err(f"Can't reach Ollama at {base}: {e}"); return
+        if not models:
+            self.info("No models pulled yet. Try: ollama pull qwen3:1.7b"); return
+        active = (prof.get("model") or "").lower()
+        self.info(f"Local Ollama models ({len(models)}):")
+        for mm in sorted(models, key=lambda x: x.get("size", 0)):
+            nm = mm.get("name", "?"); gb = mm.get("size", 0) / 1e9
+            caps = self.backend._ollama_caps(nm) if hasattr(self.backend, "_ollama_caps") else []
+            flags = ", ".join(f for f, k in (("reasoning", "thinking"), ("tools", "tools")) if k in caps) or "chat"
+            mark = f" {C.GREEN}\u2190 active{C.RESET}" if nm.lower().startswith(active) else ""
+            print(f"  {nm:<26} {gb:5.1f} GB  [{flags}]{mark}")
+        free = _free_ram_gb()
+        if free is None: return
+        am = next((mm for mm in models if mm.get("name", "").lower().startswith(active)), None)
+        mgb = (am.get("size", 0) / 1e9) if am else 0
+        sugg = _suggest_num_ctx(free, mgb); cur = self.cfg.get("num_ctx", 0) or 0
+        self.info("")
+        self.info(f"Free RAM: {free:.1f} GB  |  headroom after model load: ~{max(0, free - mgb - 0.5):.1f} GB")
+        self.info(f"Suggested num_ctx: {sugg}  (current: {cur or 'default'})")
+        if not cur:
+            self.info(f"  Set with: {C.CYAN}/config set num_ctx {sugg}{C.RESET}")
+
     def _cmd_backend(self, args):
         if not args:
             self.warn("Usage: /backend <name> to switch active backend.")

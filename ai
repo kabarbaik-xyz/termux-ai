@@ -1485,6 +1485,75 @@ class BackendError(Exception):
         super().__init__(message)
         self.transient = transient
 
+
+class ThinkFilter:
+    """Streaming filter that strips <think>...</think> reasoning blocks
+    (deepseek-r1, phi-reasoning, ...) out of a content stream so the raw
+    chain-of-thought isn't dumped to the screen. Handles tags split across
+    chunk boundaries. feed() returns the safe-to-emit text; flush() drains the
+    tail (discarded if still inside an open <think> block)."""
+    _OPEN, _CLOSE = "<think>", "</think>"
+
+    def __init__(self):
+        self.in_think = False
+        self.tail = ""
+
+    def feed(self, chunk):
+        self.tail += chunk
+        out = []
+        while self.tail:
+            tag = self._CLOSE if self.in_think else self._OPEN
+            idx = self.tail.find(tag)
+            if idx == -1:
+                # Hold back a suffix that could be the start of a partial tag,
+                # so a split "<thi" + "nk>" isn't emitted as visible text.
+                hold = 0
+                for n in range(min(len(self.tail), len(tag) - 1), 0, -1):
+                    if self.tail[-n:] == tag[:n]:
+                        hold = n; break
+                safe = self.tail[:-hold] if hold else self.tail
+                self.tail = self.tail[-hold:] if hold else ""
+                if not self.in_think:        # inside <think>: suppress reasoning
+                    out.append(safe)
+                break
+            if not self.in_think and idx > 0:
+                out.append(self.tail[:idx])
+            self.in_think = not self.in_think
+            self.tail = self.tail[idx + len(tag):]
+        return "".join(out)
+
+    def flush(self):
+        """End of stream: emit any pending text outside a think block."""
+        r = "" if self.in_think else self.tail
+        self.tail = ""
+        return r
+
+
+def _free_ram_gb():
+    """Free RAM in GB from /proc/meminfo (Linux/Android), or None when
+    unavailable. Used to suggest an OOM-safe Ollama num_ctx."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1048576.0
+    except Exception:
+        return None
+    return None
+
+
+def _suggest_num_ctx(free_gb, model_gb):
+    """Conservative Ollama context-length suggestion (tokens) given free RAM
+    and the model file size. KV-cache sizing is model-dependent, so this picks
+    a safe tier from the headroom after the model loads rather than pretending
+    to compute it exactly."""
+    head = (free_gb or 0) - (model_gb or 0) - 0.5   # OS + process overhead
+    if head < 1.0:  return 2048
+    if head < 2.0:  return 4096
+    if head < 4.0:  return 8192
+    return 16384
+
+
 class Backend:
     def __init__(self, cfg): self.c = cfg
     API_KEY_ENV = "OPENAI_API_KEY"
@@ -1840,6 +1909,29 @@ class Backend:
         return True
 
     @staticmethod
+    def _split_think(content):
+        """Split complete content into [(kind, text)] segments on <think>...
+        </think> reasoning blocks (deepseek-r1, phi-reasoning). Returns a list
+        of ('text', s) / ('thinking', s) tuples; an unclosed <think> (output
+        truncated mid-thought) is treated as thinking to the end."""
+        if not content:
+            return []
+        parts = []
+        pos = 0
+        while pos < len(content):
+            oi = content.find("<think>", pos)
+            if oi == -1:
+                parts.append(("text", content[pos:])); break
+            if oi > pos:
+                parts.append(("text", content[pos:oi]))
+            ci = content.find("</think>", oi + 7)
+            if ci == -1:                       # unclosed -> rest is thinking
+                parts.append(("thinking", content[oi + 7:])); break
+            parts.append(("thinking", content[oi + 7:ci]))
+            pos = ci + 8
+        return parts
+
+    @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
         """Bound accumulated tool-result size for long agentic loops so context
         doesn't balloon. When the budget IS exceeded, trims by VALUE: cheap,
@@ -2080,9 +2172,14 @@ class OpenAICompatible(Backend):
         h = self._headers()
         mapper = self._native_to_openai if self._native_ollama() else None
         if stream:
+            tf = ThinkFilter()
             for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 choices = chunk.get("choices") or [{}]
-                if t := choices[0].get("delta", {}).get("content", ""): yield t
+                if t := choices[0].get("delta", {}).get("content", ""):
+                    piece = tf.feed(t)
+                    if piece: yield piece
+            piece = tf.flush()
+            if piece: yield piece
         elif mapper:
             body = json.loads(self._with_retry(lambda: self._req(self._url(), d, h).read()))
             yield (body.get("message") or {}).get("content", "")
@@ -2160,7 +2257,12 @@ class OpenAICompatible(Backend):
             calls = list(tool_calls_buf.values())
 
             if content_buf:
-                yield {"type": "text", "content": content_buf}
+                # Route <think> reasoning blocks (deepseek-r1, ...) into dim
+                # 'thinking' events; the assistant message keeps the full
+                # content_buf (tags included) so the model sees its own format.
+                for kind, text in self._split_think(content_buf):
+                    if text:
+                        yield {"type": kind, "content": text}
 
             if not calls:
                 return
@@ -2627,7 +2729,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -2672,6 +2774,13 @@ class App:
         if not base.startswith("http"): self.warn(f"Backend '{name}' URL looks invalid: {base}")
         if "localhost" not in base and "127.0.0.1" not in base and not prof.get("api_key"):
             self.warn(f"Backend '{name}' is remote but has no API key. Run /setup")
+        # Low-RAM heads-up for local Ollama: a big model + small context budget
+        # is the #1 cause of the Android OOM killer silently killing Ollama.
+        if ("localhost" in base or "127.0.0.1" in base) and not getattr(self, "quiet", False):
+            free = _free_ram_gb()
+            if free is not None and free < 2.0:
+                self.warn(f"Only {free:.1f} GB RAM free. A large local model may get killed by Android."
+                          f" Try a smaller model or /config set num_ctx 2048.")
 
     def _get_ollama_models(self):
         try:
@@ -2847,7 +2956,7 @@ class App:
             "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
-            "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
+            "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/graphify [path] [mode]", "Code graph: deps, defs, API, models"), ("/process [on|off|auto]", "Show/compact tool-call output"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
         
@@ -3512,7 +3621,7 @@ class App:
     _CMD_DISPATCH = {
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
-        "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
+        "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model", "/models": "_cmd_models",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
         "/speak": "_cmd_speak", "/share": "_cmd_share", "/expand": "_cmd_expand", "/last": "_cmd_expand", "/fold": "_cmd_fold", "/graphify": "_cmd_graphify", "/process": "_cmd_process", "/clear": "_cmd_clear",
@@ -3833,6 +3942,42 @@ class App:
             marker = f"{C.GREEN}*{C.RESET}" if b == active else " "
             b_model = backends[b].get("model", "N/A")
             print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
+
+    def _cmd_models(self, args):
+        """List local Ollama models with size, capabilities, and a num_ctx
+        suggestion based on free RAM (helps avoid the Android OOM killer)."""
+        name, prof = self.cfg.active_profile()
+        base = (prof.get("base_url") or "").rstrip("/")
+        if not base or ("localhost" not in base and "127.0.0.1" not in base):
+            self.err("Active backend isn't a local Ollama server.")
+            self.info("Switch with /backend <name>, or list with /backends.")
+            return
+        base = base[:-3] if base.endswith("/v1") else base
+        try:
+            with urllib.request.urlopen(base + "/api/tags", timeout=8) as r:
+                models = (json.loads(r.read()) or {}).get("models", [])
+        except Exception as e:
+            self.err(f"Can't reach Ollama at {base}: {e}"); return
+        if not models:
+            self.info("No models pulled yet. Try: ollama pull qwen3:1.7b"); return
+        active = (prof.get("model") or "").lower()
+        self.info(f"Local Ollama models ({len(models)}):")
+        for mm in sorted(models, key=lambda x: x.get("size", 0)):
+            nm = mm.get("name", "?"); gb = mm.get("size", 0) / 1e9
+            caps = self.backend._ollama_caps(nm) if hasattr(self.backend, "_ollama_caps") else []
+            flags = ", ".join(f for f, k in (("reasoning", "thinking"), ("tools", "tools")) if k in caps) or "chat"
+            mark = f" {C.GREEN}\u2190 active{C.RESET}" if nm.lower().startswith(active) else ""
+            print(f"  {nm:<26} {gb:5.1f} GB  [{flags}]{mark}")
+        free = _free_ram_gb()
+        if free is None: return
+        am = next((mm for mm in models if mm.get("name", "").lower().startswith(active)), None)
+        mgb = (am.get("size", 0) / 1e9) if am else 0
+        sugg = _suggest_num_ctx(free, mgb); cur = self.cfg.get("num_ctx", 0) or 0
+        self.info("")
+        self.info(f"Free RAM: {free:.1f} GB  |  headroom after model load: ~{max(0, free - mgb - 0.5):.1f} GB")
+        self.info(f"Suggested num_ctx: {sugg}  (current: {cur or 'default'})")
+        if not cur:
+            self.info(f"  Set with: {C.CYAN}/config set num_ctx {sugg}{C.RESET}")
 
     def _cmd_backend(self, args):
         if not args:
