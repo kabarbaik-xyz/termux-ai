@@ -845,7 +845,7 @@ class TestBackendResilience(_TmpHome):
             if calls["n"] == 1:
                 raise m.BackendError("Stream idle for too long. Aborting.", transient=True)
             return object()
-        def fake_sse(resp):
+        def fake_sse(resp, ndjson=False):
             yield {"type": "text", "content": "hi"}
         with um.patch.object(self.b, "_req", side_effect=fake_req), \
              um.patch.object(self.b, "_sse_lines", side_effect=fake_sse), \
@@ -859,7 +859,7 @@ class TestBackendResilience(_TmpHome):
         def fake_req(url, data, headers):
             calls["n"] += 1
             return object()
-        def fake_sse(resp):
+        def fake_sse(resp, ndjson=False):
             yield {"type": "text", "content": "partial"}
             raise m.BackendError("Stream idle for too long. Aborting.", transient=True)
         with um.patch.object(self.b, "_req", side_effect=fake_req), \
@@ -883,7 +883,7 @@ class TestBackendResilience(_TmpHome):
         def fake_req(url, data, headers):
             calls["n"] += 1
             return object()
-        def fake_sse(resp):
+        def fake_sse(resp, ndjson=False):
             if calls["n"] >= 2:
                 yield {"choices": [{"delta": {"content": "hello"}}]}
                 return
@@ -900,7 +900,7 @@ class TestBackendResilience(_TmpHome):
         def fake_req(url, data, headers):
             calls["n"] += 1
             return object()
-        def fake_sse(resp):
+        def fake_sse(resp, ndjson=False):
             if calls["n"] == 1:
                 yield {"choices": [{"delta": {"content": "\n"}}]}
                 raise m.BackendError("Stream idle for too long. Aborting.", transient=True)
@@ -925,7 +925,7 @@ class TestBackendResilience(_TmpHome):
         model working -- it does NOT kill the task."""
         b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
         calls = {"n": 0}; run_count = {"n": 0}
-        def fake_stream(url, data, headers, notify=None):
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
             calls["n"] += 1
             if calls["n"] <= 3:
                 yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"app.js","start":600}'}}]}, "finish_reason": "tool_calls"}]}
@@ -958,7 +958,7 @@ class TestBackendResilience(_TmpHome):
     def test_phase_nudge_injected_after_read_streak(self):
         b = m.OpenAICompatible({"gather_threshold": 3}, "t", {"base_url": "http://localhost", "model": "x"})
         calls = {"n": 0}; seen = []
-        def fake_stream(url, data, headers, notify=None):
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
             n = calls["n"]; calls["n"] += 1
             seen.append((n, data.get("messages", [])))
             if n == 0:
@@ -983,7 +983,7 @@ class TestBackendResilience(_TmpHome):
     def test_phase_nudge_honors_threshold(self):
         b = m.OpenAICompatible({"gather_threshold": 5}, "t", {"base_url": "http://localhost", "model": "x"})
         calls = {"n": 0}
-        def fake_stream(url, data, headers, notify=None):
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
             n = calls["n"]; calls["n"] += 1
             if n == 0:
                 yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"a"}'}}]}, "finish_reason": "tool_calls"}]}
@@ -1041,13 +1041,65 @@ class TestBackendResilience(_TmpHome):
         self.assertIn(f"local v{m.__version__}", out)
         self.assertIn("Already up to date", out)
 
+    def test_native_ollama_shim_detection_and_mapping(self):
+        """Local qwen3 on Ollama routes through the native /api/chat shim with
+        think:false (the /v1 compat endpoint ignores `think`, and qwen3's
+        thinking mode burns minutes of phone CPU). Remote/non-qwen3/disabled
+        stay on the OpenAI path."""
+        b = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        self.assertTrue(b._native_ollama())
+        self.assertEqual(b._url(), "http://localhost:11434/api/chat")
+        d = b._payload([{"role": "user", "content": "hi"}], True, tools=[{"type": "function"}], temperature=0.3, max_tokens=512)
+        self.assertIs(d["think"], False)
+        self.assertEqual(d["options"]["num_predict"], 512)
+        self.assertNotIn("max_tokens", d)
+        # mapper: dict arguments -> JSON string, done_reason -> finish_reason
+        evt = b._native_to_openai({"message": {"role": "assistant", "content": "x",
+            "tool_calls": [{"id": "c1", "function": {"name": "list_files", "arguments": {"path": "."}}}]},
+            "done_reason": "stop"})
+        ch = evt["choices"][0]
+        self.assertEqual(ch["delta"]["content"], "x")
+        self.assertEqual(ch["delta"]["tool_calls"][0]["function"]["arguments"], '{"path": "."}')
+        self.assertEqual(ch["finish_reason"], "stop")
+        # remote -> OpenAI path
+        b2 = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "https://api.openai.com/v1", "model": "qwen3:1.7b"})
+        self.assertFalse(b2._native_ollama())
+        self.assertEqual(b2._url(), "https://api.openai.com/v1/chat/completions")
+        # non-qwen3 local -> OpenAI path
+        b3 = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
+        self.assertFalse(b3._native_ollama())
+        # config disabled -> OpenAI path
+        b4 = m.OpenAICompatible({"ollama_no_think": False}, "t", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        self.assertFalse(b4._native_ollama())
+
+    def test_native_ollama_normalizes_tool_call_arguments(self):
+        """Assistant tool_calls accumulated by the streaming tool loop carry
+        `arguments` as a JSON STRING (OpenAI shape). Ollama's native /api/chat
+        rejects the round-trip ("can't find closing '}' symbol") unless they're
+        an OBJECT — _native_messages converts str->dict before sending."""
+        msgs = [
+            {"role": "system", "content": "x"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "list_files", "arguments": '{"path": "."}'}},
+                {"id": "call_2", "type": "function", "function": {"name": "read_file", "arguments": ""}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "LICENSE"},
+        ]
+        norm = m.OpenAICompatible._native_messages(msgs)
+        asst = norm[2]
+        self.assertEqual(asst["tool_calls"][0]["function"]["arguments"], {"path": "."})
+        self.assertEqual(asst["tool_calls"][1]["function"]["arguments"], {})
+        # non-assistant messages pass through untouched
+        self.assertEqual(norm[3], msgs[3])
+
     def test_redundant_read_short_circuits_not_stops(self):
         """Reading lines already fetched returns 'already read' and continues --
         does NOT kill the task."""
         b = m.OpenAICompatible({}, "t", {"base_url": "http://localhost", "model": "x"})
         calls = {"n": 0}; run_count = {"n": 0}
         ranges = [(100, 500), (200, 400), (250, 350)]
-        def fake_stream(url, data, headers, notify=None):
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
             calls["n"] += 1
             if calls["n"] <= 3:
                 lo, hi = ranges[calls["n"] - 1]

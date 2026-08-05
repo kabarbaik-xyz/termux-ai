@@ -111,6 +111,14 @@ everyday model, **`qwen2.5:1.5b`** when you want speed, and **`qwen3:4b`** only 
 Vulkan acceleration works on your chip (most Snapdragon 8xx / Dimensity). Avoid
 7B+ models entirely.
 
+> **`qwen3` models are slow by default** — they ship with thinking/reasoning
+> mode ON, which can take **several minutes** to answer a trivial question on
+> phone CPU. termux-ai automatically detects a local `qwen3` model and routes
+> through Ollama's native `/api/chat` endpoint with `think:false` (config
+> `ollama_no_think`, on by default) — this cuts a trivial query from **~250s to
+> ~10s**. The OpenAI-compatible `/v1` endpoint silently ignores `think`, so this
+> native path is required to actually disable thinking.
+
 ### Option B: Anthropic Claude
 
 Get an API key from <https://console.anthropic.com/>
@@ -393,6 +401,8 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `4096` | Max response tokens |
 | `stream` | `true` | Stream responses |
+| `ollama_no_think` | `true` | For local **qwen3** on Ollama: route through the native `/api/chat` endpoint with `think:false`. The OpenAI-compat `/v1` endpoint ignores `think`, and qwen3's built-in thinking mode burns minutes of phone CPU before answering (measured **247s → 10s**). Auto-detects: only local `localhost`/`127.0.0.1` Ollama + a `qwen3` model; no effect on cloud backends or other models. |
+| `num_ctx` | `0` | Optional Ollama context-length override (0 = Ollama default). Lower this on memory-constrained devices, e.g. `4096`. |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |
 | `tts_replies` | `false` | Auto-speak all replies |

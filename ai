@@ -786,6 +786,8 @@ class Config:
         "max_auto_continue": 2,
         "retries": 3,
         "retry_delay": 1.0,
+        "ollama_no_think": True,   # qwen3 on local Ollama: disable thinking via native API (the /v1 compat endpoint ignores `think` and qwen3 burns minutes of phone CPU thinking)
+        "num_ctx": 0,              # optional Ollama context-length override (0 = Ollama default)
         "fold_long_blocks": True,
         "fold_head": 8,
         "attach_files": True,
@@ -1524,7 +1526,7 @@ class Backend:
                     continue
                 raise BackendError("Request timed out.", transient=True)
 
-    def _sse_lines(self, resp, idle_timeout=120):
+    def _sse_lines(self, resp, idle_timeout=120, ndjson=False):
         buf = b""
         last_byte = time.monotonic()
         while True:
@@ -1537,6 +1539,14 @@ class Backend:
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.decode("utf-8", "replace").rstrip("\r")
+                if ndjson:
+                    # Native Ollama /api/chat streams plain newline-delimited
+                    # JSON (no "data:" prefix) — parse every non-empty line.
+                    line = line.strip()
+                    if not line: continue
+                    try: yield json.loads(line)
+                    except Exception: pass
+                    continue
                 if not line.startswith("data:"): continue
                 d = line[5:].strip()
                 if d == "[DONE]": return
@@ -1580,20 +1590,26 @@ class Backend:
             return bool((d.get("content") or "").strip() or d.get("tool_calls"))
         return True
 
-    def _stream_req(self, url, data, headers, notify=None):
+    def _stream_req(self, url, data, headers, notify=None, mapper=None, ndjson=False):
         """Yield parsed SSE events for ONE request, retrying transient failures
         with exponential backoff (config: retries, retry_delay). A retry only
         happens when NOTHING MEANINGFUL was emitted yet: whitespace-only deltas
         and empty bodies don't count, so a flaky endpoint that drops before
         sending real content is retried instead of erroring. A drop AFTER real
-        content propagates (retrying would duplicate output)."""
+        content propagates (retrying would duplicate output).
+        `mapper` (optional) converts each raw event before payload/retry logic
+        (used for the native-Ollama shim, whose SSE shape differs from OpenAI).
+        `ndjson` (optional) parses plain newline-delimited JSON lines instead of
+        SSE "data:" lines (native Ollama /api/chat stream format)."""
         attempts = max(1, int(self.c.get("retries", 3)))
         base = float(self.c.get("retry_delay", 1.0))
         for attempt in range(1, attempts + 1):
             emitted = False
             try:
                 resp = self._req(url, data, headers)
-                for evt in self._sse_lines(resp):
+                for evt in self._sse_lines(resp, ndjson=ndjson):
+                    if mapper:
+                        evt = mapper(evt)
                     if self._has_payload(evt):
                         emitted = True
                     yield evt
@@ -1906,10 +1922,110 @@ class OpenAICompatible(Backend):
         if k: h["Authorization"] = f"Bearer {k}"
         return h
 
+    def _native_ollama(self):
+        """True when talking to a LOCAL Ollama server running a qwen3 model
+        with thinking disabled. The OpenAI-compat endpoint does NOT honor
+        `think`, so qwen3's built-in thinking mode burns minutes of phone CPU
+        before answering (measured 247s vs 10s). The native /api/chat endpoint
+        accepts `think: false` (config: ollama_no_think, default on)."""
+        if not self.c.get("ollama_no_think", True):
+            return False
+        base = (self.profile.get("base_url") or "").lower()
+        if "localhost" not in base and "127.0.0.1" not in base:
+            return False
+        return "qwen3" in (self.profile.get("model") or "").lower()
+
     def _url(self):
         base = (self.profile.get("base_url") or "").rstrip("/")
         if not base: raise Exception(f"Profile '{self.name}' has no base_url.\n  Fix: /profile set {self.name}.base_url <url>")
+        if self._native_ollama():
+            # native endpoint: http://host:11434/api/chat (strip a /v1 suffix)
+            base = base[:-3] if base.endswith("/v1") else base
+            return base + "/api/chat"
         return f"{base}/chat/completions"
+
+    def _payload(self, msgs, stream, tools=None, temperature=None, max_tokens=None):
+        """Build the request body for this backend. Native Ollama (qwen3, no-think)
+        moves temperature/max_tokens under `options`, adds `think: false`, and
+        normalizes assistant tool_calls so `arguments` is an OBJECT (the model
+        streams them as JSON strings in the OpenAI shape; Ollama's native parser
+        rejects the round-trip with "can't find closing '}' symbol")."""
+        temp = temperature if temperature is not None else self.c.get("temperature")
+        mt = max_tokens if max_tokens is not None else self.c.get("max_tokens", 4096)
+        if self._native_ollama():
+            msgs = self._native_messages(msgs)
+        d = {"model": self._model(), "messages": msgs, "stream": stream}
+        if tools is not None:
+            d["tools"] = tools
+        if self._native_ollama():
+            d["think"] = False
+            opts = {}
+            if temp is not None: opts["temperature"] = temp
+            if mt: opts["num_predict"] = mt
+            nctx = self.c.get("num_ctx") or 0
+            if nctx: opts["num_ctx"] = int(nctx)
+            if opts: d["options"] = opts
+        else:
+            if temp is not None: d["temperature"] = temp
+            if mt: d["max_tokens"] = mt
+        return d
+
+    @staticmethod
+    def _native_messages(msgs):
+        """Normalize the message history for Ollama's native /api/chat endpoint:
+        assistant tool_calls must carry `arguments` as an object, not a JSON
+        string (the OpenAI streaming shape the tool loop accumulates)."""
+        out = []
+        for mm in msgs:
+            if mm.get("role") == "assistant" and mm.get("tool_calls"):
+                norm_tcs = []
+                for tc in mm["tool_calls"]:
+                    fn = dict(tc.get("function") or {})
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args) if args.strip() else {}
+                        except Exception:
+                            args = {}
+                    if not isinstance(args, dict):
+                        args = {}
+                    fn["arguments"] = args
+                    ntc = {k: v for k, v in tc.items() if k != "function"}
+                    ntc["function"] = fn
+                    norm_tcs.append(ntc)
+                mm = {**mm, "tool_calls": norm_tcs}
+            out.append(mm)
+        return out
+
+    @staticmethod
+    def _native_to_openai(evt):
+        """Map a native Ollama /api/chat SSE event into the OpenAI shape the
+        rest of the tool loop consumes. Native tool_calls carry dict arguments
+        and use `done_reason`; OpenAI expects JSON-string arguments and
+        `finish_reason`."""
+        if not isinstance(evt, dict):
+            return evt
+        msg = evt.get("message") or {}
+        delta = {"role": "assistant"}
+        if msg.get("content"):
+            delta["content"] = msg["content"]
+        tcs = msg.get("tool_calls")
+        if tcs:
+            out = []
+            for i, tc in enumerate(tcs):
+                fn = tc.get("function") or {}
+                args = fn.get("arguments")
+                if isinstance(args, dict):
+                    args = json.dumps(args)
+                elif not isinstance(args, str):
+                    args = "{}"
+                out.append({"id": tc.get("id") or f"call_{i}", "type": "function",
+                            "function": {"name": fn.get("name", ""), "arguments": args}})
+            delta["tool_calls"] = out
+        fr = evt.get("finish_reason")
+        if fr is None and evt.get("done_reason"):
+            fr = evt["done_reason"]
+        return {"choices": [{"delta": delta, "finish_reason": fr}]}
 
     def _model(self):
         m = self.profile.get("model")
@@ -1924,13 +2040,18 @@ class OpenAICompatible(Backend):
     def chat(self, msgs, stream=None):
         self._check_api_key()
         if stream is None: stream = self.c.get("stream", True)
-        d = {"model": self._model(), "messages": msgs, "temperature": self.c.get("temperature"), "stream": stream, "max_tokens": self.c.get("max_tokens", 4096)}
+        d = self._payload(msgs, stream)
         h = self._headers()
+        mapper = self._native_to_openai if self._native_ollama() else None
         if stream:
-            for chunk in self._stream_req(self._url(), d, h):
+            for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 choices = chunk.get("choices") or [{}]
                 if t := choices[0].get("delta", {}).get("content", ""): yield t
-        else: yield self._with_retry(lambda: json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"])
+        elif mapper:
+            body = json.loads(self._with_retry(lambda: self._req(self._url(), d, h).read()))
+            yield (body.get("message") or {}).get("content", "")
+        else:
+            yield self._with_retry(lambda: json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"])
 
     def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         self._check_api_key()
@@ -1965,13 +2086,15 @@ class OpenAICompatible(Backend):
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = {"model": self._model(), "messages": msgs, "temperature": temp, "stream": True, "tools": Tools.get_schemas(build_mode), "max_tokens": self.c.get("max_tokens", 4096)}
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode), temperature=temp,
+                              max_tokens=self.c.get("max_tokens", 4096))
+            mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
             tool_calls_buf = {}
             finish_reason = None
 
-            for chunk in self._stream_req(self._url(), d, h):
+            for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 if not chunk.get("choices"): continue
                 ch0 = chunk["choices"][0]
                 delta = ch0.get("delta", {})

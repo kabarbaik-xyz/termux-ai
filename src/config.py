@@ -56,6 +56,8 @@ class Config:
         "max_auto_continue": 2,
         "retries": 3,
         "retry_delay": 1.0,
+        "ollama_no_think": True,   # qwen3 on local Ollama: disable thinking via native API (the /v1 compat endpoint ignores `think` and qwen3 burns minutes of phone CPU thinking)
+        "num_ctx": 0,              # optional Ollama context-length override (0 = Ollama default)
         "fold_long_blocks": True,
         "fold_head": 8,
         "attach_files": True,
