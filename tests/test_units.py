@@ -990,7 +990,7 @@ class TestBackendResilience(_TmpHome):
         finally:
             sys.stdout = old
         out = buf.getvalue()
-        self.assertIn("local v7.1.0", out)
+        self.assertIn(f"local v{m.__version__}", out)
         self.assertIn("Already up to date", out)
 
     def test_redundant_read_short_circuits_not_stops(self):
