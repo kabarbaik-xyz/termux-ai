@@ -260,6 +260,23 @@ class Tools:
         return os.environ.get("AI_FETCH_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
 
     @staticmethod
+    def _ip_private(ip):
+        """True if an IP address is private/loopback/etc. Honors NAT64
+        (64:ff9b::/96, RFC 6052 well-known prefix): a NAT64-mapped address
+        embeds the real IPv4 in its low 32 bits, so we classify THAT instead
+        of the translation prefix (which Python flags as reserved) — otherwise
+        legitimate public hosts are blocked on NAT64-only networks (common on
+        Android without IPv6)."""
+        try:
+            ip = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if ip.version == 6 and (int(ip) >> 96) == 0x64FF9B:
+            return Tools._ip_private(ipaddress.ip_address(int(ip) & 0xFFFFFFFF))
+        return (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+    @staticmethod
     def _is_private_host(host):
         """True for private/loopback/etc IPs or localhost. Also resolves DNS
         hostnames and checks resolved IPs to close the DNS-rebinding gap (V-01)."""
@@ -268,20 +285,16 @@ class Tools:
             return False
         if host == "localhost" or host.endswith(".localhost"):
             return True
+        if Tools._ip_private(host):
+            return True
         try:
-            ip = ipaddress.ip_address(host)
-            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
-        except ValueError:
-            if not Tools._allow_private():
-                try:
-                    import socket
-                    for _f, _t, _p, _c, sa in socket.getaddrinfo(host, None):
-                        rip = ipaddress.ip_address(sa[0])
-                        if rip.is_private or rip.is_loopback or rip.is_link_local or rip.is_reserved:
-                            return True
-                except Exception:
-                    pass
-            return False
+            import socket
+            for _f, _t, _p, _c, sa in socket.getaddrinfo(host, None):
+                if Tools._ip_private(sa[0]):
+                    return True
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def _html_to_text(s):

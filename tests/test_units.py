@@ -208,9 +208,9 @@ class TestSkills(_TmpHome):
 
     def test_seed_and_load(self):
         sk = self._skills()
-        self.assertEqual(sorted(sk.seed()), ["cloud-arch", "commit", "data-engineer", "finops", "fullstack", "pentest", "python", "qa", "reverse-engineer", "review"])
+        self.assertEqual(sorted(sk.seed()), ["brainstorm", "cloud-arch", "commit", "data-engineer", "finops", "fullstack", "pentest", "python", "qa", "reverse-engineer", "review"])
         self.assertEqual(sk.seed(), [])  # doesn't overwrite
-        self.assertEqual(sorted(n for n, _ in sk.list()), ["cloud-arch", "commit", "data-engineer", "finops", "fullstack", "pentest", "python", "qa", "reverse-engineer", "review"])
+        self.assertEqual(sorted(n for n, _ in sk.list()), ["brainstorm", "cloud-arch", "commit", "data-engineer", "finops", "fullstack", "pentest", "python", "qa", "reverse-engineer", "review"])
         meta, body = sk.load("review")
         self.assertEqual(meta["mode"], "once")
         self.assertIn("senior code reviewer", body)
@@ -396,6 +396,16 @@ class TestFetchUrl(_TmpHome):
         self.assertIn("SSRF", m.Tools._fetch_url("http://localhost/"))
         self.assertIn("SSRF", m.Tools._fetch_url("http://10.0.0.1/"))
 
+    def test_nat64_mapping_not_flagged_private(self):
+        """A NAT64-mapped address (64:ff9b::/96, common on Android without
+        IPv6) embeds the real IPv4 in its low 32 bits — a PUBLIC embedded IPv4
+        must not be blocked, but one mapping to a private IPv4 (e.g.
+        64:ff9b::7f00:1 = 127.0.0.1) must still be blocked."""
+        self.assertFalse(m.Tools._ip_private("64:ff9b::14cd:f3a8"))   # -> 20.205.243.168 public
+        self.assertTrue(m.Tools._ip_private("64:ff9b::7f00:1"))       # -> 127.0.0.1 loopback
+        self.assertTrue(m.Tools._ip_private("64:ff9b::a00:1"))        # -> 10.0.0.1 private
+        self.assertTrue(m.Tools._ip_private("127.0.0.1"))
+
     def test_private_allowed_with_env(self):
         os.environ["AI_FETCH_ALLOW_PRIVATE"] = "1"
         try:
@@ -441,7 +451,10 @@ class TestFetchUrl(_TmpHome):
             captured["auth"] = req.headers.get("Authorization")
             return FakeResp()
         try:
-            with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+            # Deterministic: this test checks the token header, not SSRF —
+            # don't depend on live DNS (which may return NAT64/reserved addrs).
+            with um.patch.object(m.Tools, "_is_private_host", staticmethod(lambda h: False)), \
+                 um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
                 m.Tools._fetch_url("https://api.github.com/repos/x/y")
         finally:
             os.environ.pop("GITHUB_TOKEN", None)
