@@ -313,9 +313,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         os.system('clear' if os.name != 'nt' else 'cls')
 
     def _cmd_graphify(self, args):
-        """Run graphify directly — no model round-trip needed. Scans a directory
-        and prints the code graph (deps, defs, API, models). Also saves to
-        docs/code-graph.md so skills can reuse it."""
+        """Run graphify directly — no model round-trip needed."""
         path = args[0] if args and not args[0] in ("all", "deps", "calls", "api", "models") else "."
         mode = "all"
         for a in args:
@@ -326,13 +324,50 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             self.warn("No source files found. Usage: /graphify [path] [all|deps|calls|api|models]")
             return
         print(result)
-        # Save to docs/code-graph.md for skills to reuse
         try:
             docs = Path("docs"); docs.mkdir(exist_ok=True)
             (docs / "code-graph.md").write_text(result, encoding="utf-8")
             self.success(f"Saved to docs/code-graph.md ({len(result)} chars). Skills will reuse it.")
         except OSError:
             pass
+
+    def _cmd_process(self, args):
+        """Show the last turn's tool-call log, or toggle compact process mode.
+        /process           → show last turn's steps
+        /process on        → compact: suppress tool chatter, show summary only
+        /process off       → verbose: full tool calls printed live
+        /process auto      → smart: compact when 4+ steps, inline otherwise"""
+        if not args:
+            if not self.last_process:
+                self.info("No tool steps in the last turn.")
+                return
+            mode = self.cfg.get("compact_process", "auto")
+            self.info(f"Last turn: {len(self.last_process)} step(s) | compact mode: {mode}")
+            print()
+            for s in self.last_process:
+                mark = f"{C.RED}\u2717{C.RESET}" if s["status"] == "error" else f"{C.GREEN}\u2713{C.RESET}"
+                a = s.get("args", {})
+                detail = ""
+                if s["name"] == "read_file": detail = a.get("path", "")
+                elif s["name"] == "write_file": detail = a.get("path", "")
+                elif s["name"] == "search_files": detail = f'"{a.get("query", "")[:40]}"'
+                elif s["name"] == "run_command": detail = a.get("command", "")[:50]
+                elif s["name"] == "fetch_url": detail = a.get("url", "")[:50]
+                else: detail = json.dumps(a)[:60]
+                r = s.get("result", "")
+                if len(r) > 80: r = r[:77] + "..."
+                print(f"  {s['step']:>3}. {mark} {C.BOLD}{s['name']}{C.RESET} {C.DIM}{detail}{C.RESET}")
+                if r: print(f"       {C.DIM}{r}{C.RESET}")
+            return
+        sub = args[0].lower()
+        if sub in ("on", "off", "auto"):
+            self.cfg.set("compact_process", sub)
+            desc = {"on": "compact (suppress tool chatter, show summary)",
+                    "off": "verbose (full tool calls printed live)",
+                    "auto": "smart (compact when 4+ steps, inline otherwise)"}[sub]
+            self.success(f"Process display: {desc}.")
+        else:
+            self.info(f"Compact process: {self.cfg.get('compact_process', 'auto')}. Use /process on|off|auto.")
 
     def _cmd_setup(self, args):
         self._run_setup("")

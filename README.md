@@ -242,6 +242,7 @@ docker ps | ai "which container has port 8080?"
 | `/server start\|stop\|status\|pull\|models\|search\|show\|rm` | Manage local Ollama server + pull/list/remove models |
 | `/expand` (or `/last`) | View the **full** last reply (unfolded) in `less` — scroll/search, `q` to return |
 | `/fold on\|off` | Toggle folding of long lists/tables (default on; `fold_head` controls how many stay visible) |
+| `/process [on\|off\|auto]` | Show/compact tool-call output: `on` = clean summary only, `off` = full tool calls live, `auto` = smart (compact when 4+ steps); no args shows last turn's step log |
 | `/clear` | Clear the screen |
 
 ### Sessions & resume
@@ -340,6 +341,8 @@ when the same file's covered ground is re-requested 3 times, stops with
 ### Compact output (folding)
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.
+
+**Tool-call chatter** (the `[Tool 1/2] read_file({...})` lines + raw results) can be collapsed the same way: in compact mode each step prints as a one-line `⚙️ read dashboard.html ✓` and tool results are suppressed, leaving a clean `⚙️ N steps — /process for details` footer. Run `/process` to page through the full step-by-step log (tool, args, result, ✓/✗ status), or `/process on|off|auto` to choose: `on` = always compact, `off` = full live tool output (the original behavior), `auto` (default) = inline when the task is simple, compact once it grows past `compact_threshold` steps (default 4). Errors always break through even in compact mode. Config: `compact_process`, `compact_threshold`.
 | `/help` | Show all commands |
 | `/exit` | Quit (Ctrl-C also works) |
 

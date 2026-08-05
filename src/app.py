@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -35,6 +35,8 @@ class App:
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
         self._errored = False  # set when a request fails (for one-shot exit codes)
         self._pending_checkpoint = None  # in-flight msgs snapshot when a turn is interrupted mid-stream
+        self.last_process = []           # step-by-step log of the last turn (for /process)
+        self._step_count = 0             # tool steps in the current turn
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
 
@@ -214,7 +216,7 @@ class App:
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
-            "Utils": [("/status", "System & API status"), ("/graphify [path] [mode]", "Code graph: deps, defs, API, models"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
+            "Utils": [("/status", "System & API status"), ("/graphify [path] [mode]", "Code graph: deps, defs, API, models"), ("/process [on|off|auto]", "Show/compact tool-call output"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
         
         for cat, cmds in cats.items():
@@ -326,6 +328,39 @@ class App:
         did_tools = False   # once any tool runs, later text is inter-step reasoning
         buf = []            # text buffered after the first tool, awaiting dim/normal render
 
+        # Compact process mode: suppress tool-call chatter, show clean summary.
+        mode = self.cfg.get("compact_process", "auto") if not self.quiet else "off"
+        threshold = max(1, int(self.cfg.get("compact_threshold", 4)))
+        self._step_count = 0
+        self.last_process = []
+
+        def _tool_summary(name, args):
+            """One-line summary of a tool call for compact display."""
+            a = args or {}
+            if name == "read_file":
+                return f"read {os.path.basename(a.get('path', '?'))}"
+            if name == "write_file":
+                return f"write {os.path.basename(a.get('path', '?'))}"
+            if name == "list_files":
+                return f"list {a.get('path', '.')}"
+            if name == "search_files":
+                return f"search \"{(a.get('query', ''))[:30]}\""
+            if name == "run_command":
+                return f"run: {(a.get('command', ''))[:40]}"
+            if name == "fetch_url":
+                return f"fetch {a.get('url', '?')[:40]}"
+            if name == "graphify":
+                return f"graphify {a.get('path', '.')}"
+            if name == "clone_repo":
+                return f"clone {a.get('url', '?')[:40]}"
+            return name
+
+        def _is_compact():
+            """In auto mode, switch to compact after threshold steps."""
+            if mode == "on": return True
+            if mode == "off": return False
+            return self._step_count > threshold  # auto
+
         def flush(thinking):
             # Render buffered text. `thinking`=True -> dim "reflecting" styling
             # (or discarded in quiet mode); False -> the final answer (normal).
@@ -357,14 +392,26 @@ class App:
                         print(f"{C.DIM}{event['content']}{C.RESET}", end="", flush=True)
                 elif et == "tool_progress":
                     if fmt: fmt.flush()
-                    flush(thinking=True)                        # preceding text was reasoning
-                    current_block = ""                          # ...so it is not the saved answer
+                    flush(thinking=True)
+                    current_block = ""
                     did_tools = True
+                    self._step_count += 1
+                    # Always accumulate for /process
+                    self.last_process.append({"step": self._step_count, "name": event["name"],
+                                              "args": event.get("args", {}), "result": "", "status": "ok"})
                     if self.quiet: continue
                     if self.spinner: self.spinner.stop(); self.spinner = None
-                    print(f"\n{C.GRAY}[Tool {event['current']}/{event['total']}] {event['name']}({json.dumps(event['args'])}){C.RESET}")
+                    if _is_compact():
+                        print(f"  {C.GRAY}\u2699\ufe0f {_tool_summary(event['name'], event.get('args', {}))}{C.RESET}", flush=True)
+                    else:
+                        print(f"\n{C.GRAY}[Tool {event['current']}/{event['total']}] {event['name']}({json.dumps(event['args'])}){C.RESET}")
                 elif et == "tool_result":
+                    if self.last_process:
+                        self.last_process[-1]["result"] = event['result'][:200]
+                        if str(event['result']).lower().startswith("error"):
+                            self.last_process[-1]["status"] = "error"
                     if self.quiet: continue
+                    if _is_compact(): continue  # suppress result content in compact mode
                     res = event['result']
                     if len(res) > 800: res = res[:800] + "..."
                     print(f"{C.DIM}{res}{C.RESET}\n")
@@ -378,7 +425,12 @@ class App:
                     if event.get("fatal"): break
             flush(thinking=False)                               # render the final answer (or empty)
             if fmt: fmt.flush()                                 # emit any markdown-buffered tail
-            print()
+            if self._step_count > 0 and not self.quiet:
+                _errs = sum(1 for s in self.last_process if s["status"] == "error")
+                tag = f"{self._step_count} steps" + (f" ({_errs} failed)" if _errs else "")
+                print(f"{C.DIM}\u2699\ufe0f {tag} \u2014 /process for details{C.RESET}")
+            else:
+                print()
             return current_block
         except Exception as e:
             if self.spinner: self.spinner.stop(); self.spinner = None
@@ -831,7 +883,7 @@ class App:
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
-        "/speak": "_cmd_speak", "/share": "_cmd_share", "/expand": "_cmd_expand", "/last": "_cmd_expand", "/fold": "_cmd_fold", "/graphify": "_cmd_graphify", "/clear": "_cmd_clear",
+        "/speak": "_cmd_speak", "/share": "_cmd_share", "/expand": "_cmd_expand", "/last": "_cmd_expand", "/fold": "_cmd_fold", "/graphify": "_cmd_graphify", "/process": "_cmd_process", "/clear": "_cmd_clear",
         "/setup": "_cmd_setup", "/update": "_cmd_update", "/config": "_cmd_config",
         "/system": "_cmd_system", "/server": "_cmd_server", "/cost": "_cmd_cost",
         "/undo": "_cmd_undo", "/show": "_cmd_show", "/rename": "_cmd_rename",
