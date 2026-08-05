@@ -557,6 +557,48 @@ class TestTrimHistory(_TmpHome):
             n = b._compact_iteration_history(msgs)
         self.assertGreater(n, 0)  # fell back to trim, still compacted something
 
+    def test_compact_never_orphans_final_round_tool_results(self):
+        """Regression: when the budget boundary falls inside the final round's
+        tool results (a big file read at the end of a long task), compaction
+        must NOT strip the assistant tool_calls while leaving its tool results
+        behind — that makes the API reject with 'Messages with role tool must
+        be a response to a preceding message with tool_calls' (HTTP 400)."""
+        b = m.OpenAICompatible({"iteration_history_budget": 20000, "compact_keep_recent": 8000}, "t", {"base_url": "http://localhost", "model": "x"})
+        with um.patch.object(b, "chat", return_value=iter(["SUMMARY" * 10])):
+            msgs = [
+                self._msg("system", "sys"),
+                self._msg("user", "do task"),
+                self._msg("assistant", "r0", tool_calls=self._tc("a0")),
+                self._msg("tool", "X" * 5000, tool_call_id="a0"),
+                self._msg("assistant", "r1", tool_calls=self._tc("b0")),
+                self._msg("tool", "X" * 5000, tool_call_id="b0"),
+                # final round: two huge results that alone exceed keep_recent
+                self._msg("assistant", "final round", tool_calls=self._tc("c0") + self._tc("c1")),
+                self._msg("tool", "A" * 50000, tool_call_id="c0"),
+                self._msg("tool", "B" * 50000, tool_call_id="c1"),
+            ]
+            n = b._compact_iteration_history(msgs)
+        self.assertGreater(n, 0)  # compaction still happened
+        self.assertTrue(m.Backend._history_rounds_valid(msgs))  # and stayed valid
+        # the final round's assistant + both tool results are all still present
+        roles = [mm["role"] for mm in msgs]
+        self.assertIn("assistant", roles)
+        tools = [mm for mm in msgs if mm.get("role") == "tool"]
+        self.assertEqual(len(tools), 2)
+
+    def test_history_rounds_valid_flags_orphans(self):
+        msgs = [
+            self._msg("system", "sys"),
+            self._msg("tool", "orphaned result", tool_call_id="zzz"),
+        ]
+        self.assertFalse(m.Backend._history_rounds_valid(msgs))
+        msgs = [
+            self._msg("system", "sys"),
+            self._msg("assistant", "go", tool_calls=self._tc("1")),
+            self._msg("tool", "result", tool_call_id="1"),
+        ]
+        self.assertTrue(m.Backend._history_rounds_valid(msgs))
+
     def test_graphify_finds_definitions_and_routes(self):
         d = os.path.join(tempfile.gettempdir(), "_graphify_test")
         os.makedirs(d, exist_ok=True)

@@ -10,7 +10,7 @@ import select, tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "7.1.0"
+__version__ = "7.1.1"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -1714,15 +1714,28 @@ class Backend:
                 keep_from = i
                 break
 
-        # Adjust keep_from forward to the next assistant-with-tools boundary
-        # (can't split a tool round — tool results need their preceding assistant).
+        # Adjust keep_from to a round boundary so every kept tool result still
+        # follows its assistant's tool_calls (the API's hard requirement).
+        # Prefer the next assistant-with-tools at/after the budget line; if the
+        # line fell inside the final round (after its assistant, before its
+        # results), roll back to that assistant so its results stay attached.
+        def _is_round_start(mm):
+            return mm.get("role") == "assistant" and (mm.get("tool_calls") or (
+                isinstance(mm.get("content"), list) and
+                any(isinstance(b, dict) and b.get("type") == "tool_use" for b in mm["content"])))
+
+        boundary = None
         for i in range(keep_from, len(msgs)):
-            m = msgs[i]
-            if m.get("role") == "assistant" and (m.get("tool_calls") or (
-                    isinstance(m.get("content"), list) and
-                    any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"]))):
-                keep_from = i
+            if _is_round_start(msgs[i]):
+                boundary = i
                 break
+        if boundary is not None:
+            keep_from = boundary
+        else:
+            for i in range(keep_from - 1, first_round - 1, -1):
+                if _is_round_start(msgs[i]):
+                    keep_from = i
+                    break
 
         if keep_from <= first_round + 1:
             return 0  # not enough old rounds to compact
@@ -1761,10 +1774,40 @@ class Backend:
             return self._trim_iteration_history(msgs, budget)
 
         # Replace old rounds with a single summary message.
-        msgs[first_round:keep_from] = [
+        new_hist = msgs[:first_round] + [
             {"role": "user", "content": "[Summary of earlier tool work in this session]\n" + summary}
-        ]
+        ] + msgs[keep_from:]
+        if not self._history_rounds_valid(new_hist):
+            return 0  # defensive: never emit an orphaned tool result (API hard 400)
+        msgs[:] = new_hist
         return len(old)
+
+    @staticmethod
+    def _history_rounds_valid(msgs):
+        """True when every tool result still follows its assistant tool_calls
+        (the API's hard requirement, e.g. 'Messages with role tool must be a
+        response to a preceding message with tool_calls'). Handles OpenAI 'tool'
+        role messages and Anthropic user-message tool_result blocks."""
+        expect = False
+        for mm in msgs:
+            if not isinstance(mm, dict):
+                continue
+            r = mm.get("role")
+            if r == "assistant":
+                expect = bool(mm.get("tool_calls")) or (
+                    isinstance(mm.get("content"), list) and
+                    any(isinstance(b, dict) and b.get("type") == "tool_use" for b in mm["content"]))
+            elif r == "tool":
+                if not expect:
+                    return False
+            elif r in ("user", "system"):
+                if isinstance(mm.get("content"), list) and any(
+                        isinstance(b, dict) and b.get("type") == "tool_result" for b in mm["content"]):
+                    if not expect:
+                        return False
+                else:
+                    expect = False
+        return True
 
     @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
