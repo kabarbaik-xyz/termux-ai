@@ -312,6 +312,28 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
     def _cmd_clear(self, args):
         os.system('clear' if os.name != 'nt' else 'cls')
 
+    def _cmd_graphify(self, args):
+        """Run graphify directly — no model round-trip needed. Scans a directory
+        and prints the code graph (deps, defs, API, models). Also saves to
+        docs/code-graph.md so skills can reuse it."""
+        path = args[0] if args and not args[0] in ("all", "deps", "calls", "api", "models") else "."
+        mode = "all"
+        for a in args:
+            if a in ("all", "deps", "calls", "api", "models"):
+                mode = a; break
+        result = Tools._graphify(path, mode)
+        if not result or len(result) < 50 or "No source files" in result:
+            self.warn("No source files found. Usage: /graphify [path] [all|deps|calls|api|models]")
+            return
+        print(result)
+        # Save to docs/code-graph.md for skills to reuse
+        try:
+            docs = Path("docs"); docs.mkdir(exist_ok=True)
+            (docs / "code-graph.md").write_text(result, encoding="utf-8")
+            self.success(f"Saved to docs/code-graph.md ({len(result)} chars). Skills will reuse it.")
+        except OSError:
+            pass
+
     def _cmd_setup(self, args):
         self._run_setup("")
 
