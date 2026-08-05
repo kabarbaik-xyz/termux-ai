@@ -61,7 +61,7 @@ Aplikasi ini adalah **satu container monolitik** — sebuah proses Python CLI. T
 ```mermaid
 flowchart TB
     subgraph CLI ["termux-ai CLI Process (single Python process)"]
-        direction TB
+
         REPL["REPL Loop<br/>App.main_loop()<br/>app.py"]
         CLI_Entry["CLI Entry<br/>main()<br/>cli.py"]
         Backend_Layer["Backend Layer<br/>OpenAICompatible / AnthropicBackend<br/>backends.py"]
@@ -242,7 +242,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant U as User
-    peserta App as App
+    participant App as App
     participant DB as Database
 
     Note over App: Startup
