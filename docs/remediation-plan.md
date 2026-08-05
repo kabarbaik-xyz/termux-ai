@@ -4,6 +4,8 @@
 **Date:** 2025-01-XX  
 **Strategy:** Quick wins first (low effort, high value), then strategic improvements.
 
+**Update (v7.1.0):** ✅ V-01, V-03, V-06, V-07 have been remediated. See status column below.
+
 ---
 
 ## 1. Remediation Roadmap Overview
@@ -55,9 +57,9 @@ These are trivial code changes that immediately reduce risk with no behavioral c
 
 | # | Finding | Action | File | Effort | Impact |
 |---|---------|--------|------|--------|--------|
-| 1 | V-07 | Add `_secure_file(HISTORY_FILE)` after `readline.write_history_file()` | `src/app.py` | 1 line | Eliminates residual file permission gap |
+| 1 | V-07 | Add `_secure_file(HISTORY_FILE)` after `readline.write_history_file()` | `src/app.py` | 1 line | Eliminates residual file permission gap | **✅ DONE** |
 | 2 | V-04 | Add warning in `/setup` when storing API key in config.json | `src/app.py` (`_cmd_setup`) | 3 lines | Encourages env var usage |
-| 3 | V-06 | Register clone_repo temp dirs with `atexit` for cleanup | `src/tools.py` | 5 lines | Prevents disk accumulation |
+| 3 | V-06 | Register clone_repo temp dirs with `atexit` for cleanup | `src/tools.py` | 5 lines | Prevents disk accumulation | **✅ DONE** |
 | 4 | V-09 | Document that `GITHUB_TOKEN` is auto-attached to api.github.com requests | `docs/` | Documentation only | User awareness |
 
 **Total Phase 1 effort:** ~10 lines of code + docs. No behavioral changes.
@@ -70,8 +72,8 @@ These address the three Medium findings and add proactive controls.
 
 | # | Finding | Action | File | Effort | Impact |
 |---|---------|--------|------|--------|--------|
-| 5 | V-01 | Resolve DNS hostnames in `_is_private_host` and validate resolved IPs | `src/tools.py:265-275` | 10-15 lines | Closes SSRF DNS rebinding gap |
-| 6 | V-03 | Add sensitive-path denylist for `read_file` (SSH keys, environ, config) | `src/tools.py`, `src/fileio.py` | 15-20 lines | Prevents credential exfiltration via prompt injection |
+| 5 | V-01 | Resolve DNS hostnames in `_is_private_host` and validate resolved IPs | `src/tools.py:265-275` | 10-15 lines | Closes SSRF DNS rebinding gap | **✅ DONE** |
+| 6 | V-03 | Add sensitive-path denylist for `read_file` (SSH keys, environ, config) | `src/tools.py`, `src/fileio.py` | 15-20 lines | Prevents credential exfiltration via prompt injection | **✅ DONE** |
 | 7 | V-08 | Add rate limiter for tool calls / API calls per session | `src/app.py` | 20-30 lines | Prevents runaway cost / resource exhaustion |
 | 8 | V-05 | Replace global `AI_FETCH_ALLOW_PRIVATE` with per-host allowlist | `src/tools.py` | 5-10 lines | Reduces SSRF bypass surface |
 

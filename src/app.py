@@ -171,6 +171,9 @@ class App:
                 readline.set_completer_delims(' \t\n')
                 readline.parse_and_bind("tab: complete")
             except Exception: pass
+            # V-07: secure history file permissions after readline writes
+            import atexit
+            atexit.register(lambda: _secure_file(HIST_FILE))
 
     def info(self, msg): print(f"{C.CYAN}[i] {msg}{C.RESET}")
     def warn(self, msg): print(f"{C.YELLOW}[!] {msg}{C.RESET}")

@@ -440,6 +440,25 @@ Two run modes (`mode:` in front-matter):
 
 Bundled example skills ship in the repo's [`skills/`](skills/) directory for reference; `/skill seed` copies them into your skills dir.
 
+### Sample output documents
+
+The `docs/` folder contains **real outputs** produced by AI skills running on termux-ai's own codebase — these demonstrate what each skill produces:
+
+| Document | Skill | Description |
+|----------|-------|-------------|
+| [`docs/code-graph.md`](docs/code-graph.md) | `/graphify` | Code structure map: definitions, dependency graph |
+| [`docs/security-assessment.md`](docs/security-assessment.md) | `pentest` | Executive summary, risk rating, scope, methodology |
+| [`docs/vulnerabilities.md`](docs/vulnerabilities.md) | `pentest` | 14 findings (V-01–V-14); **4 remediated** ✅ |
+| [`docs/remediation-plan.md`](docs/remediation-plan.md) | `pentest` | Prioritized roadmap (quick wins → strategic) |
+| [`docs/dependency-audit.md`](docs/dependency-audit.md) | `pentest` | Third-party package CVE analysis |
+| [`docs/infra-hardening.md`](docs/infra-hardening.md) | `pentest` | IaC/config misconfigs with CIS/CSF references |
+| [`docs/02-PRD.md`](docs/02-PRD.md) | `reverse-engineer` | Product requirements document |
+| [`docs/03-SAD.md`](docs/03-SAD.md) | `reverse-engineer` | Software architecture document with ADRs |
+| [`docs/04-TSD.md`](docs/04-TSD.md) | `reverse-engineer` | Technical specification (API reference, data model) |
+| [`docs/MANUAL_TEST_CASES.md`](docs/MANUAL_TEST_CASES.md) | `qa` | Risk heat map, step-by-step test cases, checklists |
+
+All skills call `graphify` first to map the codebase structure before deep analysis.
+
 **`reverse-engineer`** (session) — a PM/PO playbook: turn a code repo into **BRD → PRD → SAD → TSD → Epic/Task breakdown → User Manual/Guide** (six docs, each in `docs/`). The **03-SAD (Software Architecture Document)** carries **embedded Architecture Decision Records** (ADR-00n: Context · Decision · Consequences · Alternatives) plus Mermaid diagrams (system context, containers, components, sequence, deployment). The **04-TSD** is the detailed close-up (per-module breakdown, **full API/endpoints reference**, Mermaid ERD, business logic, security, config, build/test/deploy, observability). **All diagrams use Mermaid** (never ASCII/prose). It drives `clone_repo` / `fetch_url` / `search_files`, verifies every claim against the real code (file:line citations), and matches your language (Bahasa/English). Activate with `/skill reverse-engineer`, then e.g. *"analyze github.com/owner/repo, write the SAD first"*. (Best with a capable model; on 8 GB use `qwen2.5:3b`+, ideally cloud for the technical docs.)
 
 **`data-engineer`** (session) — a Data Engineer / BI playbook. Reads a data report (`.xlsx`/`.xls`/`.csv`) **and** an objective doc (`.docx`/`.doc`/`.pdf`/`.txt`) via `read_file`, elaborates the real business need in `docs/analysis.md` (working **both** directions: report→dashboard and dashboard→report), then builds a self-contained single-page **HTML BI dashboard** (`dashboard.html`, inline CSS/JS/SVG, no CDN, opens offline). Activate `/skill data-engineer`, then *"read sales.xlsx and the brief.pdf, then build the dashboard"*.

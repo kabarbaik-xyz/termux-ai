@@ -3,9 +3,11 @@
 **Target:** Termux AI v7.0.0  
 **Total Findings:** 14 (0 Critical, 0 High, 3 Medium, 5 Low, 6 Informational)
 
+**Remediation Status (v7.1.0):** V-01 ✅ | V-03 ✅ | V-06 ✅ | V-07 ✅ — 4 findings resolved. See [remediation-plan.md](remediation-plan.md) for details.
+
 ---
 
-## V-01 — SSRF: DNS Rebinding Gap in fetch_url
+## V-01 — SSRF: DNS Rebinding Gap in fetch_url  ✅ REMEDIATED (v7.1.0)
 
 | Field | Value |
 |-------|-------|
@@ -115,7 +117,7 @@ finally:
 
 ---
 
-## V-03 — Unrestricted read_file — Sensitive File Access
+## V-03 — Unrestricted read_file — Sensitive File Access  ✅ REMEDIATED (v7.1.0)
 
 | Field | Value |
 |-------|------- |
@@ -227,7 +229,7 @@ def _is_private_host(host):
 
 ---
 
-## V-06 — clone_repo Temp Directory Accumulation
+## V-06 — clone_repo Temp Directory Accumulation  ✅ REMEDIATED (v7.1.0)
 
 | Field | Value |
 |-------|-------|
@@ -258,7 +260,7 @@ Or document that the AI should clean up after itself (current implicit behavior)
 
 ---
 
-## V-07 — History File Lacks Explicit Permission Setting
+## V-07 — History File Lacks Explicit Permission Setting  ✅ REMEDIATED (v7.1.0)
 
 | Field | Value |
 |-------|-------|

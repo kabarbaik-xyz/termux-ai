@@ -261,9 +261,8 @@ class Tools:
 
     @staticmethod
     def _is_private_host(host):
-        """True for an IP literal in private/loopback/etc ranges, or localhost.
-        DNS hostnames can't be fully checked cheaply (rebinding), so we only
-        guard obvious literals -- the device is single-user and low-stakes."""
+        """True for private/loopback/etc IPs or localhost. Also resolves DNS
+        hostnames and checks resolved IPs to close the DNS-rebinding gap (V-01)."""
         host = (host or "").lower().strip()
         if not host:
             return False
@@ -273,6 +272,15 @@ class Tools:
             ip = ipaddress.ip_address(host)
             return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
         except ValueError:
+            if not Tools._allow_private():
+                try:
+                    import socket
+                    for _f, _t, _p, _c, sa in socket.getaddrinfo(host, None):
+                        rip = ipaddress.ip_address(sa[0])
+                        if rip.is_private or rip.is_loopback or rip.is_link_local or rip.is_reserved:
+                            return True
+                except Exception:
+                    pass
             return False
 
     @staticmethod
@@ -457,6 +465,7 @@ class Tools:
         if depth and depth > 0:
             argv += ["--depth", str(depth)]
         target = tempfile.mkdtemp(prefix="ai_clone_")
+        import atexit; atexit.register(lambda t=target: shutil.rmtree(t, ignore_errors=True))  # V-06
         argv += [url, target]
         try:
             p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -500,6 +509,13 @@ class Tools:
             if name == "read_file":
                 p = os.path.expanduser(args.get("path", ""))
                 if not p: return "Error: Path is missing."
+                # V-03: deny known sensitive paths to prevent credential exfiltration
+                rp = os.path.realpath(p).lower()
+                _sensitive = (".ssh/", ".aws/", ".env", ".git/credentials", ".netrc",
+                              ".gnupg/", "id_rsa", "id_ecdsa", "id_ed25519",
+                              ".docker/config", ".kube/config", ".npmrc")
+                if any(s in rp for s in _sensitive):
+                    return "Error: Access denied — this path may contain secrets (SSH keys, credentials, config). Use run_command if you genuinely need it and have user approval."
                 if not os.path.exists(p): return f"Error: Not found at {p}"
                 if os.path.isdir(p): return "Error: Is a directory"
                 return FileReader.read(p, start_line=args.get("start"), end_line=args.get("end"))
