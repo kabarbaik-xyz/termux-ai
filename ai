@@ -859,7 +859,7 @@ class Config:
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 class Tools:
-    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url"}
+    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "graphify"}
     # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
     # build noise (node_modules, .git, __pycache__, dist, ...) doesn't flood the
     # AI's context when it scans a local codebase. (AI can still read_file a
@@ -877,6 +877,7 @@ class Tools:
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "clone_repo", "description": "Clone a public git repo (HTTPS only) into an isolated temp dir and return the local path, so you can read/list/search/edit its files locally. BUILD MODE only. depth defaults to 1 (shallow, fast); set 0 for full history.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "depth": {"type": "integer", "default": 1}}, "required": ["url"]}}},
+        {"type": "function", "function": {"name": "graphify", "description": "Scan a codebase directory and return a structured code graph: dependency graph (Mermaid), all function/class definitions, API endpoints, and data models. Call this FIRST to map the codebase structure before deep-diving into files. Zero dependencies, runs locally.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory to scan (default: current dir)"}, "mode": {"type": "string", "enum": ["all", "deps", "calls", "api", "models"], "description": "all=everything, deps=import graph, calls=definitions, api=endpoints, models=data schemas"}}, "required": ["path"]}}},
     ]
     PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] not in ("write_file", "clone_repo")]
     
@@ -1190,8 +1191,112 @@ class Tools:
         note = " (truncated at %d KB)" % (max_bytes // 1000) if truncated else ""
         return "Fetched %s%s\n\n%s" % (final_url, note, text.strip())
 
+    # ---- graphify: native code-graph scanner (zero deps, stdlib only) ----
+    _G_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".sql"}
+    _G_PAT = {
+        ".py": {"defs": [(r"\bdef\s+(\w+)", "fn"), (r"\bclass\s+(\w+)", "class")],
+                "imports": [r"from\s+([\w.]+)\s+import", r"\bimport\s+([\w.]+)"],
+                "routes": [r"@(?:app|router|bp)\.(get|post|put|delete|patch)\(\s*['\"]([^'\"]+)", r"@(?:app|router|bp)\.route\(\s*['\"]([^'\"]+)"],
+                "models": [r"class\s+(\w+).*?(?:Model|Schema|Base|Serializer)\b"]},
+        ".js": {"defs": [(r"\bfunction\s+(\w+)", "fn"), (r"\bclass\s+(\w+)", "class"), (r"(?:const|let)\s+(\w+)\s*=\s*(?:async\s*)?\(", "arrow")],
+                 "imports": [r"from\s+['\"]([^'\"]+)", r"require\(\s*['\"]([^'\"]+)"],
+                 "routes": [r"\b(?:app|router)\.(get|post|put|delete|patch)\(\s*['\"]([^'\"]+)"],
+                 "models": [r"(?:mongoose|sequelize)\.(?:model|Schema|define)\s*\(\s*['\"](\w+)"]},
+        ".go": {"defs": [(r"\bfunc\s+(?:\([^)]+\)\s+)?(\w+)", "fn"), (r"\btype\s+(\w+)\s+struct", "struct")],
+                "imports": [r'^\s*"([^"]+)"\s*$'],
+                "routes": [r"\.(?:GET|POST|PUT|DELETE|PATCH|HandleFunc)\(\s*['\"]([^'\"]+)"],
+                "models": [r"\btype\s+(\w+)\s+struct"]},
+        ".rs": {"defs": [(r"\bfn\s+(\w+)", "fn"), (r"\bstruct\s+(\w+)", "struct"), (r"\benum\s+(\w+)", "enum"), (r"\btrait\s+(\w+)", "trait")],
+                "imports": [r"\buse\s+(\S+)"],
+                "routes": [r"\.route\(\s*['\"]([^'\"]+)"],
+                "models": [r"\bstruct\s+(\w+)"]},
+        ".java": {"defs": [(r"\b(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:class|interface|enum)\s+(\w+)", "class")],
+                  "imports": [r"\bimport\s+(?:static\s+)?([\w.]+);"],
+                  "routes": [r"@(?:Get|Post|Put|Delete|Patch)Mapping\(\s*(?:value\s*=\s*)?['\"]([^'\"]+)"],
+                  "models": [r"@Entity\s+(?:public\s+)?class\s+(\w+)"]},
+        ".kt": {"defs": [(r"\bfun\s+(\w+)", "fn"), (r"\b(?:data\s+)?class\s+(\w+)", "class")],
+                "imports": [r"\bimport\s+([\w.]+)"],
+                "routes": [], "models": []},
+        ".sql": {"defs": [], "imports": [], "routes": [],
+                 "models": [r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"]?(\w+)"]},
+    }
+    _G_PAT[".jsx"] = _G_PAT[".js"]
+    _G_PAT[".tsx"] = {**_G_PAT[".js"], "defs": _G_PAT[".js"]["defs"] + [(r"\b(?:interface|type)\s+(\w+)", "type")]}
+    _G_PAT[".ts"] = _G_PAT[".tsx"]
+
     @staticmethod
-    def _clone_repo(url, depth, build_mode, timeout=120):
+    def _graphify(path, mode="all"):
+        """Scan a directory and return a structured code graph (Mermaid + tables).
+        Zero external dependencies — pure os.walk + regex."""
+        p = os.path.expanduser(path or ".")
+        if not os.path.isdir(p): return f"Error: '{p}' is not a directory."
+        defs, imports, routes, models = [], {}, [], []
+        local_names = set()
+        for root, dirs, fnames in os.walk(p):
+            dirs[:] = sorted(d for d in dirs if d not in Tools.IGNORE_DIRS and not d.startswith("."))
+            for fn in sorted(fnames):
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in Tools._G_EXTS:
+                    rel = os.path.relpath(os.path.join(root, fn), p)
+                    local_names.add(os.path.splitext(fn)[0])
+                    pat = Tools._G_PAT.get(ext)
+                    if not pat: continue
+                    try:
+                        with open(os.path.join(root, fn), encoding="utf-8", errors="ignore") as fh:
+                            for i, line in enumerate(fh, 1):
+                                for rp, dt in pat.get("defs", []):
+                                    for m in re.finditer(rp, line):
+                                        defs.append((m.group(1), dt, rel, i))
+                                for rp in pat.get("imports", []):
+                                    for m in re.finditer(rp, line):
+                                        imports.setdefault(rel, []).append(m.group(1))
+                                for rp in pat.get("routes", []):
+                                    for m in re.finditer(rp, line):
+                                        g = m.groups()
+                                        routes.append((g[0].upper() if len(g) > 1 else "?", g[-1], rel, i))
+                                for rp in pat.get("models", []):
+                                    for m in re.finditer(rp, line):
+                                        models.append((m.group(1), rel))
+                    except Exception:
+                        continue
+        out = [f"## Code Graph: {p}  ({len(defs)} defs, {len(routes)} routes, {len(models)} models)\n"]
+        if mode in ("deps", "all"):
+            edges = set()
+            for src, mods in sorted(imports.items()):
+                sb = os.path.splitext(os.path.basename(src))[0]
+                for mod in mods:
+                    mb = re.split(r"[./]", mod)[-1].strip("'\"")
+                    if mb and mb in local_names and mb != sb:
+                        edges.add((sb, mb))
+            out.append(f"### Dependency Graph ({len(edges)} edges)")
+            if edges:
+                m = "```mermaid\ngraph TD\n"
+                for a, b in sorted(edges)[:60]:
+                    m += f"    {a} --> {b}\n"
+                if len(edges) > 60: m += f"    %% ... {len(edges)-60} more\n"
+                out.append(m + "```\n")
+            else: out.append("(no local dependencies detected)\n")
+        if mode in ("calls", "all") and defs:
+            out.append(f"### Definitions ({len(defs)})\n| Name | Type | File:Line |\n|------|------|-----------|")
+            for n, t, f, l in defs[:100]:
+                out.append(f"| `{n}` | {t} | {f}:{l} |")
+            if len(defs) > 100: out.append(f"| ... | *{len(defs)-100} more* | |")
+            out.append("")
+        if mode in ("api", "all") and routes:
+            out.append(f"### API Endpoints ({len(routes)})\n| Method | Path | File:Line |\n|--------|------|-----------|")
+            for method, path_, f, l in sorted(set(routes)):
+                out.append(f"| {method} | `{path_}` | {f}:{l} |")
+            out.append("")
+        if mode in ("models", "all") and models:
+            seen = set(); uniq = [(n, f) for n, f in models if n not in seen and not seen.add(n)]
+            out.append(f"### Data Models ({len(uniq)})\n| Name | File |\n|------|------|")
+            for n, f in uniq[:50]:
+                out.append(f"| `{n}` | {f} |")
+            out.append("")
+        return "\n".join(out) if len(out) > 1 else "No source files found."
+
+    @staticmethod
+    def _clone_repo(url, depth=1, build_mode=False, timeout=120):
         """git clone a public HTTPS repo into an isolated temp dir and return
         the path. Build-mode only (writes to disk + runs git). Shallow by
         default (depth 1); depth 0 = full history."""
@@ -1331,6 +1436,8 @@ class Tools:
                 return Tools._fetch_url(args.get("url", ""))
             elif name == "clone_repo":
                 return Tools._clone_repo(args.get("url", ""), args.get("depth", 1), build_mode)
+            elif name == "graphify":
+                return Tools._graphify(args.get("path", "."), args.get("mode", "all"))
             return "Unknown tool"
         except Exception as e: return f"Error: {e}"
 

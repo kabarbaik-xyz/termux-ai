@@ -557,6 +557,30 @@ class TestTrimHistory(_TmpHome):
             n = b._compact_iteration_history(msgs)
         self.assertGreater(n, 0)  # fell back to trim, still compacted something
 
+    def test_graphify_finds_definitions_and_routes(self):
+        d = os.path.join(tempfile.gettempdir(), "_graphify_test")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "app.py"), "w") as f:
+            f.write("from auth import check\n")
+            f.write("class Order(Model):\n")
+            f.write("    pass\n")
+            f.write("def get_orders():\n")
+            f.write("    pass\n")
+            f.write("@app.route('/api/orders', methods=['GET'])\n")
+            f.write("def orders():\n")
+            f.write("    pass\n")
+        with open(os.path.join(d, "auth.py"), "w") as f:
+            f.write("def check():\n")
+            f.write("    return True\n")
+        result = m.Tools.run("graphify", {"path": d, "mode": "all"}, False)
+        self.assertIn("get_orders", result)
+        self.assertIn("Order", result)
+        self.assertIn("check", result)
+        self.assertIn("/api/orders", result)
+        self.assertIn("auth", result)  # dependency or definition
+        self.assertIn("graph TD", result)  # Mermaid
+        shutil.rmtree(d)
+
     def test_low_value_trimmed_before_read_file(self):
         rf = "read-content-here " * 300   # high-value (read_file)
         lf = "listing-content " * 300    # low-value  (list_files)
