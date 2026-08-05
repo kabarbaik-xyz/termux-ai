@@ -111,13 +111,22 @@ everyday model, **`qwen2.5:1.5b`** when you want speed, and **`qwen3:4b`** only 
 Vulkan acceleration works on your chip (most Snapdragon 8xx / Dimensity). Avoid
 7B+ models entirely.
 
-> **`qwen3` models are slow by default** — they ship with thinking/reasoning
-> mode ON, which can take **several minutes** to answer a trivial question on
-> phone CPU. termux-ai automatically detects a local `qwen3` model and routes
-> through Ollama's native `/api/chat` endpoint with `think:false` (config
-> `ollama_no_think`, on by default) — this cuts a trivial query from **~250s to
-> ~10s**. The OpenAI-compatible `/v1` endpoint silently ignores `think`, so this
-> native path is required to actually disable thinking.
+> **Reasoning models (qwen3, deepseek-r1, qwq, ...) are slow by default** — they
+> ship with thinking/reasoning mode ON, which can take **several minutes** to
+> answer a trivial question on phone CPU. termux-ai automatically detects any
+> local Ollama model that reports a `thinking` capability and routes it through
+> Ollama's native `/api/chat` endpoint with `think:false` (config
+> `ollama_no_think`, on by default) — this cuts a trivial qwen3 query from
+> **~250s to ~10s**. The OpenAI-compatible `/v1` endpoint silently ignores
+> `think`, so this native path is required to actually disable thinking.
+> Detection is per-model and authoritative (via `/api/show`), so it works for
+> qwen3, qwq, and any future thinking-capable model without code changes.
+>
+> **Note on deepseek-r1 / phi-reasoning:** these emit reasoning as `<think>`
+> tags *inside the content stream* rather than via Ollama's `think` protocol, so
+> thinking often can't be disabled server-side — they're inherently slower. For
+> an 8 GB phone prefer a non-reasoning model (`qwen2.5:3b`, `llama3.2:3b`) or
+> `qwen3` (where thinking IS controllable) for interactive use.
 
 ### Option B: Anthropic Claude
 
@@ -401,7 +410,7 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `4096` | Max response tokens |
 | `stream` | `true` | Stream responses |
-| `ollama_no_think` | `true` | For local **qwen3** on Ollama: route through the native `/api/chat` endpoint with `think:false`. The OpenAI-compat `/v1` endpoint ignores `think`, and qwen3's built-in thinking mode burns minutes of phone CPU before answering (measured **247s → 10s**). Auto-detects: only local `localhost`/`127.0.0.1` Ollama + a `qwen3` model; no effect on cloud backends or other models. |
+| `ollama_no_think` | `true` | For a LOCAL **reasoning model** on Ollama (any model that reports a `thinking` capability — qwen3, qwq, deepseek-r1 if Ollama marks it, etc.): route through the native `/api/chat` endpoint with `think:false`. The OpenAI-compat `/v1` endpoint ignores `think`, and reasoning models burn minutes of phone CPU before answering (measured **247s → 10s** on qwen3). Auto-detected per-model via Ollama's `/api/show` capabilities; no effect on cloud backends or non-thinking models. |
 | `num_ctx` | `0` | Optional Ollama context-length override (0 = Ollama default). Lower this on memory-constrained devices, e.g. `4096`. |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |

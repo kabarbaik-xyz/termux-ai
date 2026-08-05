@@ -1915,6 +1915,7 @@ class OpenAICompatible(Backend):
         super().__init__(cfg)
         self.name = profile_name
         self.profile = profile or {}
+        self._caps_cache = {}   # model name -> capabilities list (from Ollama /api/show)
 
     def _headers(self):
         k = self._api_key()
@@ -1923,17 +1924,52 @@ class OpenAICompatible(Backend):
         return h
 
     def _native_ollama(self):
-        """True when talking to a LOCAL Ollama server running a qwen3 model
-        with thinking disabled. The OpenAI-compat endpoint does NOT honor
-        `think`, so qwen3's built-in thinking mode burns minutes of phone CPU
-        before answering (measured 247s vs 10s). The native /api/chat endpoint
-        accepts `think: false` (config: ollama_no_think, default on)."""
+        """True when talking to a LOCAL Ollama server running a THINKING-capable
+        model with thinking disabled. The OpenAI-compat endpoint does NOT honor
+        `think`, so reasoning models (qwen3, deepseek-r1, phi4-reasoning, ...) burn
+        minutes of phone CPU thinking before answering (measured 247s vs 10s).
+        The native /api/chat endpoint accepts `think: false` (config:
+        ollama_no_think, default on). Detection is model-agnostic: we query
+        Ollama's /api/show for the model's `capabilities` and route through the
+        native endpoint whenever `thinking` is listed (falls back to a
+        model-name heuristic if /api/show is unavailable)."""
         if not self.c.get("ollama_no_think", True):
             return False
         base = (self.profile.get("base_url") or "").lower()
         if "localhost" not in base and "127.0.0.1" not in base:
             return False
-        return "qwen3" in (self.profile.get("model") or "").lower()
+        return "thinking" in self._ollama_caps(self._model())
+
+    def _ollama_caps(self, model):
+        """Return the capabilities list for an Ollama model (cached). Falls back
+        to a name-based heuristic (qwen3/deepseek-r1/phi4-reasoning/... -> has
+        thinking) if /api/show is unavailable (old Ollama, cold model, etc.)."""
+        if model in self._caps_cache:
+            return self._caps_cache[model]
+        caps = []
+        base = (self.profile.get("base_url") or "").rstrip("/")
+        base = base[:-3] if base.endswith("/v1") else base
+        if base:
+            try:
+                req = urllib.request.Request(base + "/api/show",
+                    data=json.dumps({"name": model}).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    caps = (json.loads(r.read()) or {}).get("capabilities") or []
+            except Exception:
+                caps = []   # fall through to heuristic
+        if not caps:
+            # name-based fallback (only when /api/show is unavailable): the
+            # confirmed Ollama thinking-protocol families. Other reasoning
+            # models (deepseek-r1, phi4-reasoning, ...) are detected
+            # authoritatively by /api/show when actually pulled, so the
+            # heuristic stays conservative to avoid sending think:false to a
+            # model whose Ollama build may reject it.
+            m = (model or "").lower()
+            if any(k in m for k in ("qwen3", "qwq")):
+                caps = ["thinking"]
+        self._caps_cache[model] = caps
+        return caps
 
     def _url(self):
         base = (self.profile.get("base_url") or "").rstrip("/")

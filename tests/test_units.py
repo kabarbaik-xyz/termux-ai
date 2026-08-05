@@ -1042,11 +1042,14 @@ class TestBackendResilience(_TmpHome):
         self.assertIn("Already up to date", out)
 
     def test_native_ollama_shim_detection_and_mapping(self):
-        """Local qwen3 on Ollama routes through the native /api/chat shim with
-        think:false (the /v1 compat endpoint ignores `think`, and qwen3's
-        thinking mode burns minutes of phone CPU). Remote/non-qwen3/disabled
-        stay on the OpenAI path."""
+        """A LOCAL Ollama model that reports a `thinking` capability routes
+        through the native /api/chat shim with think:false (the /v1 compat
+        endpoint ignores `think`, and reasoning models burn minutes of phone
+        CPU). Detection is capability-based (model-agnostic), not name-based."""
+        # thinking-capable local model -> native path (seed the caps cache to
+        # avoid a live /api/show network call during the test)
         b = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        b._caps_cache["qwen3:1.7b"] = ["completion", "tools", "thinking"]
         self.assertTrue(b._native_ollama())
         self.assertEqual(b._url(), "http://localhost:11434/api/chat")
         d = b._payload([{"role": "user", "content": "hi"}], True, tools=[{"type": "function"}], temperature=0.3, max_tokens=512)
@@ -1061,16 +1064,39 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(ch["delta"]["content"], "x")
         self.assertEqual(ch["delta"]["tool_calls"][0]["function"]["arguments"], '{"path": "."}')
         self.assertEqual(ch["finish_reason"], "stop")
-        # remote -> OpenAI path
+        # remote (even a thinking model) -> OpenAI path
         b2 = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "https://api.openai.com/v1", "model": "qwen3:1.7b"})
         self.assertFalse(b2._native_ollama())
         self.assertEqual(b2._url(), "https://api.openai.com/v1/chat/completions")
-        # non-qwen3 local -> OpenAI path
+        # local NON-thinking model -> OpenAI path (no native shim needed)
         b3 = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
+        b3._caps_cache["llama3.2"] = ["completion", "tools"]
         self.assertFalse(b3._native_ollama())
-        # config disabled -> OpenAI path
+        # config disabled -> OpenAI path even for a thinking model
         b4 = m.OpenAICompatible({"ollama_no_think": False}, "t", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
         self.assertFalse(b4._native_ollama())
+
+    def test_ollama_caps_fallback_heuristic_and_cache(self):
+        """When /api/show is unavailable (cold model / old Ollama), known
+        reasoning-model families fall back to the thinking heuristic; the
+        capability query is cached so it runs at most once per model."""
+        b = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "http://localhost:11434/v1", "model": "x"})
+        with um.patch("urllib.request.urlopen", side_effect=Exception("no server")):
+            # qwen3/qwq families are confirmed Ollama thinking-protocol models
+            self.assertEqual(b._ollama_caps("qwen3:1.7b"), ["thinking"])
+            self.assertEqual(b._ollama_caps("qwq:32b"), ["thinking"])
+            # other models stay empty via the conservative heuristic (detected
+            # authoritatively by /api/show when actually pulled instead)
+            self.assertEqual(b._ollama_caps("deepseek-r1:1.5b"), [])
+            self.assertEqual(b._ollama_caps("granite4.1:3b"), [])
+            self.assertEqual(b._ollama_caps("llama3.2:3b"), [])
+        # cached: a 2nd query for an already-seen model must NOT hit the network
+        calls = {"n": 0}
+        def boom(*a, **k):
+            calls["n"] += 1; raise Exception("should not be called")
+        with um.patch("urllib.request.urlopen", side_effect=boom):
+            b._ollama_caps("qwen3:1.7b")   # already cached above
+        self.assertEqual(calls["n"], 0)
 
     def test_native_ollama_normalizes_tool_call_arguments(self):
         """Assistant tool_calls accumulated by the streaming tool loop carry
