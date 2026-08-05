@@ -443,6 +443,8 @@ Two run modes (`mode:` in front-matter):
 
 Bundled example skills ship in the repo's [`skills/`](skills/) directory for reference; `/skill seed` copies them into your skills dir.
 
+**`brainstorm`** (session) — a two-phase thinking partner: diverges on ideas/angles/risks, then converges into a **compressed blueprint** (`docs/brainstorm-blueprint.md`, ~4 KB) carrying the *decisions*, not the prose. Hand the blueprint to a bigger/cloud model to expand — decisions cost tokens locally, prose is written once by the cloud model. Activate `/skill brainstorm`, then e.g. *"ideas for a habit tracker"*; then `/backend opencode` + the hand-off prompt from the blueprint.
+
 ### Sample output documents
 
 The `docs/` folder contains **real outputs** produced by AI skills running on termux-ai's own codebase — these demonstrate what each skill produces:
