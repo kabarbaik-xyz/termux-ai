@@ -52,24 +52,18 @@ Implemented: `atexit.register(lambda t=target: shutil.rmtree(t, ignore_errors=Tr
 | Foreign keys | `ON` | ✅ Referential integrity enforced |
 | File permissions | `0o600` | ✅ Owner-only access |
 | Parameterized queries | ✅ All queries use `?` placeholders | ✅ No SQL injection risk |
-| Encryption | ❌ None | ⚠️ Acceptable for single-user Termux; FDE recommended at OS level |
+| Secure delete | `ON` (v7.1.1) | ✅ Freed pages zero-filled: deleted chats unrecoverable from the file |
+| Encryption | ❌ None | ⚠️ Accepted risk — see H-3 decision below |
 
-### Recommendation H-3: Enable SQLCipher (Optional)
+### Recommendation H-3: Enable SQLCipher — ⬜ DECLINED (documented, v7.1.1)
 
-For users storing sensitive conversation data, offer optional SQLCipher encryption:
+**Decision:** not implementing SQLCipher. Rationale:
 
-```python
-# In db.py, detect SQLCipher availability:
-try:
-    import pysqlcipher3.dbapi2 as sqlcipher
-    conn = sqlcipher.connect(DB_FILE)
-    conn.execute(f"PRAGMA key = '{passphrase}'")
-except ImportError:
-    import sqlite3
-    conn = sqlite3.connect(DB_FILE)
-```
+1. **Android FDE covers it** — `~/.config/termux-ai/` lives on the `/data` partition, which Android encrypts at rest; the database is already encrypted at the OS level.
+2. **Dependency weight** — `pysqlcipher3` needs native compilation, breaking the stdlib-only design for marginal benefit on a single-user device.
+3. **Key-management problem** — a passphrase stored in plaintext config next to the DB would be security theater; an OS keyring (Android Keystore via termux-api) is out of scope for a CLI.
 
-**Priority:** Low — full-disk encryption on Android covers this.
+**Partial mitigation shipped instead (v7.1.1):** `PRAGMA secure_delete=ON` zero-fills freed pages, so deleted conversations cannot be recovered from the database file even by someone with file access (complements — but does not replace — FDE).
 
 ---
 
@@ -185,7 +179,7 @@ Termux AI has no cloud security groups, but the **Plan-mode allowlist functions 
 |----|----------|----------------|--------|--------|
 | H-1 | Medium | Secure history file with `_secure_file(0o600)` | Trivial (1 line) | ✅ DONE (v7.1.0) |
 | H-2 | Low | Clean up clone_repo temp dirs on session exit | Low (5 lines) | ✅ DONE (v7.1.0) |
-| H-3 | Low | Optional SQLCipher for encrypted DB | Medium (feature flag) | ⬜ Optional (FDE covers on Android) |
+| H-3 | Low | Optional SQLCipher for encrypted DB | Medium (feature flag) | ⬜ **DECLINED** — Android FDE covers at-rest; `secure_delete=ON` shipped instead |
 | H-4 | Medium | Resolve DNS hostnames in SSRF check (V-01) | Low (10 lines) | ✅ DONE (v7.1.0) |
 | H-5 | Medium | Warn when storing API keys in config.json | Trivial (3 lines) | ✅ DONE (v7.1.1) |
 | H-6 | Low | Add optional fetch_url egress allowlist | Low (5 lines) | ⬜ Optional |

@@ -8,6 +8,7 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.execute("PRAGMA secure_delete=ON")  # zero freed pages: deleted chats unrecoverable from the file
         self._migrate_schema()
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
