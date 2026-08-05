@@ -171,7 +171,7 @@ Additionally, consider an explicit user-configurable allowlist for directories t
 
 ---
 
-## V-04 — API Keys Stored in Plaintext config.json
+## V-04 — API Keys Stored in Plaintext config.json  ✅ REMEDIATED (v7.1.1)
 
 | Field | Value |
 |-------|-------|
@@ -187,6 +187,8 @@ Additionally, consider an explicit user-configurable allowlist for directories t
 API keys for OpenAI/Anthropic backends are stored in `config.json` in cleartext. The file is mode `0o600` (owner read/write only), which mitigates multi-user risk, but any process running as the Termux user can read it.
 
 ### Remediation (Options)
+
+> **Status (v7.1.1):** Option 1 implemented — `App._warn_plaintext_key()` now warns on `/setup`, `/profile set <name>.api_key`, `/profile add`, and `/config set ...api_key` when a real key is persisted, suggesting the env var. See [infra-hardening.md](infra-hardening.md) H-5.
 
 1. **Prefer env vars** (already supported): document `TERMUX_AI_API_KEY` / `OPENAI_API_KEY` as the recommended method.
 2. **Platform keystore**: use Android Keystore via `termux-api` for key storage [verify: API availability].

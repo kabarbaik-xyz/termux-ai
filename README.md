@@ -451,7 +451,7 @@ The `docs/` folder contains **real outputs** produced by AI skills running on te
 |----------|-------|-------------|
 | [`docs/code-graph.md`](docs/code-graph.md) | `/graphify` | Code structure map: definitions, dependency graph |
 | [`docs/security-assessment.md`](docs/security-assessment.md) | `pentest` | Executive summary, risk rating, scope, methodology |
-| [`docs/vulnerabilities.md`](docs/vulnerabilities.md) | `pentest` | 14 findings (V-01–V-14); **4 remediated** ✅ |
+| [`docs/vulnerabilities.md`](docs/vulnerabilities.md) | `pentest` | 14 findings (V-01–V-14); **5 remediated** ✅ |
 | [`docs/remediation-plan.md`](docs/remediation-plan.md) | `pentest` | Prioritized roadmap (quick wins → strategic) |
 | [`docs/dependency-audit.md`](docs/dependency-audit.md) | `pentest` | Third-party package CVE analysis |
 | [`docs/infra-hardening.md`](docs/infra-hardening.md) | `pentest` | IaC/config misconfigs with CIS/CSF references |

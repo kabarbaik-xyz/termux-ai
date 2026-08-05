@@ -4,7 +4,7 @@
 **Date:** 2025-01-XX  
 **Strategy:** Quick wins first (low effort, high value), then strategic improvements.
 
-**Update (v7.1.0):** ✅ V-01, V-03, V-06, V-07 have been remediated. See status column below.
+**Update (v7.1.1):** ✅ V-01, V-03, V-04, V-06, V-07 have been remediated. See status column below.
 
 ---
 
@@ -58,7 +58,7 @@ These are trivial code changes that immediately reduce risk with no behavioral c
 | # | Finding | Action | File | Effort | Impact |
 |---|---------|--------|------|--------|--------|
 | 1 | V-07 | Add `_secure_file(HISTORY_FILE)` after `readline.write_history_file()` | `src/app.py` | 1 line | Eliminates residual file permission gap | **✅ DONE** |
-| 2 | V-04 | Add warning in `/setup` when storing API key in config.json | `src/app.py` (`_cmd_setup`) | 3 lines | Encourages env var usage |
+| 2 | V-04 | Add warning in `/setup` when storing API key in config.json | `src/app.py` (`_cmd_setup`) | 3 lines | Encourages env var usage | **✅ DONE (v7.1.1)** |
 | 3 | V-06 | Register clone_repo temp dirs with `atexit` for cleanup | `src/tools.py` | 5 lines | Prevents disk accumulation | **✅ DONE** |
 | 4 | V-09 | Document that `GITHUB_TOKEN` is auto-attached to api.github.com requests | `docs/` | Documentation only | User awareness |
 

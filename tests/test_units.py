@@ -324,6 +324,41 @@ class TestConfirmStopsSpinner(_TmpHome):
         with um.patch("builtins.input", return_value="n"):
             self.assertFalse(app._continue_fn(12, 24))
 
+    def test_plaintext_api_key_warns_in_profile(self):
+        """H-5/V-04: storing a real API key in config.json must warn and
+        suggest the env var; local placeholders must not warn."""
+        app = m.App(); app.quiet = True
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app._cmd_profile(["set", "openai.api_key", "sk-real-12345"])
+        finally:
+            sys.stdout = old
+        out = buf.getvalue()
+        self.assertIn("TERMUX_AI_API_KEY", out)          # env var suggested
+        self.assertIn("plaintext", out)
+        # local placeholder key must NOT warn
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app._cmd_profile(["set", "ollama.api_key", "ollama"])
+        finally:
+            sys.stdout = old
+        self.assertNotIn("plaintext", buf.getvalue())
+
+    def test_plaintext_api_key_warns_in_setup_wizard(self):
+        app = m.App(); app.quiet = True
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app._warn_plaintext_key("anthropic", "sk-ant-real")
+        finally:
+            sys.stdout = old
+        self.assertIn("ANTHROPIC_API_KEY", buf.getvalue())
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app._warn_plaintext_key("ollama", "ollama")
+        finally:
+            sys.stdout = old
+        self.assertEqual(buf.getvalue(), "")
+
     def test_stream_chat_stops_spinner_on_empty_reply(self):
         # The reported bug: an empty/broken reply streams no events, so the
         # spinner was never stopped and stacked with the next prompt.

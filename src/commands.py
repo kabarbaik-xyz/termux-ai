@@ -257,12 +257,15 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         elif args[0] == "set" and len(args) >= 3:
             key, val = args[1], " ".join(args[2:])
             self.cfg.set_path(f"backends.{key}", parse_value(val))
+            if key.endswith(".api_key"):
+                self._warn_plaintext_key(key.split(".")[-2] if "." in key else "", val)
             self.success(f"Set {key} = {val}")
             self.backend = get_backend(self.cfg)
         elif args[0] == "add" and len(args) >= 4:
             name, base, model = args[1], args[2], args[3]
             key = args[4] if len(args) > 4 else ""
             self.cfg.set_path(f"backends.{name}", {"base_url": base, "model": model, "api_key": key})
+            self._warn_plaintext_key(name, key)
             self.success(f"Added profile '{name}'.")
         else:
             self.warn("Invalid profile command.")
@@ -380,6 +383,8 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             key = args[1]
             val = parse_value(" ".join(args[2:]))
             self.cfg.set_path(key, val)
+            if key.endswith(".api_key"):
+                self._warn_plaintext_key(key.split(".")[-2] if "." in key else "", val)
             if key.split(".")[0] in ("backend", "backends"):
                 try: self.backend = get_backend(self.cfg)
                 except Exception as e: self.err(str(e))

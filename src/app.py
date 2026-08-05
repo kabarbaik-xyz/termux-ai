@@ -61,6 +61,17 @@ class App:
             return [m["name"] for m in data.get("models", [])]
         except Exception: return []
 
+    def _warn_plaintext_key(self, name, key):
+        """H-5 / V-04: warn when a real API key is persisted to config.json
+        (0o600 but plaintext) instead of an environment variable."""
+        if not key or not isinstance(key, str):
+            return
+        if key.strip().lower() in ("ollama", "placeholder", "none"):
+            return  # local placeholder, not a secret
+        env = "ANTHROPIC_API_KEY" if "anthropic" in (name or "").lower() else "TERMUX_AI_API_KEY"
+        self.warn(f"Storing API key for '{name}' in config.json (plaintext, 0o600). "
+                  f"Consider setting the {env} environment variable instead and leaving the profile key empty.")
+
     def _run_setup(self, arg):
         print(f"\n{C.BOLD}{C.CYAN}=== Termux AI Setup Wizard ==={C.RESET}")
         print("Choose a backend to configure:")
@@ -90,6 +101,7 @@ class App:
             key = input("Enter API Key: ").strip()
             self.cfg.set_path(f"backends.{name}", {"base_url": base, "model": model, "api_key": key})
             self.cfg.set("backend", name)
+            self._warn_plaintext_key(name, key)
             self.info(f"Profile '{name}' configured!")
 
         elif choice == "3":
@@ -97,6 +109,7 @@ class App:
             model = input("Enter Model ID [claude-3-5-sonnet-20241022]: ").strip() or "claude-3-5-sonnet-20241022"
             self.cfg.set_path("backends.anthropic", {"base_url": "https://api.anthropic.com/v1", "model": model, "api_key": key})
             self.cfg.set("backend", "anthropic")
+            self._warn_plaintext_key("anthropic", key)
             self.info("Anthropic configured!")
         else:
             self.warn(f"Invalid choice '{choice}'. Setup cancelled.")
