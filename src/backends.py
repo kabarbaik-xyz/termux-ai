@@ -603,6 +603,11 @@ class OpenAICompatible(Backend):
         mt = max_tokens if max_tokens is not None else self.c.get("max_tokens", 4096)
         if self._native_ollama():
             msgs = self._native_messages(msgs)
+            # Ollama-specific max-tokens override so a low local cap (slow phone
+            # CPU) doesn't bleed into cloud (config: ollama_max_tokens).
+            omt = self.c.get("ollama_max_tokens") or 0
+            if omt and max_tokens is None:
+                mt = omt
         d = {"model": self._model(), "messages": msgs, "stream": stream}
         if tools is not None:
             d["tools"] = tools
@@ -746,8 +751,9 @@ class OpenAICompatible(Backend):
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp,
-                              max_tokens=self.c.get("max_tokens", 4096))
+            # max_tokens is read inside _payload so the ollama_max_tokens override
+            # (local-only cap) can apply without bleeding into cloud backends.
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""

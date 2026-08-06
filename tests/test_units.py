@@ -970,6 +970,29 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(st("plain"), [("text", "plain")])
         self.assertEqual(st(""), [])
 
+    def test_ollama_max_tokens_is_local_only_no_cloud_leak(self):
+        """max_tokens is global (read by cloud + Anthropic too), so a low cap set
+        for a slow phone-CPU model would cripple cloud replies. ollama_max_tokens
+        overrides it on the native path ONLY -- cloud keeps its own max_tokens."""
+        # local: override applies
+        loc = m.OpenAICompatible({"ollama_no_think": True, "max_tokens": 8192, "ollama_max_tokens": 2048},
+                                "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        loc._caps_cache["qwen3:1.7b"] = ["thinking"]
+        d = loc._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertEqual(d["options"]["num_predict"], 2048)
+        # cloud: same config, override IGNORED
+        cloud = m.OpenAICompatible({"max_tokens": 8192, "ollama_max_tokens": 2048},
+                                   "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        d2 = cloud._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertEqual(d2["max_tokens"], 8192)
+        self.assertNotIn("options", d2)
+        # local with override unset -> falls back to max_tokens
+        loc2 = m.OpenAICompatible({"ollama_no_think": True, "max_tokens": 8192, "ollama_max_tokens": 0},
+                                  "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        loc2._caps_cache["qwen3:1.7b"] = ["thinking"]
+        d3 = loc2._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertEqual(d3["options"]["num_predict"], 8192)
+
     def test_cloud_path_is_byte_identical_to_pre_change(self):
         """Regression guard: every local-Ollama optimization (native shim,
         think:false, keep_alive, compact schemas, ThinkFilter, NDJSON) must be

@@ -441,6 +441,7 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `stream` | `true` | Stream responses |
 | `ollama_no_think` | `true` | For a LOCAL **reasoning model** on Ollama (any model that reports a `thinking` capability — qwen3, qwq, deepseek-r1 if Ollama marks it, etc.): route through the native `/api/chat` endpoint with `think:false`. The OpenAI-compat `/v1` endpoint ignores `think`, and reasoning models burn minutes of phone CPU before answering (measured **247s → 10s** on qwen3). Auto-detected per-model via Ollama's `/api/show` capabilities; no effect on cloud backends or non-thinking models. |
 | `ollama_keep_alive` | `30m` | Keep the model resident between requests so a slow tool mid-skill (graphify/fetch can take minutes) doesn't force a ~30s cold reload on the next step — the #1 cause of "stuck in thinking". Ollama's default ~5-min idle unload is too short for multi-step skills. Set `0` to disable. |
+| `ollama_max_tokens` | `0` | Ollama-only max-generation cap (0 = use `max_tokens`). Set low (e.g. `2048`) for a slow phone CPU **without** lowering cloud's `max_tokens` — `max_tokens` is global and would otherwise cap your cloud replies too. |
 | `num_ctx` | `0` | Optional Ollama context-length override (0 = Ollama default). Lower this on memory-constrained devices, e.g. `4096`. |
 | `show_tokens` | `true` | Show token count per reply |
 | `tools_enabled` | `false` | BUILD mode on/off |

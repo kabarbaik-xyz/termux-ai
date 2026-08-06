@@ -788,6 +788,7 @@ class Config:
         "retry_delay": 1.0,
         "ollama_no_think": True,   # qwen3 on local Ollama: disable thinking via native API (the /v1 compat endpoint ignores `think` and qwen3 burns minutes of phone CPU thinking)
         "ollama_keep_alive": "30m", # keep the model loaded between requests so a slow tool (graphify, fetch) mid-skill doesn't force a ~30s cold reload (Ollama's default ~5min idle unload)
+        "ollama_max_tokens": 0,    # Ollama-only max generation cap (0 = use max_tokens). Set low (e.g. 2048) for slow phone CPU WITHOUT lowering cloud's max_tokens
         "num_ctx": 0,              # optional Ollama context-length override (0 = Ollama default)
         "fold_long_blocks": True,
         "fold_head": 8,
@@ -2110,6 +2111,11 @@ class OpenAICompatible(Backend):
         mt = max_tokens if max_tokens is not None else self.c.get("max_tokens", 4096)
         if self._native_ollama():
             msgs = self._native_messages(msgs)
+            # Ollama-specific max-tokens override so a low local cap (slow phone
+            # CPU) doesn't bleed into cloud (config: ollama_max_tokens).
+            omt = self.c.get("ollama_max_tokens") or 0
+            if omt and max_tokens is None:
+                mt = omt
         d = {"model": self._model(), "messages": msgs, "stream": stream}
         if tools is not None:
             d["tools"] = tools
@@ -2253,8 +2259,9 @@ class OpenAICompatible(Backend):
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
             temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp,
-                              max_tokens=self.c.get("max_tokens", 4096))
+            # max_tokens is read inside _payload so the ollama_max_tokens override
+            # (local-only cap) can apply without bleeding into cloud backends.
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
@@ -4014,9 +4021,10 @@ class App:
             self.info(f"  Set with: {C.CYAN}/config set num_ctx {sugg}{C.RESET}")
         # max_tokens heads-up: a high cap on a slow phone CPU is the other half
         # of "stuck in thinking" (8192 tokens @ ~6 tok/s = ~20 min worst case).
+        # Suggest the LOCAL-ONLY override so it doesn't cap cloud backends.
         mt = self.cfg.get("max_tokens", 4096) or 4096
         if mt > 2048:
-            self.info(f"max_tokens: {mt} \u2014 high for phone CPU. Lower for snappier replies: {C.CYAN}/config set max_tokens 2048{C.RESET}")
+            self.info(f"max_tokens: {mt} \u2014 high for phone CPU. Cap local only (cloud unaffected): {C.CYAN}/config set ollama_max_tokens 2048{C.RESET}")
 
     def _cmd_backend(self, args):
         if not args:

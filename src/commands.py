@@ -268,9 +268,10 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             self.info(f"  Set with: {C.CYAN}/config set num_ctx {sugg}{C.RESET}")
         # max_tokens heads-up: a high cap on a slow phone CPU is the other half
         # of "stuck in thinking" (8192 tokens @ ~6 tok/s = ~20 min worst case).
+        # Suggest the LOCAL-ONLY override so it doesn't cap cloud backends.
         mt = self.cfg.get("max_tokens", 4096) or 4096
         if mt > 2048:
-            self.info(f"max_tokens: {mt} \u2014 high for phone CPU. Lower for snappier replies: {C.CYAN}/config set max_tokens 2048{C.RESET}")
+            self.info(f"max_tokens: {mt} \u2014 high for phone CPU. Cap local only (cloud unaffected): {C.CYAN}/config set ollama_max_tokens 2048{C.RESET}")
 
     def _cmd_backend(self, args):
         if not args:
