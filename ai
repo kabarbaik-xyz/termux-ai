@@ -879,7 +879,7 @@ class Tools:
         {"type": "function", "function": {"name": "read_file", "description": "Read file contents. Optional start/end are 1-based LINE numbers (inclusive) for reading a specific span of a large file; without them the first part of the file is returned.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "start": {"type": "integer", "description": "1-based line to start reading from"}, "end": {"type": "integer", "description": "1-based line to read up to (inclusive)"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "write_file", "description": "Write content to a file. Set append=true to ADD to an existing file instead of overwriting - use this to build LARGE files in sections so no single call exceeds the output token limit.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}}},
         {"type": "function", "function": {"name": "list_files", "description": "List files in a directory. Set recursive=true to map the whole tree (auto-skips dependency/VCS/build dirs like node_modules, .git, __pycache__, dist).", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}}},
-        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+        {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer", "description": "Seconds to wait before killing the command (default 30, max 600). Set HIGHER for slow commands (npm install, builds, test suites) so they finish in ONE call instead of polling with sleep — each call is one agentic iteration, and polling wastes your step budget."}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "clone_repo", "description": "Clone a public git repo (HTTPS only) into an isolated temp dir and return the local path, so you can read/list/search/edit its files locally. BUILD MODE only. depth defaults to 1 (shallow, fast); set 0 for full history.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "depth": {"type": "integer", "default": 1}}, "required": ["url"]}}},
@@ -1095,7 +1095,10 @@ class Tools:
         turns thrashing on blocked commands). Built from the live allowlist."""
         if build_mode:
             return ("Run a shell command and return stdout/stderr. BUILD MODE: any command "
-                    "may run after the user approves. Say what you intend, then call.")
+                    "may run after the user approves. Say what you intend, then call. "
+                    "For slow commands (npm install, builds, tests) set `timeout` (seconds, "
+                    "max 600) so they finish in ONE call — do NOT background-and-poll with "
+                    "sleep, each call is an iteration and polling wastes your step budget.")
         allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
         git_ro = ", ".join(sorted(Tools.PLAN_GIT_RO))
         if compact:
@@ -1471,18 +1474,30 @@ class Tools:
                                 "similar (interpreters, redirects, &&/;/||, mutating commands are all "
                                 "blocked). Reformulate using only the allowed list, or ask the user to "
                                 "enable Build mode (/tools on)." % (reason, allowed))
-                    return Tools._run_plan(cmd_str)
-                # Build mode: full shell, always user-approved first.
+                    return Tools._run_plan(cmd_str, timeout=min(int(args.get("timeout") or 30), 120))
+                # Build mode: full shell, always user-approved first. The model can
+                # raise the per-call timeout for slow commands (npm install, builds,
+                # tests) so they finish in ONE call instead of polling with sleep
+                # (each poll burns an agentic iteration -> runaway-loop stop).
+                timeout = max(1, min(int(args.get("timeout") or 30), 600))
                 try:
                     p = subprocess.Popen(cmd_str, shell=True, stdout=subprocess.PIPE,
                                          stderr=subprocess.PIPE, text=True, start_new_session=True)
                     try:
-                        out, err = p.communicate(timeout=30)
+                        out, err = p.communicate(timeout=timeout)
                     except subprocess.TimeoutExpired:
-                        try: os.killpg(p.pid, signal.SIGKILL)
-                        except OSError: pass
+                        # Graceful SIGTERM first, then SIGKILL: a hard kill
+                        # mid-write corrupts state (e.g. npm reify leaves a
+                        # half-installed node_modules).
+                        for sig, wait in ((signal.SIGTERM, 5), (signal.SIGKILL, 3)):
+                            try: os.killpg(p.pid, sig)
+                            except OSError: pass
+                            try:
+                                p.wait(timeout=wait); break
+                            except subprocess.TimeoutExpired:
+                                continue
                         out, err = p.communicate()
-                        return (out or "") + (err or "") + "\n…[command timed out after 30s]"
+                        return (out or "") + (err or "") + f"\n…[command timed out after {timeout}s]"
                     return (out or "") + (err or "")
                 except Exception as e:
                     return f"Error executing command: {e}"

@@ -826,6 +826,27 @@ class TestXlsxReader(_TmpHome):
 
 
 class TestWriteFileAppend(_TmpHome):
+    def test_run_command_timeout_param_and_graceful_kill(self):
+        """Long commands (npm install, builds) used to hit a hard 30s SIGKILL,
+        corrupting state and forcing the model into a sleep/poll loop that
+        burned the whole iteration budget. run_command now takes a `timeout`
+        (clamped to [1,600]) so they finish in one call, and kills with SIGTERM
+        first (SIGKILL mid-write corrupts e.g. npm reify)."""
+        app = m.App(); app.quiet = True
+        app.cfg.set("tools_enabled", True, save=False)   # BUILD mode
+        # short-timeout kill: sleep 30 with timeout=2 -> killed at 2s
+        r = m.Tools.run("run_command", {"command": "sleep 30", "timeout": 2}, build_mode=True)
+        self.assertIn("timed out after 2s", r)
+        # graceful: a TERM-trapping command can clean up before the SIGKILL
+        r2 = m.Tools.run("run_command", {"command":
+            "trap 'echo CLEANED; exit 0' TERM; sleep 30 & wait", "timeout": 2}, build_mode=True)
+        self.assertIn("CLEANED", r2)   # SIGTERM was delivered, trap ran
+        # default still works for a quick command
+        self.assertEqual(m.Tools.run("run_command", {"command": "echo ok"}, build_mode=True).strip(), "ok")
+        # timeout is in the schema so the model knows it can raise it
+        rc = next(t for t in m.Tools.get_schemas(True) if t["function"]["name"] == "run_command")
+        self.assertIn("timeout", rc["function"]["parameters"]["properties"])
+
     def test_append_adds_without_overwriting(self):
         app = m.App(); app.quiet = True
         # build_mode ON so write_file is allowed
