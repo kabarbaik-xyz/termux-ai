@@ -737,6 +737,11 @@ class OpenAICompatible(Backend):
         MAX_ITERATIONS = self.c.get("max_iterations", 50)
         _continue_every = self.c.get("continue_every", 10)
         next_prompt_at = _continue_every
+        # max_iterations is the UNATTENDED ceiling (one-shot/piped runs).
+        # In a live session each approved 'continue?' checkpoint EXTENDS it,
+        # so a long trusted task (install+build+test+fix) runs to completion
+        # instead of dying mid-build at 50.
+        iteration_cap = MAX_ITERATIONS
         MAX_FAILURES = 3
         consecutive_failures = 0
         REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
@@ -751,8 +756,8 @@ class OpenAICompatible(Backend):
 
         while True:
             iterations += 1
-            if iterations > MAX_ITERATIONS:
-                yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
+            if iterations > iteration_cap:
+                yield {"type": "notice", "content": "[Stopped: reached the iteration limit (%d). In a live session, approve the 'continue?' prompt to keep a long task going; /config set max_iterations N raises the unattended ceiling.]" % iteration_cap, "fatal": True}
                 return
 
             compacted = self._compact_iteration_history(msgs)
@@ -897,10 +902,14 @@ class OpenAICompatible(Backend):
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:
-                if continue_fn and not continue_fn(iterations, total_calls):
+                if continue_fn is None:
+                    next_prompt_at += _continue_every     # unattended: no prompt, no extension (MAX_ITERATIONS still caps runaway)
+                elif continue_fn(iterations, total_calls):
+                    next_prompt_at += _continue_every     # approved -> extend the ceiling so a long task runs to completion
+                    iteration_cap += _continue_every
+                else:
                     yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
                     return
-                next_prompt_at += _continue_every
 
 class AnthropicBackend(Backend):
     def __init__(self, cfg):
@@ -948,6 +957,11 @@ class AnthropicBackend(Backend):
         MAX_ITERATIONS = self.c.get("max_iterations", 50)
         _continue_every = self.c.get("continue_every", 10)
         next_prompt_at = _continue_every
+        # max_iterations is the UNATTENDED ceiling (one-shot/piped runs).
+        # In a live session each approved 'continue?' checkpoint EXTENDS it,
+        # so a long trusted task (install+build+test+fix) runs to completion
+        # instead of dying mid-build at 50.
+        iteration_cap = MAX_ITERATIONS
         MAX_FAILURES = 3
         consecutive_failures = 0
         REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
@@ -962,8 +976,8 @@ class AnthropicBackend(Backend):
 
         while True:
             iterations += 1
-            if iterations > MAX_ITERATIONS:
-                yield {"type": "notice", "content": "[Stopped: reached the maximum of %d iterations to prevent runaway loops.]" % MAX_ITERATIONS, "fatal": True}
+            if iterations > iteration_cap:
+                yield {"type": "notice", "content": "[Stopped: reached the iteration limit (%d). In a live session, approve the 'continue?' prompt to keep a long task going; /config set max_iterations N raises the unattended ceiling.]" % iteration_cap, "fatal": True}
                 return
 
             compacted = self._compact_iteration_history(payload)
@@ -1114,10 +1128,14 @@ class AnthropicBackend(Backend):
 
             # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
             if total_calls >= next_prompt_at:
-                if continue_fn and not continue_fn(iterations, total_calls):
+                if continue_fn is None:
+                    next_prompt_at += _continue_every     # unattended: no prompt, no extension (MAX_ITERATIONS still caps runaway)
+                elif continue_fn(iterations, total_calls):
+                    next_prompt_at += _continue_every     # approved -> extend the ceiling so a long task runs to completion
+                    iteration_cap += _continue_every
+                else:
                     yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
                     return
-                next_prompt_at += _continue_every
 
 def get_backend(cfg):
     name, profile = cfg.active_profile()

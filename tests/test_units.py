@@ -826,6 +826,38 @@ class TestXlsxReader(_TmpHome):
 
 
 class TestWriteFileAppend(_TmpHome):
+    def test_attended_long_task_extends_past_iteration_limit(self):
+        """A long multi-step task (install+build+test+fix) used to die at the hard
+        max_iterations ceiling even when the user kept approving 'continue?'.
+        Now each approved checkpoint EXTENDS the ceiling, so an attended task
+        runs to completion; an unattended run (no continue_fn) still hard-stops
+        (runaway protection for one-shot/piped mode)."""
+        def drive(continue_fn):
+            b = m.OpenAICompatible({"max_iterations": 6, "continue_every": 2}, "t",
+                                   {"base_url": "http://localhost", "model": "x"})
+            calls = {"n": 0}
+            def fs(url, d, h, notify=None, mapper=None, ndjson=False):
+                calls["n"] += 1
+                if calls["n"] > 15:
+                    yield {"choices": [{"delta": {}}]}; return
+                # UNIQUE args each call so the stuck-loop detector doesn't fire
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": f"t{calls['n']}",
+                    "type": "function", "function": {"name": "list_files",
+                    "arguments": '{"path":"./%d"}' % calls["n"]}}]}, "finish_reason": "tool_calls"}]}
+            with um.patch.object(b, "_stream_req", side_effect=fs), \
+                 um.patch.object(m.Tools, "run", side_effect=lambda n, a, bm, mr: "ok"):
+                evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}],
+                                              confirm_batch_fn=lambda c: True, continue_fn=continue_fn))
+            return calls["n"], any(e.get("fatal") for e in evts)
+        # attended + approved: runs PAST max_iterations=6 to completion
+        n_att, fatal_att = drive(lambda i, t: True)
+        self.assertGreater(n_att, 6)
+        self.assertFalse(fatal_att)
+        # unattended (no continue_fn): hard stop at the ceiling
+        n_un, fatal_un = drive(None)
+        self.assertLessEqual(n_un, 6)
+        self.assertTrue(fatal_un)
+
     def test_run_command_timeout_param_and_graceful_kill(self):
         """Long commands (npm install, builds) used to hit a hard 30s SIGKILL,
         corrupting state and forcing the model into a sleep/poll loop that
