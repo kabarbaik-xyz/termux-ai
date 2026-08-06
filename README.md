@@ -318,10 +318,15 @@ history earlier. The resume banner also flags a model change:
 ### Resilience & context
 
 Backend hiccups (connection drops, timeouts, 429/5xx) are retried automatically
-with exponential backoff (`retries`, `retry_delay` in config) — but only when
-nothing has been printed yet, so you never see duplicated output. If the stream
-drops mid-reply, nothing is saved and the app tells you to run `/retry`, which
-regenerates with the same context.
+with exponential backoff (`retries` default 3, `retry_delay` default 1s in
+config) — but only when nothing has been printed yet, so you never see
+duplicated output. Retry happens in **one layer** (the old code retried inside
+the HTTP call *and* again around the stream, compounding into up to 9 attempts
+on a persistent 429/503 — which made cloud backends slow and spammy); now it's
+exactly `retries` attempts total. **`Retry-After` is honored** on 429s, so a
+rate-limited gateway gets the wait it asked for instead of being hammered. If
+the stream drops mid-reply, nothing is saved and the app tells you to run
+`/retry`, which regenerates with the same context.
 
 Switching models never loses the conversation: `/model`, `/backend`, `/profile`
 and `/retry <model>` only swap the client — history lives in the local database

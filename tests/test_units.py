@@ -902,6 +902,52 @@ class TestBackendResilience(_TmpHome):
         super().setUp()
         self.b = m.Backend({})
 
+    def test_req_is_single_attempt_no_double_retry(self):
+        """_req must NOT retry internally -- it used to, compounding with
+        _stream_req/_with_retry into up to 9 attempts on a persistent 429/503
+        (the cause of slow, noisy cloud backends). Retry now lives in ONE place."""
+        b = m.OpenAICompatible({"retries": 3}, "t", {"base_url": "https://x.test/v1", "model": "m", "api_key": "k"})
+        calls = {"n": 0}
+        class E429(m.urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("https://x.test/v1/chat/completions", 429, "x", {"Retry-After": "5"}, io.BytesIO(b"{}"))
+        def boom(req, timeout=120):
+            calls["n"] += 1; raise E429()
+        with um.patch("urllib.request.urlopen", side_effect=boom):
+            with self.assertRaises(m.BackendError) as cm:
+                b._req("https://x.test/v1/chat/completions", {}, {})
+        self.assertEqual(calls["n"], 1)             # single attempt, no internal loop
+        self.assertTrue(cm.exception.transient)
+        self.assertEqual(cm.exception.retry_after, 5)  # Retry-After parsed
+
+    def test_stream_req_total_attempts_equal_retries_not_compounded(self):
+        """A persistent transient error must be tried exactly `retries` times
+        through _stream_req -- not retries x 3 (the old _req internal loop)."""
+        b = m.OpenAICompatible({"retries": 3, "retry_delay": 1.0}, "t", {"base_url": "https://x.test/v1", "model": "m", "api_key": "k"})
+        calls = {"n": 0}
+        class E503(m.urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("https://x.test/v1/chat/completions", 503, "x", {}, io.BytesIO(b"{}"))
+        def boom(req, timeout=120):
+            calls["n"] += 1; raise E503()
+        with um.patch("urllib.request.urlopen", side_effect=boom), um.patch("time.sleep"):
+            with self.assertRaises(m.BackendError):
+                list(b._stream_req("https://x.test/v1/chat/completions", {}, {}))
+        self.assertEqual(calls["n"], 3)             # 3 total, NOT 9
+
+    def test_retry_after_header_overrides_backoff_delay(self):
+        """When a 429 carries Retry-After, the retry waits that long instead of
+        the default exponential backoff (respects the server's rate-limit ask)."""
+        b = m.OpenAICompatible({"retries": 3, "retry_delay": 1.0}, "t", {"base_url": "https://x.test/v1", "model": "m", "api_key": "k"})
+        class E429(m.urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("https://x.test/v1/chat/completions", 429, "x", {"Retry-After": "7"}, io.BytesIO(b"{}"))
+        delays = []
+        with um.patch("urllib.request.urlopen", side_effect=lambda *a, **k: (_ for _ in ()).throw(E429())):
+            with self.assertRaises(m.BackendError):
+                list(b._stream_req("https://x.test/v1/chat/completions", {}, {}, notify=lambda a, t, d: delays.append(d)))
+        self.assertEqual(delays, [7, 7])            # Retry-After used, not 1/2
+
     def test_stream_req_retries_transient_then_succeeds(self):
         calls = {"n": 0}
         def fake_req(url, data, headers):

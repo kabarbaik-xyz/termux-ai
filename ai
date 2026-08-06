@@ -1509,10 +1509,23 @@ class Tools:
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 class BackendError(Exception):
     """Backend request failure. transient=True when a retry may succeed
-    (network blips, 429/5xx, timeouts, empty or dropped streams)."""
-    def __init__(self, message, transient=False):
+    (network blips, 429/5xx, timeouts, empty or dropped streams). retry_after
+    carries a server-suggested wait (from the Retry-After header) in seconds."""
+    def __init__(self, message, transient=False, retry_after=None):
         super().__init__(message)
         self.transient = transient
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(val):
+    """Parse an HTTP Retry-After header (integer seconds or HTTP-date) into a
+    clamped delay in seconds, or None when unparseable."""
+    if not val:
+        return None
+    s = str(val).strip()
+    if s.isdigit():
+        return min(int(s), 60)   # honor the server's ask, capped at 60s
+    return None   # HTTP-date form is rare for LLM gateways; fall back to backoff
 
 
 class ThinkFilter:
@@ -1594,35 +1607,28 @@ class Backend:
             if v: return v
         return ""
     def _req(self, url, data, headers, timeout=120):
+        """Single HTTP attempt. Retry/backoff is the CALLER's job (_stream_req
+        for streaming, _with_retry otherwise) — having _req retry too would
+        compound into up to 9 attempts on a persistent 429/503, which is what
+        made cloud backends slow and noisy. Classifies the error as transient
+        and parses Retry-After so the caller waits the right amount."""
         body = json.dumps(data).encode()
-        for attempt in range(3):
-            r = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            try:
-                return urllib.request.urlopen(r, timeout=timeout)
-            except urllib.error.HTTPError as e:
-                err_body = ""
-                try: err_body = e.read().decode()[:300]
-                except Exception: pass
-                transient = e.code in (408, 429, 500, 502, 503, 504)
-                if transient and attempt < 2:
-                    time.sleep(0.5 * (2 ** attempt))
-                    continue
-                raise BackendError(f"HTTP {e.code}: {err_body}", transient=transient)
-            except urllib.error.URLError as e:
-                if isinstance(e.reason, TimeoutError):
-                    if attempt < 2:
-                        time.sleep(0.5 * (2 ** attempt))
-                        continue
-                    raise BackendError("Request timed out.", transient=True)
-                if attempt < 2:
-                    time.sleep(0.5 * (2 ** attempt))
-                    continue
-                raise BackendError(f"Connection failed: {e.reason}", transient=True)
-            except TimeoutError:
-                if attempt < 2:
-                    time.sleep(0.5 * (2 ** attempt))
-                    continue
+        r = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            return urllib.request.urlopen(r, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try: err_body = e.read().decode()[:300]
+            except Exception: pass
+            transient = e.code in (408, 429, 500, 502, 503, 504)
+            ra = _parse_retry_after(e.headers.get("Retry-After")) if e.code == 429 else None
+            raise BackendError(f"HTTP {e.code}: {err_body}", transient=transient, retry_after=ra)
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, TimeoutError):
                 raise BackendError("Request timed out.", transient=True)
+            raise BackendError(f"Connection failed: {e.reason}", transient=True)
+        except TimeoutError:
+            raise BackendError("Request timed out.", transient=True)
 
     def _sse_lines(self, resp, idle_timeout=120, ndjson=False):
         buf = b""
@@ -1662,7 +1668,8 @@ class Backend:
 
     def _with_retry(self, fn):
         """Run fn() retrying transient errors with exponential backoff
-        (config: retries, retry_delay). Used for non-streaming requests."""
+        (config: retries, retry_delay). Honors a server Retry-After hint when
+        present. Used for non-streaming requests."""
         attempts = max(1, int(self.c.get("retries", 3)))
         base = float(self.c.get("retry_delay", 1.0))
         for attempt in range(1, attempts + 1):
@@ -1671,7 +1678,7 @@ class Backend:
             except Exception as e:
                 if not self._transient(e) or attempt >= attempts:
                     raise
-                time.sleep(base * (2 ** (attempt - 1)))
+                time.sleep(getattr(e, "retry_after", None) or (base * (2 ** (attempt - 1))))
 
     @staticmethod
     def _has_payload(evt):
@@ -1717,12 +1724,13 @@ class Backend:
             except Exception as e:
                 if emitted or not self._transient(e) or attempt >= attempts:
                     raise
-                delay = base * (2 ** (attempt - 1))
+                delay = getattr(e, "retry_after", None) or (base * (2 ** (attempt - 1)))
                 if notify:
                     notify(attempt, attempts, delay)
                 else:
+                    reason = str(e).split(":")[0][:50].strip() or "transient error"
                     sys.stderr.write(
-                        f"\n[network hiccup \u2014 retrying in {delay:.0f}s ({attempt}/{attempts})]\n")
+                        f"\n[retry {attempt}/{attempts} in {delay:.0f}s \u2014 {reason}]\n")
                     sys.stderr.flush()
                 time.sleep(delay)
 
