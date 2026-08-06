@@ -295,6 +295,50 @@ class TestServerManager(_TmpHome):
         app._execute_command("/server bogus")  # unknown action
 
 
+class TestMaxTokensMigrationHint(_TmpHome):
+    """max_tokens is global (cloud + Anthropic read it). Users who lowered it
+    for a local model (per the earlier /models advice) silently capped cloud.
+    A one-time startup hint detects that + a cloud backend and points them at
+    the local-only ollama_max_tokens -- without ever overriding their value."""
+
+    def _cfg(self, overrides, backends):
+        import json as _j
+        base = {"backend": "ollama", "max_tokens": 8192, "backends": backends}
+        base.update(overrides)
+        m.CONFIG_FILE.write_text(_j.dumps(base))
+
+    def _captured_validate(self):
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app = m.App(); app.quiet = False
+        finally:
+            sys.stdout = old
+        return buf.getvalue(), app
+
+    CLOUD = {"ollama": {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b", "api_key": "ollama"},
+             "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "sk-x"}}
+    LOCAL_ONLY = {"ollama": {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b", "api_key": "ollama"}}
+
+    def test_hint_fires_once_for_low_max_tokens_with_cloud(self):
+        self._cfg({"max_tokens": 2048}, self.CLOUD)
+        out, app = self._captured_validate()
+        self.assertIn("ALSO caps cloud", out)
+        self.assertTrue(app.cfg.get("_hint_ollama_mt"))
+        # 2nd startup with the persisted flag -> silent
+        out2, _ = self._captured_validate()
+        self.assertNotIn("ALSO caps cloud", out2)
+
+    def test_no_hint_at_default_max_tokens(self):
+        self._cfg({}, self.CLOUD)   # default 8192
+        out, _ = self._captured_validate()
+        self.assertNotIn("ALSO caps cloud", out)
+
+    def test_no_hint_when_only_local_backends(self):
+        self._cfg({"max_tokens": 2048}, self.LOCAL_ONLY)
+        out, _ = self._captured_validate()
+        self.assertNotIn("ALSO caps cloud", out)   # nothing to leak to
+
+
 class TestConfirmStopsSpinner(_TmpHome):
     """Regression: when the backend asks for tool approval, the spinner thread is
     still running (the callback fires before the event that stops it). The

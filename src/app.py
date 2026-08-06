@@ -60,6 +60,23 @@ class App:
             if free is not None and free < 2.0:
                 self.warn(f"Only {free:.1f} GB RAM free. A large local model may get killed by Android."
                           f" Try a smaller model or /config set num_ctx 2048.")
+        # One-time migration hint: max_tokens is GLOBAL (cloud + Anthropic read
+        # it too). Earlier /models advice suggested lowering it for slow local
+        # models -- which silently capped cloud replies. If a user did that and
+        # has a cloud backend, point them at the local-only ollama_max_tokens.
+        # (Shown once via a config flag; non-destructive -- we never override a
+        # user-set value, since it's indistinguishable from an intentional one.)
+        if not self.cfg.get("_hint_ollama_mt") and self.cfg.get("max_tokens", 8192) < 8192 \
+                and not getattr(self, "quiet", False):
+            has_cloud = any("localhost" not in (b.get("base_url") or "") and
+                            "127.0.0.1" not in (b.get("base_url") or "")
+                            for b in self.cfg.get("backends", {}).values())
+            if has_cloud:
+                self.warn(f"max_tokens is {self.cfg.get('max_tokens')} \u2014 this ALSO caps cloud backends "
+                          f"(GPT/Claude). If you lowered it for a local model, restore cloud with "
+                          f"{C.CYAN}/config set max_tokens 8192{C.RESET} and cap local separately with "
+                          f"{C.CYAN}/config set ollama_max_tokens 2048{C.RESET}.")
+            self.cfg.set("_hint_ollama_mt", True)
 
     def _get_ollama_models(self):
         try:
