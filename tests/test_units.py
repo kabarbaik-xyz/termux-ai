@@ -339,6 +339,46 @@ class TestMaxTokensMigrationHint(_TmpHome):
         self.assertNotIn("ALSO caps cloud", out)   # nothing to leak to
 
 
+class TestCliSkillArgs(_TmpHome):
+    """The --skill CLI flag activates comma-separated skills for one run.
+    Missing skills warn + confirm; declining exits, non-TTY continues."""
+
+    def _app(self):
+        app = m.App(); app.quiet = True; return app
+
+    def test_loads_real_comma_separated_skills(self):
+        app = self._app()
+        self.assertTrue(app._apply_skill_args("fullstack,python"))
+        names = {n for n, _ in app.active_session_skills}
+        self.assertEqual(names, {"fullstack", "python"})
+
+    def test_missing_skill_warns_and_continues_non_tty(self):
+        app = self._app()
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            ok = app._apply_skill_args("fullstack,ghostskill")
+        finally:
+            sys.stdout = old
+        self.assertTrue(ok)                                   # non-TTY -> continue
+        self.assertIn("fullstack", {n for n, _ in app.active_session_skills})
+        self.assertNotIn("ghostskill", {n for n, _ in app.active_session_skills})
+        self.assertIn("Skill not found: ghostskill", buf.getvalue())
+
+    def test_missing_skill_tty_decline_returns_false(self):
+        app = self._app()
+        with um.patch.object(m, "IS_TTY", True), \
+             um.patch.object(sys.stdin, "isatty", return_value=True), \
+             um.patch("builtins.input", return_value="n"):
+            self.assertFalse(app._apply_skill_args("ghostskill"))   # caller exits
+
+    def test_missing_skill_tty_accept_continues(self):
+        app = self._app()
+        with um.patch.object(m, "IS_TTY", True), \
+             um.patch.object(sys.stdin, "isatty", return_value=True), \
+             um.patch("builtins.input", return_value="y"):
+            self.assertTrue(app._apply_skill_args("fullstack"))
+
+
 class TestConfirmStopsSpinner(_TmpHome):
     """Regression: when the backend asks for tool approval, the spinner thread is
     still running (the callback fires before the event that stops it). The

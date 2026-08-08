@@ -818,6 +818,28 @@ class App:
         if isinstance(prof, dict):
             prof["model"] = model
 
+    def _apply_skill_args(self, skills_str):
+        """Activate comma-separated skills for this run (CLI --skill). Missing
+        skills warn + (in a TTY) ask to continue without; on decline return False
+        so the caller exits. Non-TTY runs warn and continue (can't prompt)."""
+        names = [n.strip() for n in (skills_str or "").split(",") if n.strip()]
+        missing = []
+        for n in names:
+            _meta, body = self.skills.load(n)
+            if body:
+                self.active_session_skills.append((n, body))
+            else:
+                missing.append(n)
+        if missing:
+            avail = ", ".join(nm for nm, _ in self.skills.list()) or "(none)"
+            self.warn(f"Skill not found: {', '.join(missing)}. Available: {avail}")
+            if IS_TTY and sys.stdin.isatty():
+                ans = input(f"\n{C.YELLOW}Continue without the missing skill(s)? [Y/n]{C.RESET} ").strip().lower()
+                if ans == "n":
+                    return False
+            # non-TTY: warn + continue (no prompt possible)
+        return True
+
     @staticmethod
     def _strip_code_fence(text):
         lines = text.strip().splitlines()

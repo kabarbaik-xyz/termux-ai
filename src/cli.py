@@ -11,7 +11,8 @@ def main():
                 "  ai -m gpt-4o \"what is TCP?\"     # override model\n"
                 "  ai -c \"compress folder to tar\"  # generate a shell command\n"
                 "  ai -j \"list 3 fruits\"           # ask for JSON\n"
-                "  cat error.log | ai \"explain\"    # pipe stdin into the prompt\n"),
+                "  cat error.log | ai \"explain\"    # pipe stdin into the prompt\n"
+                "  ai \"build a simple website\" --skill fullstack --tools on --process off\n"),
     )
     parser.add_argument("prompt", nargs="?", default=None,
                         help="one-shot prompt; omit to start the interactive REPL")
@@ -27,10 +28,24 @@ def main():
                         help="start a fresh session (do not resume)")
     parser.add_argument("-l", "--load", dest="load_cid", default=None, metavar="ID",
                         help="load a saved session by id before the REPL")
+    parser.add_argument("-s", "--skill", default=None, metavar="NAME[,NAME...]",
+                        help="activate comma-separated skill(s) for this run, e.g. --skill fullstack,pentest")
+    parser.add_argument("--tools", choices=["on", "off"], default=None,
+                        help="force Build (on) or Plan/off mode for this run (default: config tools_enabled)")
+    parser.add_argument("--process", choices=["on", "off", "auto"], default=None,
+                        help="override tool-call display for this run: on=compact, off=full, auto")
     args = parser.parse_args()
 
     app = App()
     app._override_model(args.model)
+    # Per-run overrides (in-memory only; use /config set to persist).
+    if args.tools:
+        app.cfg.set("tools_enabled", args.tools == "on", save=False)
+    if args.process:
+        app.cfg.set("compact_process", args.process, save=False)
+    if args.skill is not None:
+        if not app._apply_skill_args(args.skill):   # missing skill -> warn+confirm; decline exits
+            sys.exit(0)
     if args.load_cid:
         app._resume_mode = "load"; app._resume_arg = args.load_cid
     elif args.resume_new: app._resume_mode = "new"

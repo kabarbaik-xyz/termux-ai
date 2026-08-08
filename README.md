@@ -219,6 +219,24 @@ ai -m gpt-4o "what is TCP?"               # override model
 ai -j "hello"                               # JSON output
 ```
 
+### One-shot with skills + overrides
+
+Flags can be combined to run a task with a skill, force Build mode, and control
+ tool-call display — all per-run (your config is not changed; use `/config set`
+to persist):
+
+```bash
+ai "build a simple website" --skill fullstack --tools on --process off
+```
+
+| Flag | Values | Effect |
+|---|---|---|
+| `-s, --skill` | `NAME[,NAME...]` | Activate comma-separated skill(s) for this run (e.g. `--skill fullstack,pentest`). A missing skill warns and asks to continue without it (non-interactive runs warn and continue). |
+| `--tools` | `on` / `off` | Force **Build** (write allowed) or **Plan** (read-only) mode for this run — needed for one-shot tasks that create files, since the config default may be Plan mode. |
+| `--process` | `on` / `off` / `auto` | Override tool-call display for this run: `on`=compact (one line/step), `off`=full live output, `auto`=inline-then-compact. |
+
+These compose with everything else: `ai -m llama3.2 "..." --skill python --tools on`. In the interactive REPL the same controls are `/skill`, `/tools`, `/process`. 
+
 ### Piping input
 
 ```bash
