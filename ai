@@ -1984,6 +1984,19 @@ class Backend:
         return parts
 
     @staticmethod
+    def _asst_msg(content, calls, reasoning=""):
+        """Build an OpenAI assistant message. Reasoning models (DeepSeek / o1-class
+        via OpenAI-compat gateways like OpenRouter, opencode) stream `reasoning_content`
+        and REQUIRE it passed back on subsequent tool-call turns -- dropping it
+        yields HTTP 400 "The reasoning_content in the thinking mode must be passed
+        back to the API." Only attached when present (non-reasoning models send
+        none and are unaffected)."""
+        m = {"role": "assistant", "content": content, "tool_calls": calls}
+        if reasoning:
+            m["reasoning_content"] = reasoning
+        return m
+
+    @staticmethod
     def _trim_iteration_history(msgs, budget=30000):
         """Bound accumulated tool-result size for long agentic loops so context
         doesn't balloon. When the budget IS exceeded, trims by VALUE: cheap,
@@ -2293,6 +2306,7 @@ class OpenAICompatible(Backend):
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
+            reasoning_buf = ""   # reasoning models (deepseek/o1-class) require this passed back on tool-call turns
             tool_calls_buf = {}
             finish_reason = None
 
@@ -2304,6 +2318,8 @@ class OpenAICompatible(Backend):
                 if fr: finish_reason = fr
                 if delta.get("content"):
                     content_buf += delta["content"]
+                if delta.get("reasoning_content") or delta.get("reasoning"):
+                    reasoning_buf += delta.get("reasoning_content") or delta.get("reasoning") or ""
                 if delta.get("tool_calls"):
                     for tc in delta["tool_calls"]:
                         idx = tc.get("index", 0)
@@ -2341,7 +2357,7 @@ class OpenAICompatible(Backend):
                 # certainly incomplete (often parse to {}). Executing would just
                 # fail with "Path is missing" and the model would flail. Instead
                 # tell it to split the work into smaller writes and continue.
-                msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
+                msgs.append(self._asst_msg(content_buf, calls, reasoning_buf))
                 note = ("Your previous response was TRUNCATED by the output token limit "
                         "(finish_reason=length), so the tool-call arguments were incomplete. "
                         "Do NOT retry the same large call. Break big file writes into sections: "
@@ -2362,13 +2378,13 @@ class OpenAICompatible(Backend):
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
 
             if not confirm_batch_fn(norm_calls):
-                msgs.append({"role": "assistant", "content": content_buf, "tool_calls": calls})
+                msgs.append(self._asst_msg(content_buf, calls, reasoning_buf))
                 for c in calls:
                     msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": "Error: User declined to execute this batch."})
                 yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
                 continue
 
-            msg = {"role": "assistant", "content": content_buf, "tool_calls": calls}
+            msg = self._asst_msg(content_buf, calls, reasoning_buf)
             msgs.append(msg)
 
             total = len(calls)

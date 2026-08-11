@@ -1241,6 +1241,34 @@ class TestBackendResilience(_TmpHome):
         self.assertIn(("thinking", "secret reasoning"), segs)
         self.assertIn(("text", " Done."), segs)
 
+    def test_reasoning_content_passed_back_on_tool_turn(self):
+        """Reasoning models (deepseek/o1-class via OpenAI-compat gateways) stream
+        `reasoning_content` and the provider REQUIRES it on subsequent turns --
+        omitting it -> HTTP 400 "The reasoning_content in the thinking mode must
+        be passed back to the API." The assistant msg now carries it."""
+        b = m.OpenAICompatible({}, "t", {"base_url": "https://x.test/v1", "model": "big-pickle", "api_key": "k"})
+        captured = []
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
+            captured.append(json.loads(json.dumps(data)))
+            if len(captured) == 1:
+                yield {"choices": [{"delta": {"reasoning_content": "planning..."}, "finish_reason": None}]}
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                    "function": {"name": "list_files", "arguments": '{"path":"."}'}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
+             um.patch.object(m.Tools, "run", side_effect=lambda n, a, bm, mr: "f"):
+            list(b.chat_with_tools([{"role": "user", "content": "go"}], confirm_batch_fn=lambda c: True))
+        asst = [mm for mm in captured[1]["messages"] if mm.get("role") == "assistant"]
+        self.assertTrue(any(mm.get("reasoning_content") == "planning..." for mm in asst))
+
+    def test_non_reasoning_model_omits_reasoning_content(self):
+        """A normal model sends no reasoning_content; the assistant message must
+        NOT carry an empty reasoning_content field (keeps payloads clean)."""
+        self.assertNotIn("reasoning_content", m.Backend._asst_msg("hi", [], ""))
+        self.assertNotIn("reasoning_content", m.Backend._asst_msg("hi", [], None))
+        self.assertEqual(m.Backend._asst_msg("hi", [], "think")["reasoning_content"], "think")
+
     def test_identical_call_short_circuits_not_stops(self):
         """Repeating the exact same call returns 'already done' and keeps the
         model working -- it does NOT kill the task."""
