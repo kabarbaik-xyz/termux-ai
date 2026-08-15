@@ -664,6 +664,48 @@ class TestFetchUrl(_TmpHome):
     def test_web_search_empty_query(self):
         self.assertIn("Error: query is empty", m.Tools._web_search("  "))
 
+    def test_weather_returns_forecast(self):
+        """_weather geocodes the city (call 1) then pulls current + daily
+        forecast (call 2) and returns a concise readable summary."""
+        calls = {"n": 0}
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            class FakeResp:
+                _data = (b'{"results":[{"name":"Yogyakarta","country":"Indonesia",'
+                         b'"latitude":-7.80139,"longitude":110.36472}]}' if calls["n"] == 1 else
+                         b'{"current":{"temperature_2m":24.2,"relative_humidity_2m":77,'
+                         b'"apparent_temperature":27.5,"weather_code":3,"wind_speed_10m":3.6},'
+                         b'"daily":{"time":["2026-08-15","2026-08-16"],'
+                         b'"temperature_2m_max":[30.8,34.0],"temperature_2m_min":[21.4,21.4],'
+                         b'"weather_code":[51,55],"precipitation_probability_max":[2,22]}}')
+                def read(self, n=-1): return self._data
+                def geturl(self): return "http://open-meteo/"
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return FakeResp()
+        with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = m.Tools._weather("Yogyakarta", timeout=5)
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("Yogyakarta", out)
+        self.assertIn("Overcast", out)
+        self.assertIn("24.2 C", out)
+        self.assertIn("77%", out)
+        self.assertIn("2026-08-15", out)
+        self.assertIn("rain 2%", out)
+
+    def test_weather_empty_and_unknown(self):
+        self.assertIn("Error: city is empty", m.Tools._weather("  "))
+        def fake_urlopen(req, timeout=10):
+            class FakeResp:
+                _data = b'{"results":[]}'
+                def read(self, n=-1): return self._data
+                def geturl(self): return "http://open-meteo/"
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return FakeResp()
+        with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+            self.assertIn("No location found", m.Tools._weather("atlantis-xyz", timeout=5))
+
     def test_github_token_attached_for_api(self):
         os.environ["GITHUB_TOKEN"] = "ghp_test123"
         captured = {}
@@ -1782,6 +1824,27 @@ class TestBackendResilience(_TmpHome):
         c = m.OpenAICompatible({}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
         self.assertFalse(c._local_chat_model())
         self.assertEqual(c._tools_for([{"role": "user", "content": "what can I do for you?"}], True), "all")
+
+    def test_phase_nudge_web_vs_file(self):
+        """The gather nudge stays file-focused for file-read loops but tells a
+        web-only research loop (fetch/search/weather) to stop probing and answer."""
+        b = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        # file-only loop -> file-oriented "Context phase" message
+        streak, nudged, msg = b._phase_nudge(["read_file"], 4, False, 5)
+        self.assertEqual((streak, nudged), (5, True))
+        self.assertIn("Context phase", msg)
+        self.assertIn("read_file", msg)
+        # web-only loop -> web-oriented "Research phase" message
+        streak, nudged, msg = b._phase_nudge(["fetch_url"], 4, False, 5)
+        self.assertEqual((streak, nudged), (5, True))
+        self.assertIn("Research phase", msg)
+        self.assertNotIn("read_file", msg)
+        # mixed web+file -> file message wins (still a context loop)
+        streak, nudged, msg = b._phase_nudge(["read_file", "web_search"], 4, False, 5)
+        self.assertIn("Context phase", msg)
+        # an execution call resets the streak and clears the nudge latch
+        streak, nudged, msg = b._phase_nudge(["write_file"], 5, True, 5)
+        self.assertEqual(streak, 0)
 
     def test_warm_is_ollama_only_and_never_raises(self):
         """_warm() pre-loads the local model; remote backends are a no-op and

@@ -421,6 +421,8 @@ class App:
                 return f"run: {(a.get('command', ''))[:40]}"
             if name == "fetch_url":
                 return f"fetch {a.get('url', '?')[:40]}"
+            if name == "weather":
+                return f"weather {a.get('city', '?')}"
             if name == "graphify":
                 return f"graphify {a.get('path', '.')}"
             if name == "clone_repo":
@@ -758,8 +760,10 @@ class App:
                 "needs no files or commands, ANSWER DIRECTLY in plain text and do "
                 "NOT call any tool.\n"
                 "For factual questions you can't answer from memory, use web_search "
-                "to find sources. When you use web_search or fetch_url, reply with a "
-                "CONCISE SUMMARY in your own words \u2014 never paste raw page text.")
+                "or weather FIRST. Only call fetch_url on a URL that web_search "
+                "returned or that you are certain exists \u2014 never invent URLs with "
+                "placeholders like YOUR_API_KEY. Reply with a CONCISE SUMMARY in "
+                "your own words \u2014 never paste raw page text.")
 
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).

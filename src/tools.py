@@ -1,6 +1,6 @@
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 class Tools:
-    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "graphify"}
+    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
     # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
     # build noise (node_modules, .git, __pycache__, dist, ...) doesn't flood the
     # AI's context when it scans a local codebase. (AI can still read_file a
@@ -18,6 +18,7 @@ class Tools:
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "web_search", "description": "Search the web for up-to-date information (current events, weather, people, places, definitions, recent facts) and return the top results with titles, URLs, and snippets. Use this INSTEAD of guessing a URL for fetch_url when you don't know the exact page. Results come from Bing; Wikipedia is used as a fallback when Bing is unreachable.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+        {"type": "function", "function": {"name": "weather", "description": "Get current conditions and a 2-day forecast for a city or place (Open-Meteo, no API key). Use this for ANY weather question instead of searching the web or guessing URLs. Returns temperature, condition, humidity, wind, and daily high/low with rain chance.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
         {"type": "function", "function": {"name": "clone_repo", "description": "Clone a public git repo (HTTPS only) into an isolated temp dir and return the local path, so you can read/list/search/edit its files locally. BUILD MODE only. depth defaults to 1 (shallow, fast); set 0 for full history.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "depth": {"type": "integer", "default": 1}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "graphify", "description": "Scan a codebase directory and return a structured code graph: dependency graph (Mermaid), all function/class definitions, API endpoints, and data models. Call this FIRST to map the codebase structure before deep-diving into files. Zero dependencies, runs locally.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory to scan (default: current dir)"}, "mode": {"type": "string", "enum": ["all", "deps", "calls", "api", "models"], "description": "all=everything, deps=import graph, calls=definitions, api=endpoints, models=data schemas"}}, "required": ["path"]}}},
     ]
@@ -259,6 +260,7 @@ class Tools:
         "search_files": "Search text in files (grep).",
         "fetch_url": "Fetch a URL, return readable text (~500KB cap). Prefer over curl for URLs.",
         "web_search": "Search the web, return top results (titles, URLs, snippets). For up-to-date facts/news/weather.",
+        "weather": "Current conditions + 2-day forecast for a city (no API key). Use for weather questions.",
         "clone_repo": "Clone a public git repo to a temp dir. depth=0 for full history.",
         "graphify": "Code graph (deps, defs, API, models). Call first to map a codebase.",
         # run_command keeps its full description: the Plan-mode allowlist it
@@ -507,6 +509,82 @@ class Tools:
             lines.append("%d. %s\n   URL: %s" % (i, title, url))
             if snippet:
                 lines.append("   %s" % snippet[:240])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _weather(city, timeout=12):
+        """Current conditions + 2-day forecast for a city via Open-Meteo
+        (free, no API key): geocode the name, then pull current + daily data."""
+        city = (city or "").strip()
+        if not city:
+            return "Error: city is empty"
+        try:
+            req = urllib.request.Request(
+                "https://geocoding-api.open-meteo.com/v1/search?name="
+                + urllib.parse.quote(city) + "&count=1",
+                headers={"User-Agent": "termux-ai/%s (+CLI)" % __version__})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                g = json.loads(r.read().decode("utf-8", "replace"))
+            res = (g.get("results") or [])
+            if not res:
+                return "No location found for '%s'." % city
+            res = res[0]
+            name = res.get("name") or city
+            country = res.get("country") or ""
+            lat, lon = res.get("latitude"), res.get("longitude")
+        except Exception as e:
+            return "Error: could not locate '%s' (%s)" % (city, e)
+        try:
+            url = ("https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f"
+                   "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+                   "&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max"
+                   "&timezone=auto&forecast_days=2" % (lat, lon))
+            req = urllib.request.Request(url, headers={"User-Agent": "termux-ai/%s (+CLI)" % __version__})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            return "Error: could not fetch weather for '%s' (%s)" % (name, e)
+        WMO = {0: "Clear sky", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
+               45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Drizzle",
+               55: "Dense drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
+               61: "Light rain", 63: "Rain", 65: "Heavy rain",
+               66: "Freezing rain", 67: "Freezing rain", 71: "Light snow", 73: "Snow",
+               75: "Heavy snow", 77: "Snow grains", 80: "Light rain showers",
+               81: "Rain showers", 82: "Heavy rain showers", 85: "Snow showers",
+               86: "Snow showers", 95: "Thunderstorm", 96: "Thunderstorm with hail",
+               99: "Thunderstorm with heavy hail"}
+
+        def _desc(code):
+            return WMO.get(code, "Condition %s" % code)
+
+        def _fmt(v, sfx="", nd=1):
+            return (("%%.%df%%s" % nd) % (v, sfx)) if v is not None else "n/a"
+
+        cur = d.get("current") or {}
+        lines = ["Weather in %s%s:" % (name, (", " + country) if country else "")]
+        t = cur.get("temperature_2m")
+        if t is not None:
+            feels = cur.get("apparent_temperature")
+            tail = (" (feels like %s)" % _fmt(feels, " C")) if feels is not None else ""
+            lines.append("Now: %s, %s%s" % (_desc(cur.get("weather_code")), _fmt(t, " C"), tail))
+        h = cur.get("relative_humidity_2m")
+        w = cur.get("wind_speed_10m")
+        if h is not None or w is not None:
+            lines.append("Humidity: %s  Wind: %s" % (
+                ("%d%%" % h) if h is not None else "n/a",
+                ("%s km/h" % _fmt(w, "", 1)) if w is not None else "n/a"))
+        dl = d.get("daily") or {}
+        times = dl.get("time") or []
+        for i in range(min(2, len(times))):
+            def _g(k):
+                arr = dl.get(k) or []
+                return arr[i] if i < len(arr) else None
+            wc = _g("weather_code")
+            rain = _g("precipitation_probability_max")
+            lines.append("%s: %s, low %s / high %s, rain %s" % (
+                times[i], _desc(wc) if wc is not None else "n/a",
+                _fmt(_g("temperature_2m_min"), " C"), _fmt(_g("temperature_2m_max"), " C"),
+                ("%d%%" % rain) if rain is not None else "n/a"))
         return "\n".join(lines)
 
     # ---- graphify: native code-graph scanner (zero deps, stdlib only) ----
@@ -774,6 +852,8 @@ class Tools:
                 return Tools._fetch_url(args.get("url", ""))
             elif name == "web_search":
                 return Tools._web_search(args.get("query", ""))
+            elif name == "weather":
+                return Tools._weather(args.get("city", ""))
             elif name == "clone_repo":
                 return Tools._clone_repo(args.get("url", ""), args.get("depth", 1), build_mode)
             elif name == "graphify":

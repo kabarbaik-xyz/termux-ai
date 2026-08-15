@@ -369,19 +369,28 @@ class Backend:
         failure and consecutive-failure detection."""
         return (result or "").lstrip().lower().startswith("error")
 
-    CONTEXT_TOOLS = {"read_file", "list_files", "search_files", "fetch_url"}
+    CONTEXT_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather"}
+    FILE_TOOLS = {"read_file", "list_files", "search_files"}
+    WEB_TOOLS = {"fetch_url", "web_search", "weather"}
 
     def _phase_nudge(self, names, read_streak, phase_nudged, threshold):
         """Drive a gather-then-execute loop. After a just-executed batch, update
         the read-phase streak. Returns (new_streak, new_nudged, nudge_msg). When
         the model keeps READING batch after batch (no execution yet) and its
-        streak hits ``threshold``, return a message that tells it to batch the
-        remaining reads into ONE response and move to executing -- instead of
-        dribbling one read per iteration forever."""
+        streak hits ``threshold``, return a message that tells it to stop probing
+        and act -- instead of dribbling one read per iteration forever. Web-only
+        loops (fetch/search/weather) get their own 'you have enough, answer now'
+        message; file-read loops keep the batched-reads + execute message."""
         all_read = bool(names) and all(n in Backend.CONTEXT_TOOLS for n in names)
         if all_read:
             read_streak += 1
             if read_streak >= threshold and not phase_nudged:
+                if all(n in Backend.WEB_TOOLS for n in names):
+                    return read_streak, True, (
+                        f"[Research phase: {read_streak} consecutive iterations and you're still only probing the web. "
+                        "Stop fetching more URLs. Pick the ONE most relevant result you already have, summarize it "
+                        "in your own words, and ANSWER the user now. Only fetch again if a single targeted page "
+                        "would clearly answer the question.]")
                 return read_streak, True, (
                     f"[Context phase: {read_streak} consecutive iterations and you're still only reading. "
                     "Stop reading one file per step. Batch the remaining reads (read_file/list_files/search_files) "
@@ -954,7 +963,7 @@ class OpenAICompatible(Backend):
                 schemas = Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro")
             elif tools_sel == "web":
                 schemas = [s for s in Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro")
-                           if s["function"]["name"] in ("web_search", "fetch_url")]
+                           if s["function"]["name"] in ("web_search", "fetch_url", "weather")]
             else:
                 schemas = None
             d = self._payload(msgs, True, tools=schemas, temperature=temp)
