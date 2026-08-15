@@ -74,16 +74,63 @@ class Skills:
         return bool(re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name or "")) and len(name) <= 64
 
     def seed(self):
-        """Copy the bundled example skills into the user's skills dir (never
-        overwriting existing files). Returns the list of names written."""
+        """Copy the bundled example skills into the user's skills dir AND
+        AUTO-UPGRADE already-seeded copies when the bundled version changes
+        (so skill improvements ship via /update with zero manual steps).
+        User-customized copies are preserved (never clobbered); on the first
+        upgrade an older copy is backed up to <name>.md.bak-<digest8> before
+        being replaced. Returns the list of names written (created or upgraded)."""
         self.ensure_dir()
+        digests = self._read_digests()
         written = []
         for fname, content in EXAMPLES.items():
             p = self.dir / fname
+            name = fname[:-3]
+            bundled = hashlib.sha256(content.encode("utf-8")).hexdigest()
             if not p.exists():
                 p.write_text(content, encoding="utf-8")
-                written.append(fname[:-3])
+                digests[name] = bundled
+                written.append(name)
+                continue
+            recorded = digests.get(name)
+            if recorded == bundled:
+                continue  # already the current bundled version
+            try:
+                current = hashlib.sha256(p.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+            except Exception:
+                current = None
+            if recorded is not None and current != recorded:
+                # the user customized their copy since we seeded it — preserve it
+                continue
+            if current != bundled:
+                # first transition (no record) or untouched bundled copy: back the
+                # old version up so nothing is ever lost, then ship the new one
+                bak = self.dir / ("%s.md.bak-%s" % (name, bundled[:8]))
+                if not bak.exists():
+                    try:
+                        bak.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+                    except Exception:
+                        pass
+            p.write_text(content, encoding="utf-8")
+            digests[name] = bundled
+            written.append(name)
+        self._write_digests(digests)
         return written
+
+    def _digests_file(self):
+        return self.dir / ".seed-digests.json"
+
+    def _read_digests(self):
+        try:
+            return json.loads(self._digests_file().read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _write_digests(self, d):
+        try:
+            self._digests_file().write_text(json.dumps(d, sort_keys=True), encoding="utf-8")
+        except Exception:
+            pass
 
     def catalog(self):
         """Progressive-disclosure block for auto-loading: an XML list of

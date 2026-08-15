@@ -4,6 +4,7 @@ compaction, and small helpers. Run:  python3 tests/test_units.py"""
 import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
 import io
 import json
+import hashlib
 import unittest.mock as um
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -233,6 +234,56 @@ class TestSkills(_TmpHome):
         self.assertIn('path="', cat)                 # real path for read_file
         self.assertIn("read_file", cat)               # the load instruction
         self.assertNotIn("secret", cat)               # hidden skill excluded
+
+    def _bundled_fullstack(self):
+        return m.EXAMPLES["fullstack.md"]
+
+    def test_seed_second_call_is_noop(self):
+        """After a fresh seed, re-seeding is a no-op (digest matches)."""
+        sk = self._skills()
+        self.assertNotEqual(sk.seed(), [])
+        self.assertEqual(sk.seed(), [])
+        # the digest sidecar is a hidden dotfile -> never shows in listings
+        self.assertTrue((sk.dir / ".seed-digests.json").exists())
+        self.assertNotIn(".seed-digests.json", [n for n, _ in sk.list()])
+
+    def test_seed_upgrades_unchanged_bundled_copy(self):
+        """When the bundled version changes and the installed copy is the
+        untouched previous-bundled version, seed() auto-upgrades it."""
+        sk = self._skills(); sk.seed()
+        old = "OLD BUNDLED VERSION\n"
+        (sk.dir / "fullstack.md").write_text(old)
+        sk._write_digests({"fullstack": hashlib.sha256(old.encode()).hexdigest()})
+        out = sk.seed()
+        self.assertIn("fullstack", out)
+        self.assertEqual((sk.dir / "fullstack.md").read_text(), self._bundled_fullstack())
+
+    def test_seed_preserves_user_customized_copy(self):
+        """A copy the user edited is NEVER clobbered, even when a new bundled
+        version exists."""
+        sk = self._skills(); sk.seed()
+        custom = "MY CUSTOM FULLSTACK SKILL\n"
+        (sk.dir / "fullstack.md").write_text(custom)
+        # user edited after seed -> record still holds the old bundled digest
+        out = sk.seed()
+        self.assertNotIn("fullstack", out)
+        self.assertEqual((sk.dir / "fullstack.md").read_text(), custom)
+
+    def test_seed_first_transition_backs_up_and_upgrades(self):
+        """Pre-digest installs (no record) are upgraded AND backed up to a
+        .bak-<digest8> so nothing is ever lost."""
+        sk = self._skills(); sk.seed()
+        old = "OLD VERSION BEFORE DIGESTS\n"
+        (sk.dir / "fullstack.md").write_text(old)
+        (sk.dir / ".seed-digests.json").unlink()   # simulate legacy install
+        out = sk.seed()
+        self.assertIn("fullstack", out)
+        self.assertEqual((sk.dir / "fullstack.md").read_text(), self._bundled_fullstack())
+        bak = sk.dir / ("fullstack.md.bak-%s" % hashlib.sha256(self._bundled_fullstack().encode()).hexdigest()[:8])
+        self.assertTrue(bak.exists())
+        self.assertEqual(bak.read_text(), old)
+        # backups never appear in skill listings
+        self.assertNotIn(bak.name, [n for n, _ in sk.list()])
 
 
 class TestServerManager(_TmpHome):
