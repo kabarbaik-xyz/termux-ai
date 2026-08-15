@@ -11,7 +11,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.2.5"
+__version__ = "7.2.6"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -907,6 +907,21 @@ class Config:
             if self.cfg.get("max_tool_result") == 10000:
                 self.cfg["max_tool_result"] = 30000; changed = True
             self.cfg["_cap_v2"] = True
+            if changed:
+                try:
+                    self.save()
+                except OSError:
+                    pass
+
+        # One-time migration: /process compact display became the default ("on")
+        # in 7.2.x. Existing installs still carry the OLD default ("auto") in
+        # their saved config -- migrate them once. An explicit "off" or "on"
+        # choice is never touched.
+        if not self.cfg.get("_process_v1"):
+            changed = False
+            if self.cfg.get("compact_process", "on") == "auto":
+                self.cfg["compact_process"] = "on"; changed = True
+            self.cfg["_process_v1"] = True
             if changed:
                 try:
                     self.save()
@@ -1891,6 +1906,17 @@ def is_thinking_model(name, caps=None):
         return bool(t.get("thinking"))
     return False
 
+
+_O_SERIES = re.compile(r"(?:^|/)o[1-3](?:-|$)")
+
+
+def needs_completion_tokens(name, base_url=""):
+    """True for OpenAI o-series models on the OFFICIAL api.openai.com endpoint:
+    the Responses-era API requires max_completion_tokens and rejects max_tokens
+    (and only accepts temperature=1). Other gateways (OpenRouter, opencode, vLLM
+    ...) happily accept max_tokens, so only the official host is special-cased."""
+    return "api.openai.com" in (base_url or "") and bool(_O_SERIES.search((name or "").lower()))
+
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 class BackendError(Exception):
@@ -1996,7 +2022,9 @@ def _suggest_num_ctx(free_gb, model_gb):
 _TASK_RE = re.compile(
     r"\b(create|build|write|make|fix|install|run|read|list|search|find|clone|edit|"
     r"update|delete|remove|add|debug|test|refactor|implement|check|configure|setup|"
-    r"migrate|deploy|start|stop|compile|execute|generate|format|lint|init|review|patch)\b",
+    r"migrate|deploy|start|stop|compile|execute|generate|format|lint|init|review|patch|"
+    r"buat|bikin|tulis|perbaiki|benahi|hapus|jalankan|instal|install|edit|ubah|ganti|"
+    r"tambah|baca|cari|lihat|unduh|kompres|bongkar|susun|rapikan)\b",
     re.IGNORECASE)
 _PATH_RE = re.compile(r"(?:^|[\s\"'`])(?:\.{1,2}/|~/|/|[\w.\-]+/)[\w.\-]*(?:/[\w.\-]+)+")
 _EXT_RE = re.compile(r"\b[\w\-]+\.(py|js|ts|tsx|jsx|go|rs|c|h|cpp|hpp|java|kt|rb|sh|"
@@ -2004,16 +2032,26 @@ _EXT_RE = re.compile(r"\b[\w\-]+\.(py|js|ts|tsx|jsx|go|rs|c|h|cpp|hpp|java|kt|rb
                      re.IGNORECASE)
 _ACTION_RE = re.compile(
     r"\b(can you|help me|i need|i want( to)?|please|would you|could you|show me|"
-    r"give me|do it|do that)\b", re.IGNORECASE)
+    r"give me|do it|do that|tolong|bisakah|bisa kah|bolehkah|minta tolong)\b", re.IGNORECASE)
 _SELF_CHAT_RE = re.compile(
     r"\bwhat (can|should|do|could|would|will) (i|you)\b|\bwhat('?s| is| are) (your|my)\b|"
     r"\bwho are you\b|\bhow are you\b|\bcan i call you\b|\bdo you (know|like|understand|have)\b|"
-    r"\bhow do you\b|\byou are (a|an|the)\b", re.IGNORECASE)
+    r"\bhow do you\b|\byou are (a|an|the)\b|"
+    r"\bsiapa kamu\b|\bkamu siapa\b|\bapa yang bisa kamu\b|\bkamu bisa apa\b|"
+    r"\bapa kabar\b|\bkabarmu\b|\bsiapa namamu\b|\bnama kamu siapa\b", re.IGNORECASE)
 _KNOWLEDGE_RE = re.compile(
     r"\b(who|when|where|why|how)\b|\bwhat('?s| is| are| was| were| does| did)\b|"
     r"\btell me (about|the|more)\b|\binformation about\b|\bexplain\b|\bdefine\b|"
     r"\bmeaning of\b|\bhistory of\b|\bcapital of\b|\bpopulation\b|\bweather\b|"
-    r"\bforecast\b|\bnews\b|\bcurrent\b|\blatest\b|\btoday'?s\b", re.IGNORECASE)
+    r"\bforecast\b|\bnews\b|\bcurrent\b|\blatest\b|\btoday'?s\b|"
+    r"\bapa itu\b|\bapa yang dimaksud\b|\bsiapa(?! kamu)\b|\bkapan\b|\bdi mana\b|\bdimana\b|"
+    r"\bmengapa\b|\bkenapa\b|\bbagaimana\b|\bberapa\b|\bcuaca\b|\bhujan\b|"
+    r"\bberita\b|\bterbaru\b", re.IGNORECASE)
+# Short acknowledgments that continue an in-flight task ("ok lanjutkan",
+# "yes, do it") -- only keep tools when the PREVIOUS user turn was a task.
+_CONTINUE_RE = re.compile(
+    r"\b(ok|oke|okay|okey|ya|iya|yap|sip|gas|lanjut\w*|lanjutkan|continue|"
+    r"proceed|keep going|go on|silakan|silahkan|tolong lanjut)\b", re.IGNORECASE)
 
 
 def _chat_kind(text):
@@ -2038,6 +2076,79 @@ def _chat_kind(text):
     if _KNOWLEDGE_RE.search(tl):
         return "knowledge"       # "who is Prabowo?", "weather today" -> web lookup
     return "chat" if len(t) <= 120 else "task"   # no signals: short = chat
+
+
+class LoopGuard:
+    """Shared agentic-loop bookkeeping used by BOTH chat_with_tools backends so
+    the two loops can never drift again: the iteration ceiling (UNATTENDED cap;
+    each approved 'continue?' checkpoint EXTENDS it so an attended long task runs
+    to completion), the periodic checkpoint, the consecutive-failure guard, and
+    the stuck-repeat backstop."""
+    MAX_FAILURES = 3
+    STUCK_LIMIT = 5
+
+    def __init__(self, cfg, continue_fn=None):
+        self.max_iterations = max(1, int(cfg.get("max_iterations", 50)))
+        self.continue_every = max(1, int(cfg.get("continue_every", 10)))
+        self.next_prompt_at = self.continue_every
+        self.iteration_cap = self.max_iterations
+        self.continue_fn = continue_fn
+        self.iterations = 0
+        self.total_calls = 0
+        self.consecutive_failures = 0
+        self.stuck_streak = 0
+
+    def begin_iteration(self):
+        """Top of each loop iteration. Returns a fatal stop notice when the
+        iteration ceiling is hit, else None."""
+        self.iterations += 1
+        if self.iterations > self.iteration_cap:
+            return ("[Stopped: reached the iteration limit (%d). In a live session, approve the 'continue?' "
+                    "prompt to keep a long task going; /config set max_iterations N raises the unattended ceiling.]"
+                    % self.iteration_cap)
+        return None
+
+    def note_calls(self, n):
+        self.total_calls += n
+
+    def note_results(self, any_productive, failed_names):
+        """After executing a batch: returns (fatal_notice, reflect_msg).
+        fatal_notice stops the task (stuck repeats / consecutive failures);
+        reflect_msg is the REFLECT-on-failure system note for the next turn."""
+        if any_productive:
+            self.stuck_streak = 0
+        else:
+            self.stuck_streak += 1
+            if self.stuck_streak >= self.STUCK_LIMIT:
+                return ("[Stopped: the last %d rounds were all repeats of work already done \u2014 no new progress. "
+                        "/retry or rephrase the task.]" % self.STUCK_LIMIT), None
+        if failed_names:
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= self.MAX_FAILURES:
+                return ("[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 "
+                        "please rephrase the task, enable Build mode (/tools on), or add detail.]"
+                        % (self.consecutive_failures, ", ".join(failed_names))), None
+            return None, ("REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you "
+                          "will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command."
+                          % ", ".join(failed_names))
+        self.consecutive_failures = 0
+        return None, None
+
+    def checkpoint(self):
+        """Periodic 'continue?' gate. Returns "stop" when the user declined;
+        None to keep going. The ceiling extends ONLY on an approved checkpoint
+        (unattended runs are capped by max_iterations; a declined checkpoint
+        ends the task)."""
+        if self.total_calls < self.next_prompt_at:
+            return None
+        if self.continue_fn is None:
+            self.next_prompt_at += self.continue_every   # unattended: no prompt, no extension
+            return None
+        if self.continue_fn(self.iterations, self.total_calls):
+            self.next_prompt_at += self.continue_every   # approved -> extend the ceiling
+            self.iteration_cap += self.continue_every
+            return None
+        return "stop"
 
 
 class Backend:
@@ -2090,24 +2201,40 @@ class Backend:
 
     def _tools_for(self, msgs, build_mode):
         """Which tools to offer this turn (small local chat models only):
-          None  -> no tools (build mode off, or pure casual chat that would
-                   otherwise loop tool calls for minutes on a slow phone)
+          None  -> no tools (pure casual chat that would otherwise loop tool
+                   calls for minutes on a slow phone)
           "web" -> web-only tools (web_search + fetch_url) so a knowledge
                    question can be looked up without the file-tool loop
+          "plan"-> the read-only toolset (Plan mode: read/list/search + the
+                   allowlisted run_command) -- restores documented Plan mode
           "all" -> the full toolset (tasks; and every non-gated backend)
+        Cloud backends are NEVER gated: full tools in Build mode, read-only
+        in Plan mode, every turn, regardless of phrasing. Small local chat
+        models keep the gate for responsiveness, with task-stickiness so a
+        mid-task "ok"/"lanjutkan" never drops the toolset.
         """
-        if not build_mode:
-            return None
+        full = "all" if build_mode else "plan"
         if not self._local_chat_model():
-            return "all"
-        last = next((mm.get("content") or "" for mm in reversed(msgs)
-                     if mm.get("role") == "user"), "")
-        kind = _chat_kind(last)
-        if kind == "chat":
-            return None
+            return full
+        user_idx = [i for i, mm in enumerate(msgs) if mm.get("role") == "user"]
+        last_text = (msgs[user_idx[-1]].get("content") or "") if user_idx else ""
+        kind = _chat_kind(last_text)
+        if kind == "task":
+            return full
         if kind == "knowledge":
             return "web"
-        return "all"
+        # chat-like message: keep tools when a task is in flight or just ran
+        # (the loop iterates with tool rounds appended after the last user
+        # message; and a fresh "ok, lanjutkan" turn right after a task turn
+        # must not drop the toolset mid-job)
+        if user_idx and any(mm.get("role") == "assistant" and mm.get("tool_calls")
+                            for mm in msgs[user_idx[-1] + 1:]):
+            return full
+        if len(last_text) <= 60 and _CONTINUE_RE.search(last_text):
+            prev_text = (msgs[user_idx[-2]].get("content") or "") if len(user_idx) >= 2 else ""
+            if _chat_kind(prev_text) == "task":
+                return full
+        return None
 
     def _schema_mode(self):
         """full | compact | micro — which tool-schema level to send.
@@ -2603,14 +2730,11 @@ class OpenAICompatible(Backend):
 
     def _native_ollama(self):
         """True when talking to a LOCAL Ollama server running a THINKING-capable
-        model with thinking disabled. The OpenAI-compat endpoint does NOT honor
-        `think`, so reasoning models (qwen3, deepseek-r1, phi4-reasoning, ...) burn
-        minutes of phone CPU thinking before answering (measured 247s vs 10s).
-        The native /api/chat endpoint accepts `think: false` (config:
-        ollama_no_think, default on). Detection uses the tuning registry for the
+        model -- route through the native /api/chat endpoint because the /v1
+        endpoint can't control thinking AT ALL: think:false by default
+        (responsive: measured 247s vs 10s), think:true when the user opts in
+        via ollama_no_think=false. Detection uses the tuning registry for the
         known reasoning families and Ollama's /api/show capabilities otherwise."""
-        if not self._eff("ollama_no_think", True):
-            return False
         if not self.is_ollama:
             return False
         return is_thinking_model(self._model(), self._ollama_caps(self._model()))
@@ -2630,6 +2754,7 @@ class OpenAICompatible(Backend):
                 msgs.append({"role": "system", "content": sysp})
             msgs.append({"role": "user", "content": "."})
             d = {"model": self._model(), "messages": msgs, "stream": False,
+                 "think": False,   # match the default fast path so the cache priming matches
                  "keep_alive": self._eff("ollama_keep_alive", "2h"),
                  "options": {"num_predict": 1}}
             if tools is not None:
@@ -2700,7 +2825,7 @@ class OpenAICompatible(Backend):
         if tools is not None:
             d["tools"] = tools
         if self._native_ollama():
-            d["think"] = False
+            d["think"] = not bool(self._eff("ollama_no_think", True))
             opts = {}
             if temp is not None: opts["temperature"] = temp
             if mt: opts["num_predict"] = mt
@@ -2714,8 +2839,14 @@ class OpenAICompatible(Backend):
             if ka not in (0, None, "", "0"):
                 d["keep_alive"] = ka
         else:
-            if temp is not None: d["temperature"] = temp
-            if mt: d["max_tokens"] = mt
+            # o-series on the OFFICIAL OpenAI API needs max_completion_tokens
+            # (max_tokens 400s) and only accepts temperature=1 (omit it).
+            o_series = needs_completion_tokens(self._model(), self.profile.get("base_url") or "")
+            if o_series:
+                if mt: d["max_completion_tokens"] = mt
+            else:
+                if temp is not None: d["temperature"] = temp
+                if mt: d["max_tokens"] = mt
         return d
 
     @staticmethod
@@ -2757,6 +2888,10 @@ class OpenAICompatible(Backend):
         delta = {"role": "assistant"}
         if msg.get("content"):
             delta["content"] = msg["content"]
+        if msg.get("thinking"):
+            # native thinking stream (think:true) -> OpenAI reasoning_content
+            # convention, so the tool loop can display it live AND pass it back
+            delta["reasoning_content"] = msg["thinking"]
         tcs = msg.get("tool_calls")
         if tcs:
             out = []
@@ -2812,20 +2947,9 @@ class OpenAICompatible(Backend):
         build_mode = self._eff("tools_enabled", False)
         max_res = self._eff("max_tool_result", 10000)
 
-        iterations = 0
-        total_calls = 0
-        MAX_ITERATIONS = self.c.get("max_iterations", 50)
-        _continue_every = self.c.get("continue_every", 10)
-        next_prompt_at = _continue_every
-        # max_iterations is the UNATTENDED ceiling (one-shot/piped runs).
-        # In a live session each approved 'continue?' checkpoint EXTENDS it,
-        # so a long trusted task (install+build+test+fix) runs to completion
-        # instead of dying mid-build at 50.
-        iteration_cap = MAX_ITERATIONS
-        MAX_FAILURES = 3
-        consecutive_failures = 0
-        REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
-        repeat_count = {}
+        # Shared loop bookkeeping (iteration ceiling + checkpoints + failure
+        # guards) so the OpenAI and Anthropic loops can never drift.
+        guard = LoopGuard(self.c, continue_fn)
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -2835,9 +2959,9 @@ class OpenAICompatible(Backend):
         STUCK_LIMIT = 5          # backstop: stop only if truly no progress
 
         while True:
-            iterations += 1
-            if iterations > iteration_cap:
-                yield {"type": "notice", "content": "[Stopped: reached the iteration limit (%d). In a live session, approve the 'continue?' prompt to keep a long task going; /config set max_iterations N raises the unattended ceiling.]" % iteration_cap, "fatal": True}
+            _stop = guard.begin_iteration()
+            if _stop:
+                yield {"type": "notice", "content": _stop, "fatal": True}
                 return
 
             compacted = self._compact_iteration_history(msgs)
@@ -2855,8 +2979,12 @@ class OpenAICompatible(Backend):
             _smode = self._schema_mode()
             if tools_sel == "all":
                 schemas = Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro")
+            elif tools_sel == "plan":
+                # Plan mode: read-only toolset (no write_file/clone_repo) + the
+                # allowlisted run_command -- restores documented Plan mode.
+                schemas = Tools.get_schemas(False, compact=_smode != "full", micro=_smode == "micro")
             elif tools_sel == "web":
-                schemas = [s for s in Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro")
+                schemas = [s for s in Tools.get_schemas(build_mode, compact=_smode != "full", micro=_smode == "micro")
                            if s["function"]["name"] in ("web_search", "fetch_url", "weather")]
             else:
                 schemas = None
@@ -2877,7 +3005,10 @@ class OpenAICompatible(Backend):
                 if delta.get("content"):
                     content_buf += delta["content"]
                 if delta.get("reasoning_content") or delta.get("reasoning"):
-                    reasoning_buf += delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    r = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    reasoning_buf += r
+                    if mapper:   # native LOCAL thinking (opt-in): show it live (dim)
+                        yield {"type": "thinking", "content": r}
                 if delta.get("tool_calls"):
                     for tc in delta["tool_calls"]:
                         idx = tc.get("index", 0)
@@ -2926,7 +3057,7 @@ class OpenAICompatible(Backend):
                 yield {"type": "notice", "content": "\n[Output hit the token limit mid-tool-call - asked the AI to split the write into smaller pieces (write_file + append).]", "fatal": False}
                 continue
 
-            total_calls += len(calls)
+            guard.note_calls(len(calls))
 
             norm_calls = []
             for c in calls:
@@ -2973,23 +3104,13 @@ class OpenAICompatible(Backend):
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
                 batch_results.append((fn["name"], result))
 
-            if any_productive:
-                stuck_streak = 0
-            else:
-                stuck_streak += 1
-                if stuck_streak >= STUCK_LIMIT:
-                    yield {"type": "notice", "content": "[Stopped: the last %d rounds were all repeats of work already done \u2014 no new progress. /retry or rephrase the task.]" % STUCK_LIMIT, "fatal": True}
-                    return
-
             failed = [n for n, r in batch_results if Backend._is_failure(r)]
-            if failed:
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_FAILURES:
-                    yield {"type": "notice", "content": "[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 please rephrase the task, enable Build mode (/tools on), or add detail.]" % (consecutive_failures, ", ".join(failed)), "fatal": True}
-                    return
-                msgs.append({"role": "system", "content": "REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed)})
-            else:
-                consecutive_failures = 0
+            _stop, _reflect = guard.note_results(any_productive, failed)
+            if _stop:
+                yield {"type": "notice", "content": _stop, "fatal": True}
+                return
+            if _reflect:
+                msgs.append({"role": "system", "content": _reflect})
 
             read_streak, phase_nudged, nudge = self._phase_nudge(
                 [n for n, _ in batch_results], read_streak, phase_nudged, GATHER_N)
@@ -2997,16 +3118,11 @@ class OpenAICompatible(Backend):
                 msgs.append({"role": "system", "content": nudge})
                 yield {"type": "notice", "content": "\n" + nudge, "fatal": False}
 
-            # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
-            if total_calls >= next_prompt_at:
-                if continue_fn is None:
-                    next_prompt_at += _continue_every     # unattended: no prompt, no extension (MAX_ITERATIONS still caps runaway)
-                elif continue_fn(iterations, total_calls):
-                    next_prompt_at += _continue_every     # approved -> extend the ceiling so a long task runs to completion
-                    iteration_cap += _continue_every
-                else:
-                    yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
-                    return
+            # Periodic \u201ccontinue?\u201d checkpoint (LoopGuard extends the ceiling
+            # only on approval; unattended runs stay capped).
+            if guard.checkpoint() == "stop":
+                yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
+                return
 
 class AnthropicBackend(Backend):
     def __init__(self, cfg):
@@ -3049,32 +3165,19 @@ class AnthropicBackend(Backend):
         build_mode = self._eff("tools_enabled", False)
         max_res = self._eff("max_tool_result", 10000)
 
-        iterations = 0
-        total_calls = 0
-        MAX_ITERATIONS = self.c.get("max_iterations", 50)
-        _continue_every = self.c.get("continue_every", 10)
-        next_prompt_at = _continue_every
-        # max_iterations is the UNATTENDED ceiling (one-shot/piped runs).
-        # In a live session each approved 'continue?' checkpoint EXTENDS it,
-        # so a long trusted task (install+build+test+fix) runs to completion
-        # instead of dying mid-build at 50.
-        iteration_cap = MAX_ITERATIONS
-        MAX_FAILURES = 3
-        consecutive_failures = 0
-        REPEAT_LIMIT = max(2, int(self.c.get("repeat_limit", 3)))
-        repeat_count = {}
+        # Shared loop bookkeeping (iteration ceiling + checkpoints + failure
+        # guards) so the OpenAI and Anthropic loops can never drift.
+        guard = LoopGuard(self.c, continue_fn)
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
         done_calls = set()
         coverage = {}
-        stuck_streak = 0
-        STUCK_LIMIT = 5
 
         while True:
-            iterations += 1
-            if iterations > iteration_cap:
-                yield {"type": "notice", "content": "[Stopped: reached the iteration limit (%d). In a live session, approve the 'continue?' prompt to keep a long task going; /config set max_iterations N raises the unattended ceiling.]" % iteration_cap, "fatal": True}
+            _stop = guard.begin_iteration()
+            if _stop:
+                yield {"type": "notice", "content": _stop, "fatal": True}
                 return
 
             compacted = self._compact_iteration_history(payload)
@@ -3156,7 +3259,7 @@ class AnthropicBackend(Backend):
                 yield {"type": "notice", "content": "\n[Output hit the token limit mid-tool-call - asked the AI to split the write into smaller pieces (write_file + append).]", "fatal": False}
                 continue
 
-            total_calls += len(tool_uses)
+            guard.note_calls(len(tool_uses))
 
             norm_calls = []
             for tu in tool_uses:
@@ -3199,23 +3302,13 @@ class AnthropicBackend(Backend):
 
             payload.append({"role": "user", "content": results})
 
-            if any_productive:
-                stuck_streak = 0
-            else:
-                stuck_streak += 1
-                if stuck_streak >= STUCK_LIMIT:
-                    yield {"type": "notice", "content": "[Stopped: the last %d rounds were all repeats of work already done \u2014 no new progress. /retry or rephrase the task.]" % STUCK_LIMIT, "fatal": True}
-                    return
-
             failed = [n for n, r in batch_results if Backend._is_failure(r)]
-            if failed:
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_FAILURES:
-                    yield {"type": "notice", "content": "[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 please rephrase the task, enable Build mode (/tools on), or add detail.]" % (consecutive_failures, ", ".join(failed)), "fatal": True}
-                    return
-                sys_prompt = ((sys_prompt + "\n\n") if sys_prompt else "") + ("REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command." % ", ".join(failed))
-            else:
-                consecutive_failures = 0
+            _stop, _reflect = guard.note_results(any_productive, failed)
+            if _stop:
+                yield {"type": "notice", "content": _stop, "fatal": True}
+                return
+            if _reflect:
+                sys_prompt = ((sys_prompt + "\n\n") if sys_prompt else "") + _reflect
 
             read_streak, phase_nudged, nudge = self._phase_nudge(
                 [n for n, _ in batch_results], read_streak, phase_nudged, GATHER_N)
@@ -3223,16 +3316,11 @@ class AnthropicBackend(Backend):
                 payload.append({"role": "user", "content": nudge})
                 yield {"type": "notice", "content": "\n" + nudge, "fatal": False}
 
-            # Periodic \u201ccontinue?\u201d prompt for long tasks (every 10 tool calls).
-            if total_calls >= next_prompt_at:
-                if continue_fn is None:
-                    next_prompt_at += _continue_every     # unattended: no prompt, no extension (MAX_ITERATIONS still caps runaway)
-                elif continue_fn(iterations, total_calls):
-                    next_prompt_at += _continue_every     # approved -> extend the ceiling so a long task runs to completion
-                    iteration_cap += _continue_every
-                else:
-                    yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
-                    return
+            # Periodic \u201ccontinue?\u201d checkpoint (LoopGuard extends the ceiling
+            # only on approval; unattended runs stay capped).
+            if guard.checkpoint() == "stop":
+                yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
+                return
 
 def get_backend(cfg):
     name, profile = cfg.active_profile()

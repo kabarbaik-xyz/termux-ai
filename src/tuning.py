@@ -63,3 +63,14 @@ def is_thinking_model(name, caps=None):
     if t.get("thinking") is not None:
         return bool(t.get("thinking"))
     return False
+
+
+_O_SERIES = re.compile(r"(?:^|/)o[1-3](?:-|$)")
+
+
+def needs_completion_tokens(name, base_url=""):
+    """True for OpenAI o-series models on the OFFICIAL api.openai.com endpoint:
+    the Responses-era API requires max_completion_tokens and rejects max_tokens
+    (and only accepts temperature=1). Other gateways (OpenRouter, opencode, vLLM
+    ...) happily accept max_tokens, so only the official host is special-cased."""
+    return "api.openai.com" in (base_url or "") and bool(_O_SERIES.search((name or "").lower()))

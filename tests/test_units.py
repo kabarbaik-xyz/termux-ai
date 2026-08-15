@@ -1341,6 +1341,40 @@ class TestBackendResilience(_TmpHome):
         d3 = loc2._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
         self.assertEqual(d3["options"]["num_predict"], 8192)
 
+    def test_cloud_lock_full_tools_every_turn_in_build_mode(self):
+        """CLOUD INVARIANT (Phase-1 lock): a cloud backend offers the FULL toolset
+        EVERY turn in Build mode, regardless of message phrasing -- the local
+        responsiveness gate must never touch cloud. Asserted via _tools_for and
+        the actual schemas chat_with_tools sends."""
+        c = m.OpenAICompatible({"tools_enabled": True}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        for msg in ("hi", "what can I do for you?", "build a website", "who is Prabowo?"):
+            self.assertEqual(c._tools_for([{"role": "user", "content": msg}], True), "all", msg)
+        # the payload actually carries the FULL schemas (write_file incl.)
+        captured = {}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            captured.update(data)
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+        with um.patch.object(c, "_stream_req", side_effect=fs):
+            list(c.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda cc: True))
+        names = {t["function"]["name"] for t in (captured.get("tools") or [])}
+        self.assertIn("write_file", names)             # FULL set, not gated
+        self.assertIn("run_command", names)
+        self.assertNotIn("think", captured)             # no local-only fields
+
+    def test_cloud_lock_temperature_clamp_only_with_tools(self):
+        """CLOUD INVARIANT: build-mode temperature is clamped to <=0.4 exactly
+        when tools are offered; the clamp may not appear in tool-less requests."""
+        c = m.OpenAICompatible({"tools_enabled": True, "temperature": 0.7}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        captured = {}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            captured.update(data)
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+        with um.patch.object(c, "_stream_req", side_effect=fs):
+            list(c.chat_with_tools([{"role": "user", "content": "build a website"}], confirm_batch_fn=lambda cc: True))
+        self.assertLessEqual(captured["temperature"], 0.4)   # tools on -> clamp
+        d = c._payload([{"role": "user", "content": "hi"}], True, temperature=c._eff("temperature"))
+        self.assertEqual(d["temperature"], 0.7)              # explicit temp passes through
+
     def test_cloud_path_is_byte_identical_to_pre_change(self):
         """Regression guard: every local-Ollama optimization (native shim,
         think:false, keep_alive, compact schemas, ThinkFilter, NDJSON) must be
@@ -1586,9 +1620,12 @@ class TestBackendResilience(_TmpHome):
         b3 = m.OpenAICompatible({"ollama_no_think": True}, "t", {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
         b3._caps_cache["llama3.2"] = ["completion", "tools"]
         self.assertFalse(b3._native_ollama())
-        # config disabled -> OpenAI path even for a thinking model
+        # config disabled -> STILL the native path (the only way to control
+        # thinking); ollama_no_think=false now means think:true, not /v1
         b4 = m.OpenAICompatible({"ollama_no_think": False}, "t", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
-        self.assertFalse(b4._native_ollama())
+        b4._caps_cache["qwen3:1.7b"] = ["thinking"]
+        self.assertTrue(b4._native_ollama())
+        self.assertIs(b4._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)["think"], True)
 
     def test_ollama_caps_fallback_heuristic_and_cache(self):
         """When /api/show is unavailable (cold model / old Ollama), known
@@ -1805,7 +1842,9 @@ class TestBackendResilience(_TmpHome):
     def test_tools_for_gate(self):
         """Local non-thinking chat models get NO tools for casual chat (kills
         the ~200s tool loop), web-only tools for knowledge questions, and the
-        full toolset for tasks; cloud and build-mode-off are unaffected."""
+        full/read-only toolset for tasks (per build mode). CLOUD is never gated:
+        full in Build, read-only in Plan, every turn. Plan mode is restored
+        (read-only tools offered, not zero tools)."""
         b = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
         self.assertTrue(b._local_chat_model())
         self.assertIsNone(b._tools_for(
@@ -1817,13 +1856,219 @@ class TestBackendResilience(_TmpHome):
             [{"role": "user", "content": "tell me the weather today"}], True), "web")
         self.assertEqual(b._tools_for(
             [{"role": "user", "content": "create app/main.py that prints hello"}], True), "all")
-        # build mode off -> never tools
+        # PLAN MODE restored: task message -> read-only toolset, not None
+        self.assertEqual(b._tools_for(
+            [{"role": "user", "content": "create app/main.py"}], False), "plan")
+        self.assertEqual(b._tools_for(
+            [{"role": "user", "content": "who is Prabowo?"}], False), "web")   # web tools are read-only anyway
         self.assertIsNone(b._tools_for(
-            [{"role": "user", "content": "create app/main.py"}], False))
-        # cloud backend: tools always offered regardless of phrasing
+            [{"role": "user", "content": "hi"}], False))                        # casual chat stays tool-less
+        # cloud backend: NEVER gated, every turn, either mode
         c = m.OpenAICompatible({}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
         self.assertFalse(c._local_chat_model())
         self.assertEqual(c._tools_for([{"role": "user", "content": "what can I do for you?"}], True), "all")
+        self.assertEqual(c._tools_for([{"role": "user", "content": "hi"}], False), "plan")
+
+    def test_process_default_migration_auto_to_on(self):
+        """One-time _process_v1 migration: installs that still carry the OLD
+        default ("auto") are moved to compact "on"; an explicit "off" or "on"
+        choice is never touched; the flag prevents re-migration."""
+        import json as _j
+        # old install with "auto" saved -> migrated to "on", flag set, persisted
+        m.CONFIG_FILE.write_text(_j.dumps({"compact_process": "auto"}))
+        cfg = m.Config()
+        self.assertEqual(cfg.get("compact_process"), "on")
+        self.assertTrue(cfg.get("_process_v1"))
+        # explicit "off" survives untouched
+        m.CONFIG_FILE.write_text(_j.dumps({"compact_process": "off", "_process_v1": False}))
+        cfg2 = m.Config()
+        self.assertEqual(cfg2.get("compact_process"), "off")
+        self.assertTrue(cfg2.get("_process_v1"))
+        # explicit "on" unchanged; second boot no-op
+        m.CONFIG_FILE.write_text(_j.dumps({"compact_process": "on"}))
+        cfg3 = m.Config()
+        self.assertEqual(cfg3.get("compact_process"), "on")
+
+    def test_ollama_no_think_false_enables_real_thinking(self):
+        """ollama_no_think=false must actually THINK: previously it fell back to
+        /v1 where thinking is uncontrolled (the flag promised something the code
+        never delivered). Now the native path is used either way and the flag
+        only flips think true/false."""
+        b = m.OpenAICompatible({"ollama_no_think": False}, "ollama",
+                               {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        b._caps_cache["qwen3:1.7b"] = ["thinking"]
+        self.assertTrue(b._native_ollama())              # still native (control!)
+        d = b._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertIs(d["think"], True)                  # ...but thinking ON
+        # default: native + think False (the responsive fast path)
+        b2 = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        b2._caps_cache["qwen3:1.7b"] = ["thinking"]
+        self.assertTrue(b2._native_ollama())
+        self.assertIs(b2._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)["think"], False)
+        # cloud is never native regardless
+        c = m.OpenAICompatible({"ollama_no_think": False}, "openai",
+                               {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        self.assertFalse(c._native_ollama())
+
+    def test_native_thinking_maps_to_reasoning_and_displays(self):
+        """Native Ollama think:true streams message.thinking; the mapper converts
+        it to reasoning_content (passback convention) and chat_with_tools shows
+        it live as dim 'thinking' events on the LOCAL path only."""
+        evt = m.OpenAICompatible._native_to_openai(
+            {"message": {"role": "assistant", "thinking": "planning the build...", "content": "done"}})
+        delta = evt["choices"][0]["delta"]
+        self.assertEqual(delta["reasoning_content"], "planning the build...")
+        self.assertEqual(delta["content"], "done")
+        # live display on the native path only (cloud reasoning stays buffered)
+        b = m.OpenAICompatible({"tools_enabled": True}, "ollama",
+                               {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        b._caps_cache["qwen3:1.7b"] = ["thinking"]
+        seen = []
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            assert mapper is not None and ndjson, "native path must be used"
+            yield mapper({"message": {"thinking": "let me plan"}, "done": False})
+            yield mapper({"message": {"content": "answer"}, "done": True, "done_reason": "stop"})
+        with um.patch.object(b, "_stream_req", side_effect=fs):
+            for e in b.chat_with_tools([{"role": "user", "content": "buat rencana"}], confirm_batch_fn=lambda cc: True):
+                if e["type"] in ("thinking", "text"):
+                    seen.append((e["type"], e["content"]))
+        self.assertIn(("thinking", "let me plan"), seen)
+        self.assertIn(("text", "answer"), seen)
+
+    def test_o_series_official_api_uses_max_completion_tokens(self):
+        """o1/o3 on api.openai.com require max_completion_tokens (max_tokens 400s)
+        and only accept temperature=1. Via OTHER gateways (opencode/OpenRouter)
+        max_tokens still applies -- cloud behavior stays untouched there."""
+        o = m.OpenAICompatible({"temperature": 0.7, "max_tokens": 4096}, "openai",
+                               {"base_url": "https://api.openai.com/v1", "model": "o3-mini", "api_key": "x"})
+        d = o._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertEqual(d["max_completion_tokens"], 4096)
+        self.assertNotIn("max_tokens", d)
+        self.assertNotIn("temperature", d)
+        og = m.OpenAICompatible({"temperature": 0.7, "max_tokens": 8192}, "opencode",
+                                {"base_url": "https://opencode.ai/zen/v1", "model": "o3-mini", "api_key": "x"})
+        d2 = og._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertEqual(d2["max_tokens"], 8192)
+        self.assertNotIn("max_completion_tokens", d2)
+        self.assertEqual(d2["temperature"], 0.7)
+
+    def test_loop_guard_stuck_and_failure_backstops(self):
+        """LoopGuard is the single implementation of the loop backstops shared by
+        both backends: stuck repeats (zero new work x5) and 3 consecutive failed
+        rounds stop fatally; a successful round resets both streaks."""
+        g = m.LoopGuard({}, None)
+        # ceiling: begin_iteration passes up to max_iterations (default 50)
+        for _ in range(50):
+            self.assertIsNone(g.begin_iteration())
+        self.assertIn("iteration limit", g.begin_iteration() or "")
+        # stuck: 4 repeats tolerate, the 5th stops
+        g2 = m.LoopGuard({}, None)
+        for i in range(4):
+            stop, reflect = g2.note_results(any_productive=False, failed_names=[])
+            self.assertIsNone(stop)
+        stop, reflect = g2.note_results(any_productive=False, failed_names=[])
+        self.assertIn("no new progress", stop)
+        # failure streak: 2 reflects, the 3rd stops; success resets
+        g3 = m.LoopGuard({}, None)
+        stop, reflect = g3.note_results(True, ["write_file"])
+        self.assertIsNone(stop); self.assertIn("REFLECT", reflect)
+        stop, reflect = g3.note_results(True, ["write_file"])
+        self.assertIsNone(stop)
+        stop, reflect = g3.note_results(True, ["write_file"])
+        self.assertIn("consecutive failed", stop)
+        g4 = m.LoopGuard({}, None)
+        g4.note_results(True, ["run_command"])      # one failure...
+        g4.note_results(True, [])                    # ...then success resets
+        stop, reflect = g4.note_results(True, ["run_command"])
+        self.assertIsNone(stop)                      # so this is failure #1, not #3
+        # checkpoint: approved extends the ceiling, declined stops, None skips
+        g5 = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, lambda i, t: True)
+        g5.note_calls(2)
+        self.assertIsNone(g5.checkpoint())
+        self.assertEqual(g5.iteration_cap, 8)
+        g6 = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, lambda i, t: False)
+        g6.note_calls(2)
+        self.assertEqual(g6.checkpoint(), "stop")
+        g7 = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, None)
+        g7.note_calls(2)
+        self.assertIsNone(g7.checkpoint())           # unattended: no prompt, no extension
+        self.assertEqual(g7.iteration_cap, 6)
+
+    def test_gate_task_stickiness_mid_task_and_continuation(self):
+        """A chat-like "ok"/"lanjutkan" must NOT drop the toolset when a task is
+        in flight (tool rounds after the last user msg) or was just requested
+        (continuation turn right after a task turn). A fresh casual "hi" with no
+        task context still gets no tools."""
+        b = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        # mid-loop: tool rounds accumulated after the last user message
+        msgs = [{"role": "user", "content": "buat file app.py"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                    "function": {"name": "write_file", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
+        self.assertEqual(b._tools_for(msgs, True), "all")
+        # continuation turn: previous user msg was a task, current is "ok lanjutkan"
+        msgs2 = [{"role": "user", "content": "tolong buatkan simple website"},
+                 {"role": "assistant", "content": "selesai"},
+                 {"role": "user", "content": "ok lanjutkan bagian kedua"}]
+        self.assertEqual(b._tools_for(msgs2, True), "all")
+        # plain "ya" with no task history -> chat (no tools)
+        self.assertIsNone(b._tools_for(
+            [{"role": "user", "content": "halo"}, {"role": "assistant", "content": "hai"},
+             {"role": "user", "content": "ya"}], True))
+        # long non-continuation chat stays chat
+        self.assertIsNone(b._tools_for(
+            [{"role": "user", "content": "ceritakan pendapatmu tentang kopi hari ini saja singkat"}], True))
+
+    def test_chat_kind_indonesian(self):
+        """The gate's task/knowledge/chat split understands Indonesian phrasing
+        so local models don't lose tools ("tolong buatkan website" was chat!)."""
+        for task in ("tolong buatkan simple website",
+                     "bikin file test.py",
+                     "perbaiki bug di server",
+                     "hapus file lama",
+                     "jalankan tesnya",
+                     "cari file config",
+                     "bisakah kamu buatkan laporan"):
+            self.assertEqual(m._chat_kind(task), "task", task)
+        for know in ("apa itu fotosintesis",
+                     "siapa presiden amerika",
+                     "cuaca hari ini di yogyakarta",
+                     "bagaimana cara kerja mesin diesel",
+                     "kenapa langit biru"):
+            self.assertEqual(m._chat_kind(know), "knowledge", know)
+        for chat in ("siapa kamu",
+                     "apa yang bisa kamu bantu",
+                     "halo apa kabar",
+                     "terima kasih banyak"):
+            self.assertEqual(m._chat_kind(chat), "chat", chat)
+
+    def test_plan_mode_offers_readonly_schemas_not_write(self):
+        """End-to-end: in Plan mode the request carries read_file but NOT
+        write_file/clone_repo; in Build mode write_file returns. (H1 fix.)"""
+        c = m.OpenAICompatible({"tools_enabled": False}, "openai",
+                               {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        captured = {}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            captured.update(data)
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+        with um.patch.object(c, "_stream_req", side_effect=fs):
+            list(c.chat_with_tools([{"role": "user", "content": "analyze the files"}], confirm_batch_fn=lambda cc: True))
+        names = {t["function"]["name"] for t in (captured.get("tools") or [])}
+        self.assertIn("read_file", names)
+        self.assertIn("run_command", names)          # plan-mode allowlisted executor
+        self.assertNotIn("write_file", names)
+        self.assertNotIn("clone_repo", names)
+        # Build mode restores the full set
+        c2 = m.OpenAICompatible({"tools_enabled": True}, "openai",
+                                {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        captured2 = {}
+        def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+            captured2.update(data)
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+        with um.patch.object(c2, "_stream_req", side_effect=fs2):
+            list(c2.chat_with_tools([{"role": "user", "content": "analyze"}], confirm_batch_fn=lambda cc: True))
+        names2 = {t["function"]["name"] for t in (captured2.get("tools") or [])}
+        self.assertIn("write_file", names2)
 
     def test_phase_nudge_web_vs_file(self):
         """The gather nudge stays file-focused for file-read loops but tells a

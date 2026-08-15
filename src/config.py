@@ -126,6 +126,21 @@ class Config:
                 except OSError:
                     pass
 
+        # One-time migration: /process compact display became the default ("on")
+        # in 7.2.x. Existing installs still carry the OLD default ("auto") in
+        # their saved config -- migrate them once. An explicit "off" or "on"
+        # choice is never touched.
+        if not self.cfg.get("_process_v1"):
+            changed = False
+            if self.cfg.get("compact_process", "on") == "auto":
+                self.cfg["compact_process"] = "on"; changed = True
+            self.cfg["_process_v1"] = True
+            if changed:
+                try:
+                    self.save()
+                except OSError:
+                    pass
+
     @staticmethod
     def _deep_update(base, new):
         for k, v in new.items():

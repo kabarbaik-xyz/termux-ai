@@ -10,4 +10,4 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.2.5"
+__version__ = "7.2.6"

@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.2.0-green)
+![version](https://img.shields.io/badge/version-7.2.6-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -425,7 +425,7 @@ when the same file's covered ground is re-requested 3 times, stops with
 
 Long **lists** and **tables** in a reply are folded inline (first `fold_head` items, default 8, then a dim `… N more — /expand to view`) so a big list doesn't flood a small screen. The full reply is always retained — run `/expand` (alias `/last`) to page through the whole thing in `less`. Folding is display-only (the saved reply is complete) and toggleable: `/fold off`, or set `fold_long_blocks`/`fold_head` in config. Paragraphs and code blocks are never folded.
 
-**Tool-call chatter** (the `[Tool 1/2] read_file({...})` lines + raw results) can be collapsed the same way: in compact mode each step prints as a one-line `⚙️ read dashboard.html ✓` and tool results are suppressed, leaving a clean `⚙️ N steps — /process for details` footer. Run `/process` to page through the full step-by-step log (tool, args, result, ✓/✗ status), or `/process on|off|auto` to choose: `on` = always compact, `off` = full live tool output (the original behavior), `auto` (default) = inline when the task is simple, compact once it grows past `compact_threshold` steps (default 4). Errors always break through even in compact mode. Config: `compact_process`, `compact_threshold`.
+**Tool-call chatter** (the `[Tool 1/2] read_file({...})` lines + raw results) can be collapsed the same way: in compact mode each step prints as a one-line `⚙️ read dashboard.html ✓` and tool results are suppressed, leaving a clean `⚙️ N steps — /process for details` footer. Run `/process` to page through the full step-by-step log (tool, args, result, ✓/✗ status), or `/process on|off|auto` to choose: `on` (default) = always compact, `off` = full live tool output (the original behavior), `auto` = inline when the task is simple, compact once it grows past `compact_threshold` steps (default 4). Errors always break through even in compact mode. Config: `compact_process`, `compact_threshold` (existing installs saved at the old default `auto` are migrated to `on` once).
 | `/help` | Show all commands |
 | `/exit` | Quit (Ctrl-C also works) |
 
@@ -436,6 +436,8 @@ Long **lists** and **tables** in a reply are folded inline (first `fold_head` it
 ### PLAN mode (default)
 
 The AI can **read** files, list directories, search code, and run safe inspection commands (`ls`, `cat`, `grep`, `head`, etc.). It **cannot** write, modify, or delete anything.
+
+> **Local-model responsiveness gate** (small non-thinking local models only): casual chat gets **no tools** (a small model loops file-tools on "hi" for ~200s otherwise), knowledge questions get **web-only** tools, tasks get the full read-only set — and a mid-task "ok"/"lanjutkan" never drops the toolset. Understands English **and Indonesian** phrasing ("tolong buatkan website" is a task). Cloud backends are never gated: full tools in Build mode, read-only in Plan mode, every turn.
 
 Plan-mode commands run **without a shell** against a **read-only allowlist** (e.g. `ls`, `cat`, `grep`, `head`, `tail`, `find`, `wc`, `sort`, `git status/diff/log`, …). Pipes work (`grep foo f | wc -l`), but because there is no shell, redirects (`>`, `>>`), `&&`/`;`, command substitution (`$(…)`, backticks), newlines, and every non-allowlisted binary (including all interpreters) are inert or rejected. This is the complete security boundary for Plan mode.
 
@@ -477,7 +479,7 @@ All settings live in `~/.config/termux-ai/config.json`. Key settings:
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `4096` | Max response tokens |
 | `stream` | `true` | Stream responses |
-| `ollama_no_think` | `true` | For a LOCAL **reasoning model** on Ollama (any model that reports a `thinking` capability — qwen3, qwq, deepseek-r1 if Ollama marks it, etc.): route through the native `/api/chat` endpoint with `think:false`. The OpenAI-compat `/v1` endpoint ignores `think`, and reasoning models burn minutes of phone CPU before answering (measured **247s → 10s** on qwen3). Auto-detected per-model via Ollama's `/api/show` capabilities; no effect on cloud backends or non-thinking models. |
+| `ollama_no_think` | `true` | For a LOCAL **reasoning model** on Ollama (any model that reports a `thinking` capability — qwen3, qwq, deepseek-r1 if Ollama marks it, etc.): route through the native `/api/chat` endpoint, which is the only way to control thinking (the `/v1` endpoint ignores `think`). Default `true` sends `think:false` — reasoning models otherwise burn minutes of phone CPU before answering (measured **247s → 10s** on qwen3). Set `false` to actually **think**: `think:true` with the reasoning shown live (dim) and passed back on tool turns. Auto-detected per-model via Ollama's `/api/show` capabilities; no effect on cloud backends or non-thinking models. |
 | `ollama_keep_alive` | `30m` | Keep the model resident between requests so a slow tool mid-skill (graphify/fetch can take minutes) doesn't force a ~30s cold reload on the next step — the #1 cause of "stuck in thinking". Ollama's default ~5-min idle unload is too short for multi-step skills. Set `0` to disable. |
 | `ollama_max_tokens` | `0` | Ollama-only max-generation cap (0 = use `max_tokens`). Set low (e.g. `2048`) for a slow phone CPU **without** lowering cloud's `max_tokens` — `max_tokens` is global and would otherwise cap your cloud replies too. |
 | `num_ctx` | `0` | Optional Ollama context-length override (0 = Ollama default). Lower this on memory-constrained devices, e.g. `4096`. |
