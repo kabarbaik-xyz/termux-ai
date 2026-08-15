@@ -17,6 +17,61 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.cfg.set("strategy_first", v)
         self.success(f"Strategy-first mode {'ON (model outlines a strategy before acting)' if v else 'OFF'}.")
 
+    def _cmd_tune(self, args):
+        """Per-model auto-tuning report + optional manual override.
+        /tune                  show the active model's detected profile & effective values
+        /tune <key> <value>    set a per-model override (config model_tuning.<model>.<key>)
+        /tune reset            remove overrides for the active model"""
+        if not self.backend:
+            self.err("No backend configured."); return
+        name = self.backend._model()
+        prof = getattr(self.backend, "profile", {}) or {}
+        caps = self.backend._ollama_caps(name) if hasattr(self.backend, "_ollama_caps") else None
+        source = "/api/show" if caps else "registry"
+        thinking = is_thinking_model(name, caps)
+        kind = "reasoning" if thinking else "non-thinking"
+        t = self.backend._tuning()
+        ovr = (self.cfg.get("model_tuning") or {}).get(name.lower(), {})
+
+        if args and args[0].lower() in ("reset", "clear"):
+            if ovr:
+                (self.cfg.get("model_tuning") or {}).pop(name.lower(), None)
+                self.cfg.save()
+                self.success(f"Cleared manual overrides for {name}.")
+            else:
+                self.info(f"No manual overrides for {name}.")
+            return
+
+        if len(args) >= 2:
+            key, val = args[0], args[1]
+            if key not in TUNING_KEYS:
+                self.err(f"Unknown tuning key: {key}. Valid: {', '.join(TUNING_KEYS)}")
+                return
+            if val.lower() in ("true", "false"):
+                val = val.lower() == "true"
+            else:
+                try: val = float(val)
+                except ValueError: pass
+            mt = self.cfg.get("model_tuning") or {}
+            mt.setdefault(name.lower(), {})[key] = val
+            self.cfg.set("model_tuning", mt)
+            self.success(f"{name}: {key} = {val} (manual override, applies to this model on local and cloud).")
+            return
+
+        self.info(f"Model: {C.BOLD}{name}{C.RESET} ({kind}; detected via {source})")
+        self.info(f"Backend: {self.backend.name} | local: {self.backend.is_local} | ollama: {self.backend.is_ollama}")
+        rows = [("thinking", thinking), ("native route", self.backend._native_ollama() if self.backend.is_ollama else "n/a"),
+                ("compact schemas", self.backend._is_compact_schemas())]
+        for key in ("temperature", "num_ctx", "max_tokens", "strategy_first", "gather_first", "compact_schemas", "ollama_no_think"):
+            if key == "num_ctx" and not self.backend.is_ollama: continue
+            if key == "ollama_no_think" and not self.backend.is_ollama: continue
+            v = self.backend._eff(key)
+            rows.append((key, v))
+        for k, v in rows:
+            mark = "  (override)" if k in ovr else ("  (registry)" if k in t else "  (global)")
+            print(f"  {k:<18} {C.DIM}{mark}{C.RESET} {v if v is not None else '(unset)'}")
+        self.info("Auto-tuning is on by default. Override only if needed: /tune <key> <value>")
+
     def _cmd_think(self, args):
         v = not self.cfg.get("extended_thinking", False)
         self.cfg.set("extended_thinking", v)

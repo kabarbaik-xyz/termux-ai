@@ -1447,6 +1447,116 @@ class TestBackendResilience(_TmpHome):
             b._ollama_caps("qwen3:1.7b")   # already cached above
         self.assertEqual(calls["n"], 0)
 
+    def test_tuning_registry_first_match_wins(self):
+        """tuning_for() is first-match-wins on the lowercased model name: the
+        registered reasoning/chat families get their profile, unknown models get
+        an empty dict (safe no-op)."""
+        self.assertTrue(m.tuning_for("qwen3:1.7b")["thinking"])
+        self.assertTrue(m.tuning_for("qwen3:4b")["thinking"])
+        self.assertTrue(m.tuning_for("qwen3:8b")["thinking"])
+        self.assertTrue(m.tuning_for("qwen3-coder:14b")["thinking"])
+        self.assertTrue(m.tuning_for("qwq:32b")["thinking"])
+        self.assertTrue(m.tuning_for("deepseek-r1:1.5b")["thinking"])
+        self.assertTrue(m.tuning_for("phi4-reasoning:3b")["thinking"])
+        self.assertFalse(m.tuning_for("qwen2.5:3b")["thinking"])
+        self.assertFalse(m.tuning_for("qwen2.5-coder:7b")["thinking"])
+        self.assertFalse(m.tuning_for("llama3.2:3b")["thinking"])
+        self.assertFalse(m.tuning_for("gemma3:4b")["thinking"])
+        self.assertTrue(m.tuning_for("o1")["thinking"])
+        self.assertTrue(m.tuning_for("o3-mini")["thinking"])
+        # unknown model -> no profile, no behavior change
+        self.assertEqual(m.tuning_for("gpt-4o"), {})
+        self.assertEqual(m.tuning_for("granite4.1:3b"), {})
+        # regexes are anchored to the start; suffixes after the family are fine
+        self.assertEqual(m.tuning_for("qwen3:1.7b")["num_ctx"], 16384)
+
+    def test_is_thinking_model_priority(self):
+        """capabilities are authoritative when present; the registry decides for
+        known families (even offline); everything else defaults to non-thinking."""
+        # 1. /api/show caps win over the registry
+        self.assertTrue(m.is_thinking_model("llama3.2", ["completion", "tools", "thinking"]))
+        self.assertFalse(m.is_thinking_model("qwen3:1.7b", ["completion", "tools"]))
+        # 2. registry decides when caps are absent/empty (offline Ollama)
+        self.assertTrue(m.is_thinking_model("deepseek-r1:1.5b", []))
+        self.assertTrue(m.is_thinking_model("phi4-reasoning:3b", []))
+        self.assertTrue(m.is_thinking_model("qwen3:1.7b", None))
+        self.assertFalse(m.is_thinking_model("llama3.2:3b", None))
+        self.assertFalse(m.is_thinking_model("qwen2.5:3b", None))
+        # 3. unknown -> not a reasoning model
+        self.assertFalse(m.is_thinking_model("granite4.1:3b", None))
+        self.assertFalse(m.is_thinking_model("gpt-4o", None))
+
+    def test_registry_routes_local_reasoning_models_to_native(self):
+        """deepseek-r1/phi4/qwen3 on a local Ollama route through the native
+        /api/chat shim via the REGISTRY even when /api/show is unavailable;
+        registry non-thinking families (llama3/gemma/qwen2.5) stay on /v1."""
+        # offline server -> _ollama_caps falls back to the empty heuristic
+        for model, expect_native in (("deepseek-r1:1.5b", True), ("phi4-reasoning:3b", True),
+                                     ("qwen3:1.7b", True), ("llama3.2:3b", False),
+                                     ("gemma3:4b", False), ("qwen2.5:3b", False)):
+            b = m.OpenAICompatible({"ollama_no_think": True}, "ollama",
+                                   {"base_url": "http://localhost:11434/v1", "model": model})
+            with um.patch("urllib.request.urlopen", side_effect=Exception("offline")):
+                b._ollama_caps(model)
+            self.assertEqual(b._native_ollama(), expect_native, model)
+            if expect_native:
+                self.assertEqual(b._url(), "http://localhost:11434/api/chat")
+            else:
+                self.assertEqual(b._url(), "http://localhost:11434/v1/chat/completions")
+
+    def test_eff_layering_and_auto_tune_both_local_and_cloud(self):
+        """_eff resolves profile.settings -> model tuning -> local_defaults ->
+        global, and the registry applies to CLOUD backends too (auto-tuning),
+        while unknown cloud models are completely untouched."""
+        # local qwen2.5: registry sets strategy_first False (fewer round-trips)
+        loc = m.OpenAICompatible({"strategy_first": True}, "ollama",
+                                 {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        self.assertFalse(loc._eff("strategy_first", False))
+        self.assertTrue(loc._is_compact_schemas())          # local -> compact
+        # local llama3: registry temperature applies
+        loc3 = m.OpenAICompatible({"temperature": 0.7}, "ollama",
+                                  {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
+        self.assertEqual(loc3._eff("temperature", 0.7), 0.6)
+        # cloud qwen3: SAME registry applies (auto-tune both sides)
+        cloud = m.OpenAICompatible({}, "openrouter",
+                                   {"base_url": "https://openrouter.ai/api/v1", "model": "qwen/qwen3", "api_key": "x"})
+        self.assertFalse(cloud.is_local)
+        self.assertFalse(cloud.is_ollama)
+        self.assertFalse(cloud._eff("strategy_first", False))
+        self.assertTrue(cloud._is_compact_schemas())
+        self.assertEqual(cloud._eff("temperature", 0.7), 0.6)
+        # profile.settings override the registry
+        pr = m.OpenAICompatible({}, "openrouter",
+                                {"base_url": "https://openrouter.ai/api/v1", "model": "qwen/qwen3",
+                                 "api_key": "x", "settings": {"strategy_first": True}})
+        self.assertTrue(pr._eff("strategy_first", False))
+        # unknown cloud model: no tuning, no compact schemas, no behavior change
+        gpt = m.OpenAICompatible({"temperature": 0.7, "strategy_first": False}, "openai",
+                                 {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        self.assertFalse(gpt._is_compact_schemas())
+        self.assertEqual(gpt._eff("temperature", 0.7), 0.7)
+        self.assertEqual(gpt._eff("strategy_first", False), False)
+        # local_defaults safety net applies only to local backends
+        net = m.OpenAICompatible({"max_tool_result": 30000, "local_defaults": {"max_tool_result": 8000}}, "ollama",
+                                 {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
+        self.assertEqual(net._eff("max_tool_result", 10000), 8000)
+        cloud_net = m.OpenAICompatible({"max_tool_result": 30000, "local_defaults": {"max_tool_result": 8000}}, "openai",
+                                       {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        self.assertEqual(cloud_net._eff("max_tool_result", 10000), 30000)
+
+    def test_model_tuning_user_override_beats_registry(self):
+        """config `model_tuning.<model>.<key>` is merged over the registry for
+        that model only (the rare manual escape hatch)."""
+        b = m.OpenAICompatible({"model_tuning": {"qwen2.5:3b": {"strategy_first": True, "temperature": 0.9}},
+                                "temperature": 0.7}, "ollama",
+                               {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        self.assertTrue(b._eff("strategy_first", False))
+        self.assertEqual(b._eff("temperature", 0.7), 0.9)
+        # other models are unaffected
+        b2 = m.OpenAICompatible({"model_tuning": {"qwen2.5:3b": {"strategy_first": True}}}, "ollama",
+                                {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
+        self.assertFalse(b2._eff("strategy_first", False))
+
     def test_native_ollama_normalizes_tool_call_arguments(self):
         """Assistant tool_calls accumulated by the streaming tool loop carry
         `arguments` as a JSON STRING (OpenAI shape). Ollama's native /api/chat

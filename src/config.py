@@ -56,7 +56,7 @@ class Config:
         # already read, forcing re-reads -- the #1 cause of tool-loop spirals.
         "context_window": 32000,
         "iteration_history_budget": 30000,
-        "compact_process": "auto",
+        "compact_process": "on",
         "compact_threshold": 4,
         "stream": True,
         "show_tokens": True,
@@ -90,6 +90,10 @@ class Config:
         "fold_head": 8,
         "attach_files": True,
         "api_keys": {"anthropic": ""},
+        # Per-model auto-tuning is applied automatically from the MODEL_TUNING
+        # registry; users may override per-model via model_tuning (rarely needed).
+        "model_tuning": {},
+        "local_defaults": {},      # safety net: applied only to local backends
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
     }
 

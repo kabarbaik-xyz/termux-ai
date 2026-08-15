@@ -45,6 +45,7 @@ ORDER = [
     "db",           # Database
     "config",       # Config
     "tools",        # Tools (+ Plan-mode read-only executor)
+    "tuning",       # MODEL_TUNING registry + is_thinking_model (before backends)
     "backends",     # Backend, OpenAICompatible, AnthropicBackend, get_backend
     "skills",       # Skills (discovery, parse, seed) -- before App
     "app",          # App (core: init, _chat, _stream_tool_chat, _execute_command dispatch)

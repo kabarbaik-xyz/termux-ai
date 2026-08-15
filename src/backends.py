@@ -89,8 +89,45 @@ def _suggest_num_ctx(free_gb, model_gb):
 
 
 class Backend:
-    def __init__(self, cfg): self.c = cfg
+    def __init__(self, cfg):
+        self.c = cfg
+        self.profile = {}
+        self.is_local = False
+        self.is_ollama = False
     API_KEY_ENV = "OPENAI_API_KEY"
+
+    def _tuning(self):
+        """Effective tuning profile for the active model: registry + any user
+        overrides from config `model_tuning.<model>` (user wins)."""
+        t = tuning_for(self._model())
+        nm = (self._model() or "").lower()
+        for k, v in ((self.c.get("model_tuning") or {}).get(nm, {}) or {}).items():
+            if k in TUNING_KEYS:
+                t[k] = v
+        return t
+
+    def _eff(self, key, default=None):
+        """Effective config value for `key`, resolved for the ACTIVE model:
+        profile.settings -> model tuning -> local_defaults (if local) -> global.
+        This is what lets a per-model profile tune behavior for BOTH local and
+        cloud backends without a user touching anything."""
+        s = self.profile.get("settings") or {}
+        if key in s:
+            return s[key]
+        t = self._tuning()
+        if key in t:
+            return t[key]
+        if self.is_local and key in (self.c.get("local_defaults") or {}):
+            return self.c["local_defaults"][key]
+        return self.c.get(key, default)
+
+    def _is_compact_schemas(self):
+        """Use compact tool schemas for local backends and for models whose
+        tuning profile opts in (small/reasoning local models re-evaluate the
+        full schema every call). Cloud models without a profile stay full."""
+        if self.is_local:
+            return True
+        return bool(self._tuning().get("compact_schemas"))
     def _api_key(self):
         k = (self.profile.get("api_key") or "").strip()
         if k and k.lower() not in ("ollama", "placeholder"): return k
@@ -312,7 +349,7 @@ class Backend:
         Returns the number of old messages compacted (0 if none needed).
         Falls back to _trim_iteration_history if the summary call fails."""
         if budget is None:
-            budget = self.c.get("iteration_history_budget", 30000)
+            budget = self._eff("iteration_history_budget", 30000)
         if keep_recent is None:
             keep_recent = self.c.get("compact_keep_recent", 8000)
 
@@ -550,6 +587,11 @@ class OpenAICompatible(Backend):
         self.name = profile_name
         self.profile = profile or {}
         self._caps_cache = {}   # model name -> capabilities list (from Ollama /api/show)
+        base = (self.profile.get("base_url") or "").lower()
+        self.is_local = bool(self.profile.get("local")) or any(
+            h in base for h in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]"))
+        self.is_ollama = self.is_local and (
+            profile_name.lower() == "ollama" or "ollama" in base or ":11434" in base)
 
     def _headers(self):
         k = self._api_key()
@@ -563,16 +605,13 @@ class OpenAICompatible(Backend):
         `think`, so reasoning models (qwen3, deepseek-r1, phi4-reasoning, ...) burn
         minutes of phone CPU thinking before answering (measured 247s vs 10s).
         The native /api/chat endpoint accepts `think: false` (config:
-        ollama_no_think, default on). Detection is model-agnostic: we query
-        Ollama's /api/show for the model's `capabilities` and route through the
-        native endpoint whenever `thinking` is listed (falls back to a
-        model-name heuristic if /api/show is unavailable)."""
-        if not self.c.get("ollama_no_think", True):
+        ollama_no_think, default on). Detection uses the tuning registry for the
+        known reasoning families and Ollama's /api/show capabilities otherwise."""
+        if not self._eff("ollama_no_think", True):
             return False
-        base = (self.profile.get("base_url") or "").lower()
-        if "localhost" not in base and "127.0.0.1" not in base:
+        if not self.is_ollama:
             return False
-        return "thinking" in self._ollama_caps(self._model())
+        return is_thinking_model(self._model(), self._ollama_caps(self._model()))
 
     def _ollama_caps(self, model):
         """Return the capabilities list for an Ollama model (cached). Falls back
@@ -620,13 +659,13 @@ class OpenAICompatible(Backend):
         normalizes assistant tool_calls so `arguments` is an OBJECT (the model
         streams them as JSON strings in the OpenAI shape; Ollama's native parser
         rejects the round-trip with "can't find closing '}' symbol")."""
-        temp = temperature if temperature is not None else self.c.get("temperature")
-        mt = max_tokens if max_tokens is not None else self.c.get("max_tokens", 4096)
+        temp = temperature if temperature is not None else self._eff("temperature")
+        mt = max_tokens if max_tokens is not None else self._eff("max_tokens", 4096)
         if self._native_ollama():
             msgs = self._native_messages(msgs)
             # Ollama-specific max-tokens override so a low local cap (slow phone
             # CPU) doesn't bleed into cloud (config: ollama_max_tokens).
-            omt = self.c.get("ollama_max_tokens") or 0
+            omt = self._eff("ollama_max_tokens") or 0
             if omt and max_tokens is None:
                 mt = omt
         d = {"model": self._model(), "messages": msgs, "stream": stream}
@@ -637,13 +676,13 @@ class OpenAICompatible(Backend):
             opts = {}
             if temp is not None: opts["temperature"] = temp
             if mt: opts["num_predict"] = mt
-            nctx = self.c.get("num_ctx") or 0
+            nctx = self._eff("num_ctx") or 0
             if nctx: opts["num_ctx"] = int(nctx)
             if opts: d["options"] = opts
             # Keep the model resident so a slow tool mid-skill (graphify/fetch
             # can take minutes) doesn't force a ~30s cold reload on the next
             # request -- the #1 cause of "stuck in thinking" with skills.
-            ka = self.c.get("ollama_keep_alive", "30m")
+            ka = self._eff("ollama_keep_alive", "30m")
             if ka not in (0, None, "", "0"):
                 d["keep_alive"] = ka
         else:
@@ -742,8 +781,8 @@ class OpenAICompatible(Backend):
     def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         self._check_api_key()
         h = self._headers()
-        build_mode = self.c.get("tools_enabled", False)
-        max_res = self.c.get("max_tool_result", 10000)
+        build_mode = self._eff("tools_enabled", False)
+        max_res = self._eff("max_tool_result", 10000)
 
         iterations = 0
         total_calls = 0
@@ -776,10 +815,10 @@ class OpenAICompatible(Backend):
             compacted = self._compact_iteration_history(msgs)
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
-            temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
+            temp = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp)
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._is_compact_schemas()), temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
@@ -951,7 +990,7 @@ class AnthropicBackend(Backend):
     def chat(self, msgs, stream=None):
         sys_prompt, payload = self._split_system(msgs)
         if stream is None: stream = self.c.get("stream", True)
-        d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "stream": stream}
+        d = {"model": self._model(), "messages": payload, "max_tokens": self._eff("max_tokens", 4096), "stream": stream}
         if sys_prompt: d["system"] = sys_prompt
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
@@ -965,8 +1004,8 @@ class AnthropicBackend(Backend):
         sys_prompt, payload = self._split_system(msgs)
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
-        build_mode = self.c.get("tools_enabled", False)
-        max_res = self.c.get("max_tool_result", 10000)
+        build_mode = self._eff("tools_enabled", False)
+        max_res = self._eff("max_tool_result", 10000)
 
         iterations = 0
         total_calls = 0
@@ -999,17 +1038,17 @@ class AnthropicBackend(Backend):
             compacted = self._compact_iteration_history(payload)
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
-            thinking_on = bool(self.c.get("extended_thinking", False))
+            thinking_on = bool(self._eff("extended_thinking", False))
             d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if thinking_on:
                 # Extended thinking (Claude 3.7/4): genuine hidden reasoning before acting.
-                budget = max(1024, int(self.c.get("thinking_budget", 8000)))
-                d["max_tokens"] = budget + max(int(self.c.get("max_tokens", 4096)), 2048)
+                budget = max(1024, int(self._eff("thinking_budget", 8000)))
+                d["max_tokens"] = budget + max(int(self._eff("max_tokens", 4096)), 2048)
                 d["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # thinking requires temperature to be unset (the API defaults it to 1)
             else:
-                d["max_tokens"] = self.c.get("max_tokens", 4096)
-                d["temperature"] = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
+                d["max_tokens"] = self._eff("max_tokens", 4096)
+                d["temperature"] = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
             if sys_prompt: d["system"] = sys_prompt
 
             content_blocks = {}

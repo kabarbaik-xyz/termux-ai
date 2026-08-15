@@ -705,7 +705,7 @@ class App:
 
         # Gather-then-execute: recommend the model read everything it needs up
         # front (batched), then act -- rather than dribbling reads across steps.
-        if self.cfg.get("gather_first", True):
+        if self.backend._eff("gather_first", True):
             msgs[0]["content"] += (
                 "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
                 "In your first one or two responses, batch the reads you'll need "
@@ -717,7 +717,7 @@ class App:
 
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).
-        if self.cfg.get("strategy_first", False) and not self.quiet:
+        if self.backend._eff("strategy_first", False) and not self.quiet:
             strategy = self._make_strategy(title_src)
             if strategy:
                 self._show_strategy(strategy)
@@ -957,6 +957,7 @@ class App:
         "/undo": "_cmd_undo", "/show": "_cmd_show", "/rename": "_cmd_rename",
         "/tokens": "_cmd_tokens", "/diff": "_cmd_diff", "/compact": "_cmd_compact",
         "/regen": "_cmd_regen", "/retry": "_cmd_regen",
+        "/tune": "_cmd_tune",
     }
 
     def _execute_command(self, cmd_str):

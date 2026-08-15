@@ -833,7 +833,7 @@ class Config:
         # already read, forcing re-reads -- the #1 cause of tool-loop spirals.
         "context_window": 32000,
         "iteration_history_budget": 30000,
-        "compact_process": "auto",
+        "compact_process": "on",
         "compact_threshold": 4,
         "stream": True,
         "show_tokens": True,
@@ -867,6 +867,10 @@ class Config:
         "fold_head": 8,
         "attach_files": True,
         "api_keys": {"anthropic": ""},
+        # Per-model auto-tuning is applied automatically from the MODEL_TUNING
+        # registry; users may override per-model via model_tuning (rarely needed).
+        "model_tuning": {},
+        "local_defaults": {},      # safety net: applied only to local backends
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
     }
 
@@ -1601,6 +1605,61 @@ class Tools:
 
 
 
+# ══ termux_ai.tuning ══ (fragment; merged by build.py)
+# ══ termux_ai.tuning ══ (fragment; merged by build.py)
+# Per-model auto-tuning registry. The goal is automation: every model family
+# gets sensible defaults automatically, so users don't have to tune by hand.
+# First-match-wins on the lowercased model name. Unknown models fall back to
+# Ollama /api/show capabilities (when available) then to non-thinking defaults.
+MODEL_TUNING = [
+    # ── reasoning models (route through the native Ollama shim with think:false;
+    #    lower temperature keeps their chain-of-thought focused) ──────────────
+    # `(?:^|/)` matches bare names ("qwen3:1.7b") and provider-prefixed cloud
+    # IDs ("qwen/qwen3-30b-a3b", "deepseek/deepseek-r1", "openai/o1").
+    (re.compile(r"(?:^|/)qwen3|(?:^|/)qwq"),  {"thinking": True, "temperature": 0.6,
+                                               "num_ctx": 16384, "strategy_first": False, "compact_schemas": True}),
+    (re.compile(r"(?:^|/)deepseek-r1"),       {"thinking": True, "temperature": 0.6,
+                                               "compact_schemas": True}),
+    (re.compile(r"(?:^|/)phi4(?:-reasoning)?"), {"thinking": True, "temperature": 0.6,
+                                                 "compact_schemas": True}),
+    # ── fast chat models (keep /v1 path; compact schemas cut prompt cost) ─────
+    (re.compile(r"(?:^|/)qwen2\.5|(?:^|/)qwen2"), {"thinking": False, "strategy_first": False, "compact_schemas": True}),
+    (re.compile(r"(?:^|/)llama3"),            {"thinking": False, "temperature": 0.6, "compact_schemas": True}),
+    (re.compile(r"(?:^|/)gemma"),             {"thinking": False, "compact_schemas": True}),
+    # ── cloud reasoning families (OpenAI-compat /api/v1 reasoning_content) ────
+    (re.compile(r"(?:^|/)o[1-3](?:-|$)"),     {"thinking": True}),
+    (re.compile(r"(?:^|/)gemini-2\.[05].*(think|flash|pro)"), {"thinking": True}),
+]
+
+# Keys a tuning profile may carry, and which read-site they feed (for /tune display).
+TUNING_KEYS = ("thinking", "ollama_no_think", "temperature", "num_ctx",
+               "strategy_first", "gather_first", "compact_schemas")
+
+
+def tuning_for(name):
+    """Return the first matching tuning profile for a model name (dict), or {}."""
+    nm = (name or "").lower()
+    for pat, prof in MODEL_TUNING:
+        if pat.search(nm):
+            return dict(prof)
+    return {}
+
+
+def is_thinking_model(name, caps=None):
+    """Best-effort 'does this model think?' detection.
+    1. Ollama /api/show capabilities are authoritative when provided.
+    2. The registry knows the major reasoning families.
+    3. Default: not a reasoning model."""
+    if caps:
+        if "thinking" in caps:
+            return True
+        if caps and all(c in ("completion", "tools", "embedding") for c in caps):
+            return False
+    t = tuning_for(name)
+    if t.get("thinking") is not None:
+        return bool(t.get("thinking"))
+    return False
+
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 class BackendError(Exception):
@@ -1693,8 +1752,45 @@ def _suggest_num_ctx(free_gb, model_gb):
 
 
 class Backend:
-    def __init__(self, cfg): self.c = cfg
+    def __init__(self, cfg):
+        self.c = cfg
+        self.profile = {}
+        self.is_local = False
+        self.is_ollama = False
     API_KEY_ENV = "OPENAI_API_KEY"
+
+    def _tuning(self):
+        """Effective tuning profile for the active model: registry + any user
+        overrides from config `model_tuning.<model>` (user wins)."""
+        t = tuning_for(self._model())
+        nm = (self._model() or "").lower()
+        for k, v in ((self.c.get("model_tuning") or {}).get(nm, {}) or {}).items():
+            if k in TUNING_KEYS:
+                t[k] = v
+        return t
+
+    def _eff(self, key, default=None):
+        """Effective config value for `key`, resolved for the ACTIVE model:
+        profile.settings -> model tuning -> local_defaults (if local) -> global.
+        This is what lets a per-model profile tune behavior for BOTH local and
+        cloud backends without a user touching anything."""
+        s = self.profile.get("settings") or {}
+        if key in s:
+            return s[key]
+        t = self._tuning()
+        if key in t:
+            return t[key]
+        if self.is_local and key in (self.c.get("local_defaults") or {}):
+            return self.c["local_defaults"][key]
+        return self.c.get(key, default)
+
+    def _is_compact_schemas(self):
+        """Use compact tool schemas for local backends and for models whose
+        tuning profile opts in (small/reasoning local models re-evaluate the
+        full schema every call). Cloud models without a profile stay full."""
+        if self.is_local:
+            return True
+        return bool(self._tuning().get("compact_schemas"))
     def _api_key(self):
         k = (self.profile.get("api_key") or "").strip()
         if k and k.lower() not in ("ollama", "placeholder"): return k
@@ -1916,7 +2012,7 @@ class Backend:
         Returns the number of old messages compacted (0 if none needed).
         Falls back to _trim_iteration_history if the summary call fails."""
         if budget is None:
-            budget = self.c.get("iteration_history_budget", 30000)
+            budget = self._eff("iteration_history_budget", 30000)
         if keep_recent is None:
             keep_recent = self.c.get("compact_keep_recent", 8000)
 
@@ -2154,6 +2250,11 @@ class OpenAICompatible(Backend):
         self.name = profile_name
         self.profile = profile or {}
         self._caps_cache = {}   # model name -> capabilities list (from Ollama /api/show)
+        base = (self.profile.get("base_url") or "").lower()
+        self.is_local = bool(self.profile.get("local")) or any(
+            h in base for h in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]"))
+        self.is_ollama = self.is_local and (
+            profile_name.lower() == "ollama" or "ollama" in base or ":11434" in base)
 
     def _headers(self):
         k = self._api_key()
@@ -2167,16 +2268,13 @@ class OpenAICompatible(Backend):
         `think`, so reasoning models (qwen3, deepseek-r1, phi4-reasoning, ...) burn
         minutes of phone CPU thinking before answering (measured 247s vs 10s).
         The native /api/chat endpoint accepts `think: false` (config:
-        ollama_no_think, default on). Detection is model-agnostic: we query
-        Ollama's /api/show for the model's `capabilities` and route through the
-        native endpoint whenever `thinking` is listed (falls back to a
-        model-name heuristic if /api/show is unavailable)."""
-        if not self.c.get("ollama_no_think", True):
+        ollama_no_think, default on). Detection uses the tuning registry for the
+        known reasoning families and Ollama's /api/show capabilities otherwise."""
+        if not self._eff("ollama_no_think", True):
             return False
-        base = (self.profile.get("base_url") or "").lower()
-        if "localhost" not in base and "127.0.0.1" not in base:
+        if not self.is_ollama:
             return False
-        return "thinking" in self._ollama_caps(self._model())
+        return is_thinking_model(self._model(), self._ollama_caps(self._model()))
 
     def _ollama_caps(self, model):
         """Return the capabilities list for an Ollama model (cached). Falls back
@@ -2224,13 +2322,13 @@ class OpenAICompatible(Backend):
         normalizes assistant tool_calls so `arguments` is an OBJECT (the model
         streams them as JSON strings in the OpenAI shape; Ollama's native parser
         rejects the round-trip with "can't find closing '}' symbol")."""
-        temp = temperature if temperature is not None else self.c.get("temperature")
-        mt = max_tokens if max_tokens is not None else self.c.get("max_tokens", 4096)
+        temp = temperature if temperature is not None else self._eff("temperature")
+        mt = max_tokens if max_tokens is not None else self._eff("max_tokens", 4096)
         if self._native_ollama():
             msgs = self._native_messages(msgs)
             # Ollama-specific max-tokens override so a low local cap (slow phone
             # CPU) doesn't bleed into cloud (config: ollama_max_tokens).
-            omt = self.c.get("ollama_max_tokens") or 0
+            omt = self._eff("ollama_max_tokens") or 0
             if omt and max_tokens is None:
                 mt = omt
         d = {"model": self._model(), "messages": msgs, "stream": stream}
@@ -2241,13 +2339,13 @@ class OpenAICompatible(Backend):
             opts = {}
             if temp is not None: opts["temperature"] = temp
             if mt: opts["num_predict"] = mt
-            nctx = self.c.get("num_ctx") or 0
+            nctx = self._eff("num_ctx") or 0
             if nctx: opts["num_ctx"] = int(nctx)
             if opts: d["options"] = opts
             # Keep the model resident so a slow tool mid-skill (graphify/fetch
             # can take minutes) doesn't force a ~30s cold reload on the next
             # request -- the #1 cause of "stuck in thinking" with skills.
-            ka = self.c.get("ollama_keep_alive", "30m")
+            ka = self._eff("ollama_keep_alive", "30m")
             if ka not in (0, None, "", "0"):
                 d["keep_alive"] = ka
         else:
@@ -2346,8 +2444,8 @@ class OpenAICompatible(Backend):
     def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         self._check_api_key()
         h = self._headers()
-        build_mode = self.c.get("tools_enabled", False)
-        max_res = self.c.get("max_tool_result", 10000)
+        build_mode = self._eff("tools_enabled", False)
+        max_res = self._eff("max_tool_result", 10000)
 
         iterations = 0
         total_calls = 0
@@ -2380,10 +2478,10 @@ class OpenAICompatible(Backend):
             compacted = self._compact_iteration_history(msgs)
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
-            temp = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
+            temp = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._native_ollama()), temperature=temp)
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._is_compact_schemas()), temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
@@ -2555,7 +2653,7 @@ class AnthropicBackend(Backend):
     def chat(self, msgs, stream=None):
         sys_prompt, payload = self._split_system(msgs)
         if stream is None: stream = self.c.get("stream", True)
-        d = {"model": self._model(), "messages": payload, "max_tokens": self.c.get("max_tokens", 4096), "stream": stream}
+        d = {"model": self._model(), "messages": payload, "max_tokens": self._eff("max_tokens", 4096), "stream": stream}
         if sys_prompt: d["system"] = sys_prompt
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
@@ -2569,8 +2667,8 @@ class AnthropicBackend(Backend):
         sys_prompt, payload = self._split_system(msgs)
         h = self._headers()
         url = "https://api.anthropic.com/v1/messages"
-        build_mode = self.c.get("tools_enabled", False)
-        max_res = self.c.get("max_tool_result", 10000)
+        build_mode = self._eff("tools_enabled", False)
+        max_res = self._eff("max_tool_result", 10000)
 
         iterations = 0
         total_calls = 0
@@ -2603,17 +2701,17 @@ class AnthropicBackend(Backend):
             compacted = self._compact_iteration_history(payload)
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
-            thinking_on = bool(self.c.get("extended_thinking", False))
+            thinking_on = bool(self._eff("extended_thinking", False))
             d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if thinking_on:
                 # Extended thinking (Claude 3.7/4): genuine hidden reasoning before acting.
-                budget = max(1024, int(self.c.get("thinking_budget", 8000)))
-                d["max_tokens"] = budget + max(int(self.c.get("max_tokens", 4096)), 2048)
+                budget = max(1024, int(self._eff("thinking_budget", 8000)))
+                d["max_tokens"] = budget + max(int(self._eff("max_tokens", 4096)), 2048)
                 d["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # thinking requires temperature to be unset (the API defaults it to 1)
             else:
-                d["max_tokens"] = self.c.get("max_tokens", 4096)
-                d["temperature"] = min(self.c.get("temperature", 0.7), 0.4) if build_mode else self.c.get("temperature", 0.7)
+                d["max_tokens"] = self._eff("max_tokens", 4096)
+                d["temperature"] = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
             if sys_prompt: d["system"] = sys_prompt
 
             content_blocks = {}
@@ -3606,7 +3704,7 @@ class App:
 
         # Gather-then-execute: recommend the model read everything it needs up
         # front (batched), then act -- rather than dribbling reads across steps.
-        if self.cfg.get("gather_first", True):
+        if self.backend._eff("gather_first", True):
             msgs[0]["content"] += (
                 "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
                 "In your first one or two responses, batch the reads you'll need "
@@ -3618,7 +3716,7 @@ class App:
 
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).
-        if self.cfg.get("strategy_first", False) and not self.quiet:
+        if self.backend._eff("strategy_first", False) and not self.quiet:
             strategy = self._make_strategy(title_src)
             if strategy:
                 self._show_strategy(strategy)
@@ -3858,6 +3956,7 @@ class App:
         "/undo": "_cmd_undo", "/show": "_cmd_show", "/rename": "_cmd_rename",
         "/tokens": "_cmd_tokens", "/diff": "_cmd_diff", "/compact": "_cmd_compact",
         "/regen": "_cmd_regen", "/retry": "_cmd_regen",
+        "/tune": "_cmd_tune",
     }
 
     def _execute_command(self, cmd_str):
@@ -3956,6 +4055,61 @@ class App:
         v = not self.cfg.get("strategy_first", False)
         self.cfg.set("strategy_first", v)
         self.success(f"Strategy-first mode {'ON (model outlines a strategy before acting)' if v else 'OFF'}.")
+
+    def _cmd_tune(self, args):
+        """Per-model auto-tuning report + optional manual override.
+        /tune                  show the active model's detected profile & effective values
+        /tune <key> <value>    set a per-model override (config model_tuning.<model>.<key>)
+        /tune reset            remove overrides for the active model"""
+        if not self.backend:
+            self.err("No backend configured."); return
+        name = self.backend._model()
+        prof = getattr(self.backend, "profile", {}) or {}
+        caps = self.backend._ollama_caps(name) if hasattr(self.backend, "_ollama_caps") else None
+        source = "/api/show" if caps else "registry"
+        thinking = is_thinking_model(name, caps)
+        kind = "reasoning" if thinking else "non-thinking"
+        t = self.backend._tuning()
+        ovr = (self.cfg.get("model_tuning") or {}).get(name.lower(), {})
+
+        if args and args[0].lower() in ("reset", "clear"):
+            if ovr:
+                (self.cfg.get("model_tuning") or {}).pop(name.lower(), None)
+                self.cfg.save()
+                self.success(f"Cleared manual overrides for {name}.")
+            else:
+                self.info(f"No manual overrides for {name}.")
+            return
+
+        if len(args) >= 2:
+            key, val = args[0], args[1]
+            if key not in TUNING_KEYS:
+                self.err(f"Unknown tuning key: {key}. Valid: {', '.join(TUNING_KEYS)}")
+                return
+            if val.lower() in ("true", "false"):
+                val = val.lower() == "true"
+            else:
+                try: val = float(val)
+                except ValueError: pass
+            mt = self.cfg.get("model_tuning") or {}
+            mt.setdefault(name.lower(), {})[key] = val
+            self.cfg.set("model_tuning", mt)
+            self.success(f"{name}: {key} = {val} (manual override, applies to this model on local and cloud).")
+            return
+
+        self.info(f"Model: {C.BOLD}{name}{C.RESET} ({kind}; detected via {source})")
+        self.info(f"Backend: {self.backend.name} | local: {self.backend.is_local} | ollama: {self.backend.is_ollama}")
+        rows = [("thinking", thinking), ("native route", self.backend._native_ollama() if self.backend.is_ollama else "n/a"),
+                ("compact schemas", self.backend._is_compact_schemas())]
+        for key in ("temperature", "num_ctx", "max_tokens", "strategy_first", "gather_first", "compact_schemas", "ollama_no_think"):
+            if key == "num_ctx" and not self.backend.is_ollama: continue
+            if key == "ollama_no_think" and not self.backend.is_ollama: continue
+            v = self.backend._eff(key)
+            rows.append((key, v))
+        for k, v in rows:
+            mark = "  (override)" if k in ovr else ("  (registry)" if k in t else "  (global)")
+            print(f"  {k:<18} {C.DIM}{mark}{C.RESET} {v if v is not None else '(unset)'}")
+        self.info("Auto-tuning is on by default. Override only if needed: /tune <key> <value>")
 
     def _cmd_think(self, args):
         v = not self.cfg.get("extended_thinking", False)
