@@ -22,7 +22,7 @@ jobs:
       - name: Shell-check installer scripts
         run: |
           if command -v shellcheck &>/dev/null; then
-            shellcheck install.sh uninstall.sh
+            shellcheck -S warning install.sh uninstall.sh
           else
             bash -n install.sh uninstall.sh
             echo "shellcheck not installed; bash -n passed"

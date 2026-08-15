@@ -155,17 +155,20 @@ if [ -n "$SHELL" ]; then
     esac
 fi
 
+# shellcheck disable=SC2016  # sed regex is intentionally literal (no expansion)
 escape_sed() { printf '%s' "$1" | sed 's/[][\.|$(){}?+*^]/\\&/g'; }
 
 ensure_path_entry() {
     file="$1"
     [ -f "$file" ] || : > "$file"
     esc_dir=$(escape_sed "$INSTALL_DIR")
+    # shellcheck disable=SC2016  # sed regex is intentionally literal (no expansion)
     esc_home=$(printf '%s' "$INSTALL_DIR" | sed "s|^$HOME|\$HOME|" | sed 's/[][\.|$(){}?+*^]/\\&/g')
     if grep -q "# Termux AI" "$file" 2>/dev/null; then
         sed -i '/# Termux AI/d' "$file"
         sed -i -e "\|$esc_dir|d" -e "\|$esc_home|d" "$file"
     fi
+    # shellcheck disable=SC2016  # printf format keeps $PATH literal; appended later
     printf '\n# Termux AI\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$file"
     echo "   ✓ Added $INSTALL_DIR to PATH in $file"
 }
