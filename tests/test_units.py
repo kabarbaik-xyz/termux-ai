@@ -1557,6 +1557,73 @@ class TestBackendResilience(_TmpHome):
                                 {"base_url": "http://localhost:11434/v1", "model": "llama3.2"})
         self.assertFalse(b2._eff("strategy_first", False))
 
+    def test_micro_schemas_are_smallest_and_still_valid(self):
+        """micro mode (local non-thinking models) is strictly smaller than
+        compact, drops per-tool descriptions, and keeps the run_command
+        security allowlist so Plan-mode rules still reach the model."""
+        full = json.dumps(m.Tools.get_schemas(True, compact=False), separators=(",", ":"))
+        comp = json.dumps(m.Tools.get_schemas(True, compact=True), separators=(",", ":"))
+        mic = json.dumps(m.Tools.get_schemas(True, micro=True), separators=(",", ":"))
+        self.assertLess(len(mic), len(comp))
+        self.assertLess(len(comp), len(full))
+        # description dropped on normal tools, kept on run_command (security)
+        for t in m.Tools.get_schemas(True, micro=True):
+            fn = t["function"]
+            if fn["name"] == "run_command":
+                self.assertTrue(fn.get("description"))
+            else:
+                self.assertNotIn("description", fn)
+        # parameters still carry name+type for the model to fill correctly
+        read = next(t["function"] for t in m.Tools.get_schemas(True, micro=True) if t["function"]["name"] == "read_file")
+        self.assertIn("path", read["parameters"]["properties"])
+
+    def test_schema_mode_and_local_chat_tuning(self):
+        """local NON-thinking models get micro schemas + tuned num_ctx/
+        ollama_max_tokens/keep_alive; local thinking models compact+native;
+        unknown cloud stays full with no tuning."""
+        b = m.OpenAICompatible({"ollama_no_think": True}, "ollama",
+                               {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        with um.patch("urllib.request.urlopen", side_effect=Exception("offline")):
+            b._ollama_caps("qwen2.5:3b")
+        self.assertEqual(b._schema_mode(), "micro")
+        self.assertTrue(b._local_chat_model())
+        self.assertEqual(b._eff("temperature", 0.7), 0.6)
+        self.assertEqual(b._eff("num_ctx", 0), 8192)
+        self.assertEqual(b._eff("ollama_max_tokens", 0), 2048)
+        self.assertEqual(b._eff("ollama_keep_alive", "2h"), "2h")
+        # the tuning applies into the request payload on the native path
+        b._caps_cache["qwen2.5:3b"] = ["thinking"]
+        d = b._payload([{"role": "user", "content": "hi"}], True, max_tokens=None)
+        self.assertEqual(d["options"]["num_ctx"], 8192)
+        self.assertEqual(d["options"]["num_predict"], 2048)
+        # local thinking model -> compact schemas (native has num_ctx room)
+        b2 = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        with um.patch("urllib.request.urlopen", side_effect=Exception("offline")):
+            b2._ollama_caps("qwen3:1.7b")
+        self.assertEqual(b2._schema_mode(), "compact")
+        self.assertTrue(b2._native_ollama())
+        self.assertFalse(b2._local_chat_model())
+        # unknown cloud -> full schemas, no tuning leakage
+        c = m.OpenAICompatible({}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        self.assertEqual(c._schema_mode(), "full")
+        self.assertEqual(c._eff("ollama_max_tokens", 0), 0)
+        self.assertFalse(c._local_chat_model())
+
+    def test_warm_is_ollama_only_and_never_raises(self):
+        """_warm() pre-loads the local model; remote backends are a no-op and
+        failures are swallowed (startup must never block or crash)."""
+        b = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        calls = {"n": 0}
+        def fake_open(req, timeout):
+            calls["n"] += 1
+            raise Exception("boom")   # swallowed
+        with um.patch("urllib.request.urlopen", side_effect=fake_open):
+            b._warm()                 # must not raise
+        self.assertEqual(calls["n"], 1)
+        c = m.OpenAICompatible({}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        c._warm()                     # no-op for remote
+        self.assertEqual(calls["n"], 1)
+
     def test_native_ollama_normalizes_tool_call_arguments(self):
         """Assistant tool_calls accumulated by the streaming tool loop carry
         `arguments` as a JSON STRING (OpenAI shape). Ollama's native /api/chat

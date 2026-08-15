@@ -80,15 +80,20 @@ class MarkdownFormatter:
 
 class Spinner:
     CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    def __init__(self, msg="thinking"):
+    def __init__(self, msg="working"):
         self.msg = msg
         self._stop = False
         self._t = None
         self._started = False
         self._atexit_registered = False
+        self._started_at = 0.0
+
+    def set_msg(self, msg):
+        self.msg = msg
 
     def start(self):
         self._started = True
+        self._started_at = time.time()
         if not IS_TTY:
             sys.stdout.write(f"{C.DIM}… {self.msg}{C.RESET}"); sys.stdout.flush(); return
         self._stop = False
@@ -101,7 +106,11 @@ class Spinner:
     def _run(self):
         i = 0
         while not self._stop:
-            sys.stdout.write(f"\r{C.CYAN}{self.CHARS[i % len(self.CHARS)]}{C.RESET} {C.DIM}{self.msg}{C.RESET}")
+            # Show elapsed seconds once a prefill/generation is slow enough to
+            # feel frozen -- turns "waiting silently" into "17s and counting".
+            elapsed = int(time.time() - self._started_at)
+            suff = f" {elapsed}s" if elapsed >= 3 else ""
+            sys.stdout.write(f"\r{C.CYAN}{self.CHARS[i % len(self.CHARS)]}{C.RESET} {C.DIM}{self.msg}{suff}{C.RESET}")
             sys.stdout.flush(); time.sleep(0.08); i += 1
 
     def stop(self):

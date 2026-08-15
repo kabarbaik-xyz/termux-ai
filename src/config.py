@@ -83,9 +83,10 @@ class Config:
         "retries": 3,
         "retry_delay": 1.0,
         "ollama_no_think": True,   # qwen3 on local Ollama: disable thinking via native API (the /v1 compat endpoint ignores `think` and qwen3 burns minutes of phone CPU thinking)
-        "ollama_keep_alive": "30m", # keep the model loaded between requests so a slow tool (graphify, fetch) mid-skill doesn't force a ~30s cold reload (Ollama's default ~5min idle unload)
+        "ollama_keep_alive": "2h", # keep the model loaded + KV cache resident between turns so idle doesn't force a ~30s cold reload mid-session
         "ollama_max_tokens": 0,    # Ollama-only max generation cap (0 = use max_tokens). Set low (e.g. 2048) for slow phone CPU WITHOUT lowering cloud's max_tokens
         "num_ctx": 0,              # optional Ollama context-length override (0 = Ollama default)
+        "ollama_warm": True,     # pre-load the local model at startup so the first prompt is fast
         "fold_long_blocks": True,
         "fold_head": 8,
         "attach_files": True,

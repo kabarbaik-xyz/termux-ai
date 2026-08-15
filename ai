@@ -375,15 +375,20 @@ class MarkdownFormatter:
 
 class Spinner:
     CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    def __init__(self, msg="thinking"):
+    def __init__(self, msg="working"):
         self.msg = msg
         self._stop = False
         self._t = None
         self._started = False
         self._atexit_registered = False
+        self._started_at = 0.0
+
+    def set_msg(self, msg):
+        self.msg = msg
 
     def start(self):
         self._started = True
+        self._started_at = time.time()
         if not IS_TTY:
             sys.stdout.write(f"{C.DIM}… {self.msg}{C.RESET}"); sys.stdout.flush(); return
         self._stop = False
@@ -396,7 +401,11 @@ class Spinner:
     def _run(self):
         i = 0
         while not self._stop:
-            sys.stdout.write(f"\r{C.CYAN}{self.CHARS[i % len(self.CHARS)]}{C.RESET} {C.DIM}{self.msg}{C.RESET}")
+            # Show elapsed seconds once a prefill/generation is slow enough to
+            # feel frozen -- turns "waiting silently" into "17s and counting".
+            elapsed = int(time.time() - self._started_at)
+            suff = f" {elapsed}s" if elapsed >= 3 else ""
+            sys.stdout.write(f"\r{C.CYAN}{self.CHARS[i % len(self.CHARS)]}{C.RESET} {C.DIM}{self.msg}{suff}{C.RESET}")
             sys.stdout.flush(); time.sleep(0.08); i += 1
 
     def stop(self):
@@ -860,9 +869,10 @@ class Config:
         "retries": 3,
         "retry_delay": 1.0,
         "ollama_no_think": True,   # qwen3 on local Ollama: disable thinking via native API (the /v1 compat endpoint ignores `think` and qwen3 burns minutes of phone CPU thinking)
-        "ollama_keep_alive": "30m", # keep the model loaded between requests so a slow tool (graphify, fetch) mid-skill doesn't force a ~30s cold reload (Ollama's default ~5min idle unload)
+        "ollama_keep_alive": "2h", # keep the model loaded + KV cache resident between turns so idle doesn't force a ~30s cold reload mid-session
         "ollama_max_tokens": 0,    # Ollama-only max generation cap (0 = use max_tokens). Set low (e.g. 2048) for slow phone CPU WITHOUT lowering cloud's max_tokens
         "num_ctx": 0,              # optional Ollama context-length override (0 = Ollama default)
+        "ollama_warm": True,     # pre-load the local model at startup so the first prompt is fast
         "fold_long_blocks": True,
         "fold_head": 8,
         "attach_files": True,
@@ -1214,21 +1224,38 @@ class Tools:
     }
 
     @staticmethod
-    def get_schemas(build_mode, compact=False):
+    def get_schemas(build_mode, compact=False, micro=False):
+        """Tool schemas for the request. Three levels:
+        full     — long descriptions + parameter docs (cloud defaults)
+        compact  — short per-tool descriptions, no parameter docs
+        micro    — ONLY names + parameters (drop descriptions; keep the
+                   run_command security allowlist). For slow LOCAL non-thinking
+                   models the schema is re-tokenized every call, so cutting it
+                   from ~614 -> ~300 tokens shrinks cold prefill seconds.
+        Micro implies compact (no parameter descriptions)."""
         schemas = json.loads(json.dumps(Tools.TOOLS if build_mode else Tools.PLAN_TOOLS))
-        desc = Tools._run_command_desc(build_mode, compact=compact)
+        desc = Tools._run_command_desc(build_mode, compact=True)
         for t in schemas:
             fn = t["function"]
             if fn["name"] == "run_command":
                 fn["description"] = desc
+            elif micro:
+                fn.pop("description", None)
             elif compact and fn["name"] in Tools._COMPACT_DESC:
                 fn["description"] = Tools._COMPACT_DESC[fn["name"]]
-            if compact:
+            if compact or micro:
                 # Drop per-parameter descriptions: the names are self-
                 # explanatory and they bloat every request's prompt (887 -> ~430
                 # tokens), which a small local model re-evaluates each call.
                 for p in (fn.get("parameters", {}).get("properties") or {}).values():
                     p.pop("description", None)
+            if micro:
+                prm = fn.get("parameters") or {}
+                prm.pop("additionalProperties", None)
+                if not (prm.get("required") or []):
+                    prm.pop("required", None)
+                if not prm.get("properties"):
+                    fn.pop("parameters", None)
         return schemas
 
     @staticmethod
@@ -1622,10 +1649,21 @@ MODEL_TUNING = [
                                                "compact_schemas": True}),
     (re.compile(r"(?:^|/)phi4(?:-reasoning)?"), {"thinking": True, "temperature": 0.6,
                                                  "compact_schemas": True}),
-    # ── fast chat models (keep /v1 path; compact schemas cut prompt cost) ─────
-    (re.compile(r"(?:^|/)qwen2\.5|(?:^|/)qwen2"), {"thinking": False, "strategy_first": False, "compact_schemas": True}),
-    (re.compile(r"(?:^|/)llama3"),            {"thinking": False, "temperature": 0.6, "compact_schemas": True}),
-    (re.compile(r"(?:^|/)gemma"),             {"thinking": False, "compact_schemas": True}),
+    # ── fast chat models (keep /v1 path; micro schemas + tuned num_ctx cut
+    #    prompt cost and avoid the Ollama default 4096-context truncation
+    #    that makes tool sessions loop). num_ctx is sent on the native path;
+    #    on /v1 Ollama ignores it (harmless). Keep the model resident 2h so
+    #    idle doesn't evict the KV cache mid-session. ────────────────────────
+    (re.compile(r"(?:^|/)qwen2\.5|(?:^|/)qwen2"), {"thinking": False, "strategy_first": False,
+                                                   "temperature": 0.6, "num_ctx": 8192,
+                                                   "ollama_max_tokens": 2048, "ollama_keep_alive": "2h",
+                                                   "compact_schemas": True}),
+    (re.compile(r"(?:^|/)llama3"),            {"thinking": False, "temperature": 0.6,
+                                               "num_ctx": 8192, "ollama_max_tokens": 2048,
+                                               "ollama_keep_alive": "2h", "compact_schemas": True}),
+    (re.compile(r"(?:^|/)gemma"),             {"thinking": False, "num_ctx": 8192,
+                                               "ollama_max_tokens": 2048, "ollama_keep_alive": "2h",
+                                               "compact_schemas": True}),
     # ── cloud reasoning families (OpenAI-compat /api/v1 reasoning_content) ────
     (re.compile(r"(?:^|/)o[1-3](?:-|$)"),     {"thinking": True}),
     (re.compile(r"(?:^|/)gemini-2\.[05].*(think|flash|pro)"), {"thinking": True}),
@@ -1633,6 +1671,7 @@ MODEL_TUNING = [
 
 # Keys a tuning profile may carry, and which read-site they feed (for /tune display).
 TUNING_KEYS = ("thinking", "ollama_no_think", "temperature", "num_ctx",
+               "max_tokens", "ollama_max_tokens", "ollama_keep_alive",
                "strategy_first", "gather_first", "compact_schemas")
 
 
@@ -1791,6 +1830,26 @@ class Backend:
         if self.is_local:
             return True
         return bool(self._tuning().get("compact_schemas"))
+
+    def _local_chat_model(self):
+        """True for slow LOCAL non-thinking chat models (registry-only, NO
+        network): these get micro schemas + a chat-directive that stops
+        trivial-question tool loops — the #1 'why is it so slow' cause on small
+        models (qwen2.5 keeps listing files for 'say hi')."""
+        return self.is_local and not is_thinking_model(self._model(), None)
+
+    def _schema_mode(self):
+        """full | compact | micro — which tool-schema level to send.
+        micro (names + params only) is for slow LOCAL non-thinking chat models:
+        the ~614-token compact schema is re-tokenized every call, and cutting it
+        to ~300 tokens shaves seconds off each cold prefill on slow hardware.
+        Thinking local models go through the native shim (num_ctx 16384 gives
+        room); cloud keeps full unless a registry profile opts into compact."""
+        if self.is_local:
+            if self._local_chat_model():
+                return "micro"
+            return "compact"
+        return "compact" if self._tuning().get("compact_schemas") else "full"
     def _api_key(self):
         k = (self.profile.get("api_key") or "").strip()
         if k and k.lower() not in ("ollama", "placeholder"): return k
@@ -2276,6 +2335,32 @@ class OpenAICompatible(Backend):
             return False
         return is_thinking_model(self._model(), self._ollama_caps(self._model()))
 
+    def _warm(self, sysp=None, tools=None):
+        """Best-effort: pre-load the local Ollama model AND prime its KV cache
+        (system prompt + tool schemas) in the background at CLI startup, so the
+        user's FIRST real turn reuses the cache instead of paying a ~30s cold
+        load + full prefill. Runs off the UI thread; failures are swallowed."""
+        if not self.is_ollama:
+            return
+        try:
+            base = (self.profile.get("base_url") or "").rstrip("/")
+            base = base[:-3] if base.endswith("/v1") else base
+            msgs = []
+            if sysp:
+                msgs.append({"role": "system", "content": sysp})
+            msgs.append({"role": "user", "content": "."})
+            d = {"model": self._model(), "messages": msgs, "stream": False,
+                 "keep_alive": self._eff("ollama_keep_alive", "2h"),
+                 "options": {"num_predict": 1}}
+            if tools is not None:
+                d["tools"] = tools
+            req = urllib.request.Request(base + "/api/chat", data=json.dumps(d).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                r.read()
+        except Exception:
+            pass
+
     def _ollama_caps(self, model):
         """Return the capabilities list for an Ollama model (cached). Falls back
         to a name-based heuristic (qwen3/deepseek-r1/phi4-reasoning/... -> has
@@ -2345,7 +2430,7 @@ class OpenAICompatible(Backend):
             # Keep the model resident so a slow tool mid-skill (graphify/fetch
             # can take minutes) doesn't force a ~30s cold reload on the next
             # request -- the #1 cause of "stuck in thinking" with skills.
-            ka = self._eff("ollama_keep_alive", "30m")
+            ka = self._eff("ollama_keep_alive", "2h")
             if ka not in (0, None, "", "0"):
                 d["keep_alive"] = ka
         else:
@@ -2481,7 +2566,8 @@ class OpenAICompatible(Backend):
             temp = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._is_compact_schemas()), temperature=temp)
+            _smode = self._schema_mode()
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=_smode != "full", micro=_smode == "micro"), temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
@@ -3038,6 +3124,19 @@ class App:
         self._step_count = 0             # tool steps in the current turn
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
+        # Pre-load the local model in the background at startup so the first
+        # real prompt doesn't pay a ~30s cold load+prefill (config: ollama_warm).
+        if (self.backend and not self.quiet and self.cfg.get("ollama_warm", True)
+                and getattr(self.backend, "is_ollama", False)):
+            try:
+                _sysp = self.cfg.system_prompt()
+                _tools = None
+                if self.cfg.get("tools_enabled", False):
+                    _mode = self.backend._schema_mode()
+                    _tools = Tools.get_schemas(True, compact=_mode != "full", micro=_mode == "micro")
+                threading.Thread(target=self.backend._warm, args=(_sysp, _tools), daemon=True).start()
+            except Exception:
+                pass
 
     def _validate_config(self):
         name, prof = self.cfg.active_profile()
@@ -3362,12 +3461,25 @@ class App:
             return True
         return choice in ("y", "")
 
+    def _spinner_msg(self):
+        """Label the wait spinner honestly. 'prefilling' = the model is still
+        chewing the prompt (the real "stuck" wait on slow local hardware);
+        'generating' = it started emitting tokens. Falls back to 'working'."""
+        if self.cfg.get("extended_thinking", False):
+            return "thinking"
+        return "prefilling context…"
+
+    def _start_spinner(self):
+        if self.quiet:
+            self.spinner = None
+            return
+        self.spinner = Spinner(self._spinner_msg())
+        self.spinner.start()
+
     def _stream_tool_chat(self, msgs):
         self.spinner = None
         self._auto_continue = False  # reset per task: re-confirm long-task continuation each turn
-        if not self.quiet:
-            self.spinner = Spinner("thinking")
-            self.spinner.start()
+        self._start_spinner()
         fmt = None if self.quiet else MarkdownFormatter(fold=self.cfg.get("fold_long_blocks", True), fold_head=self.cfg.get("fold_head", 8))
         current_block = ""  # current text run; resets on each tool -> only the LAST run (the answer) is returned
         did_tools = False   # once any tool runs, later text is inter-step reasoning
@@ -3455,11 +3567,15 @@ class App:
                         self.last_process[-1]["result"] = event['result'][:200]
                         if str(event['result']).lower().startswith("error"):
                             self.last_process[-1]["status"] = "error"
-                    if self.quiet: continue
-                    if _is_compact(): continue  # suppress result content in compact mode
-                    res = event['result']
-                    if len(res) > 800: res = res[:800] + "..."
-                    print(f"{C.DIM}{res}{C.RESET}\n")
+                    if not self.quiet:
+                        if not _is_compact():
+                            res = event['result']
+                            if len(res) > 800: res = res[:800] + "..."
+                            print(f"{C.DIM}{res}{C.RESET}\n")
+                        # The next tool-loop iteration is about to re-prefill the
+                        # (now history-laden) prompt — show its wait instead of
+                        # a silent freeze. The final answer's first text stops it.
+                        self._start_spinner()
                 elif et == "notice":
                     if fmt: fmt.flush()
                     flush(thinking=True)
@@ -3714,6 +3830,15 @@ class App:
                 "for large files page once per line-range with "
                 "read_file(path, start=LINE) in the same batched response.")
 
+        # Local non-thinking chat models over-use tools on casual questions
+        # (qwen2.5 lists files for 'say hi') — a 60s+ tool loop on slow phones.
+        # Tell them to answer trivial chat directly so tools only fire when real.
+        if getattr(self.backend, "_local_chat_model", lambda: False)():
+            msgs[0]["content"] += (
+                "\n\nIf the user's request is a simple question or casual chat that "
+                "needs no files or commands, ANSWER DIRECTLY in plain text and do "
+                "NOT call any tool.")
+
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).
         if self.backend._eff("strategy_first", False) and not self.quiet:
@@ -3873,7 +3998,7 @@ class App:
         msgs.append({"role": "user", "content": prompt})
 
         fmt = MarkdownFormatter(fold=self.cfg.get("fold_long_blocks", True), fold_head=self.cfg.get("fold_head", 8)) if (show and not self.quiet and not json_mode) else None
-        spinner = Spinner("thinking") if (show and not self.quiet) else None
+        spinner = Spinner(self._spinner_msg()) if (show and not self.quiet) else None
         if spinner: spinner.start()
         reply = ""
         try:
@@ -4100,10 +4225,10 @@ class App:
         self.info(f"Model: {C.BOLD}{name}{C.RESET} ({kind}; detected via {source})")
         self.info(f"Backend: {self.backend.name} | local: {self.backend.is_local} | ollama: {self.backend.is_ollama}")
         rows = [("thinking", thinking), ("native route", self.backend._native_ollama() if self.backend.is_ollama else "n/a"),
-                ("compact schemas", self.backend._is_compact_schemas())]
-        for key in ("temperature", "num_ctx", "max_tokens", "strategy_first", "gather_first", "compact_schemas", "ollama_no_think"):
-            if key == "num_ctx" and not self.backend.is_ollama: continue
-            if key == "ollama_no_think" and not self.backend.is_ollama: continue
+                ("schema mode", self.backend._schema_mode())]
+        for key in ("temperature", "num_ctx", "max_tokens", "ollama_max_tokens", "ollama_keep_alive",
+                    "strategy_first", "gather_first", "compact_schemas", "ollama_no_think"):
+            if key in ("num_ctx", "ollama_no_think", "ollama_max_tokens", "ollama_keep_alive") and not self.backend.is_ollama: continue
             v = self.backend._eff(key)
             rows.append((key, v))
         for k, v in rows:

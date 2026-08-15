@@ -14,10 +14,21 @@ MODEL_TUNING = [
                                                "compact_schemas": True}),
     (re.compile(r"(?:^|/)phi4(?:-reasoning)?"), {"thinking": True, "temperature": 0.6,
                                                  "compact_schemas": True}),
-    # ── fast chat models (keep /v1 path; compact schemas cut prompt cost) ─────
-    (re.compile(r"(?:^|/)qwen2\.5|(?:^|/)qwen2"), {"thinking": False, "strategy_first": False, "compact_schemas": True}),
-    (re.compile(r"(?:^|/)llama3"),            {"thinking": False, "temperature": 0.6, "compact_schemas": True}),
-    (re.compile(r"(?:^|/)gemma"),             {"thinking": False, "compact_schemas": True}),
+    # ── fast chat models (keep /v1 path; micro schemas + tuned num_ctx cut
+    #    prompt cost and avoid the Ollama default 4096-context truncation
+    #    that makes tool sessions loop). num_ctx is sent on the native path;
+    #    on /v1 Ollama ignores it (harmless). Keep the model resident 2h so
+    #    idle doesn't evict the KV cache mid-session. ────────────────────────
+    (re.compile(r"(?:^|/)qwen2\.5|(?:^|/)qwen2"), {"thinking": False, "strategy_first": False,
+                                                   "temperature": 0.6, "num_ctx": 8192,
+                                                   "ollama_max_tokens": 2048, "ollama_keep_alive": "2h",
+                                                   "compact_schemas": True}),
+    (re.compile(r"(?:^|/)llama3"),            {"thinking": False, "temperature": 0.6,
+                                               "num_ctx": 8192, "ollama_max_tokens": 2048,
+                                               "ollama_keep_alive": "2h", "compact_schemas": True}),
+    (re.compile(r"(?:^|/)gemma"),             {"thinking": False, "num_ctx": 8192,
+                                               "ollama_max_tokens": 2048, "ollama_keep_alive": "2h",
+                                               "compact_schemas": True}),
     # ── cloud reasoning families (OpenAI-compat /api/v1 reasoning_content) ────
     (re.compile(r"(?:^|/)o[1-3](?:-|$)"),     {"thinking": True}),
     (re.compile(r"(?:^|/)gemini-2\.[05].*(think|flash|pro)"), {"thinking": True}),
@@ -25,6 +36,7 @@ MODEL_TUNING = [
 
 # Keys a tuning profile may carry, and which read-site they feed (for /tune display).
 TUNING_KEYS = ("thinking", "ollama_no_think", "temperature", "num_ctx",
+               "max_tokens", "ollama_max_tokens", "ollama_keep_alive",
                "strategy_first", "gather_first", "compact_schemas")
 
 

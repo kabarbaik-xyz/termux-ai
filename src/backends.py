@@ -128,6 +128,26 @@ class Backend:
         if self.is_local:
             return True
         return bool(self._tuning().get("compact_schemas"))
+
+    def _local_chat_model(self):
+        """True for slow LOCAL non-thinking chat models (registry-only, NO
+        network): these get micro schemas + a chat-directive that stops
+        trivial-question tool loops — the #1 'why is it so slow' cause on small
+        models (qwen2.5 keeps listing files for 'say hi')."""
+        return self.is_local and not is_thinking_model(self._model(), None)
+
+    def _schema_mode(self):
+        """full | compact | micro — which tool-schema level to send.
+        micro (names + params only) is for slow LOCAL non-thinking chat models:
+        the ~614-token compact schema is re-tokenized every call, and cutting it
+        to ~300 tokens shaves seconds off each cold prefill on slow hardware.
+        Thinking local models go through the native shim (num_ctx 16384 gives
+        room); cloud keeps full unless a registry profile opts into compact."""
+        if self.is_local:
+            if self._local_chat_model():
+                return "micro"
+            return "compact"
+        return "compact" if self._tuning().get("compact_schemas") else "full"
     def _api_key(self):
         k = (self.profile.get("api_key") or "").strip()
         if k and k.lower() not in ("ollama", "placeholder"): return k
@@ -613,6 +633,32 @@ class OpenAICompatible(Backend):
             return False
         return is_thinking_model(self._model(), self._ollama_caps(self._model()))
 
+    def _warm(self, sysp=None, tools=None):
+        """Best-effort: pre-load the local Ollama model AND prime its KV cache
+        (system prompt + tool schemas) in the background at CLI startup, so the
+        user's FIRST real turn reuses the cache instead of paying a ~30s cold
+        load + full prefill. Runs off the UI thread; failures are swallowed."""
+        if not self.is_ollama:
+            return
+        try:
+            base = (self.profile.get("base_url") or "").rstrip("/")
+            base = base[:-3] if base.endswith("/v1") else base
+            msgs = []
+            if sysp:
+                msgs.append({"role": "system", "content": sysp})
+            msgs.append({"role": "user", "content": "."})
+            d = {"model": self._model(), "messages": msgs, "stream": False,
+                 "keep_alive": self._eff("ollama_keep_alive", "2h"),
+                 "options": {"num_predict": 1}}
+            if tools is not None:
+                d["tools"] = tools
+            req = urllib.request.Request(base + "/api/chat", data=json.dumps(d).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                r.read()
+        except Exception:
+            pass
+
     def _ollama_caps(self, model):
         """Return the capabilities list for an Ollama model (cached). Falls back
         to a name-based heuristic (qwen3/deepseek-r1/phi4-reasoning/... -> has
@@ -682,7 +728,7 @@ class OpenAICompatible(Backend):
             # Keep the model resident so a slow tool mid-skill (graphify/fetch
             # can take minutes) doesn't force a ~30s cold reload on the next
             # request -- the #1 cause of "stuck in thinking" with skills.
-            ka = self._eff("ollama_keep_alive", "30m")
+            ka = self._eff("ollama_keep_alive", "2h")
             if ka not in (0, None, "", "0"):
                 d["keep_alive"] = ka
         else:
@@ -818,7 +864,8 @@ class OpenAICompatible(Backend):
             temp = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=self._is_compact_schemas()), temperature=temp)
+            _smode = self._schema_mode()
+            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=_smode != "full", micro=_smode == "micro"), temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""

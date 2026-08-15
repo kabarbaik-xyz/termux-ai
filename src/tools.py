@@ -264,21 +264,38 @@ class Tools:
     }
 
     @staticmethod
-    def get_schemas(build_mode, compact=False):
+    def get_schemas(build_mode, compact=False, micro=False):
+        """Tool schemas for the request. Three levels:
+        full     — long descriptions + parameter docs (cloud defaults)
+        compact  — short per-tool descriptions, no parameter docs
+        micro    — ONLY names + parameters (drop descriptions; keep the
+                   run_command security allowlist). For slow LOCAL non-thinking
+                   models the schema is re-tokenized every call, so cutting it
+                   from ~614 -> ~300 tokens shrinks cold prefill seconds.
+        Micro implies compact (no parameter descriptions)."""
         schemas = json.loads(json.dumps(Tools.TOOLS if build_mode else Tools.PLAN_TOOLS))
-        desc = Tools._run_command_desc(build_mode, compact=compact)
+        desc = Tools._run_command_desc(build_mode, compact=True)
         for t in schemas:
             fn = t["function"]
             if fn["name"] == "run_command":
                 fn["description"] = desc
+            elif micro:
+                fn.pop("description", None)
             elif compact and fn["name"] in Tools._COMPACT_DESC:
                 fn["description"] = Tools._COMPACT_DESC[fn["name"]]
-            if compact:
+            if compact or micro:
                 # Drop per-parameter descriptions: the names are self-
                 # explanatory and they bloat every request's prompt (887 -> ~430
                 # tokens), which a small local model re-evaluates each call.
                 for p in (fn.get("parameters", {}).get("properties") or {}).values():
                     p.pop("description", None)
+            if micro:
+                prm = fn.get("parameters") or {}
+                prm.pop("additionalProperties", None)
+                if not (prm.get("required") or []):
+                    prm.pop("required", None)
+                if not prm.get("properties"):
+                    fn.pop("parameters", None)
         return schemas
 
     @staticmethod

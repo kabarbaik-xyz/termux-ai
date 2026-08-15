@@ -61,10 +61,10 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.info(f"Model: {C.BOLD}{name}{C.RESET} ({kind}; detected via {source})")
         self.info(f"Backend: {self.backend.name} | local: {self.backend.is_local} | ollama: {self.backend.is_ollama}")
         rows = [("thinking", thinking), ("native route", self.backend._native_ollama() if self.backend.is_ollama else "n/a"),
-                ("compact schemas", self.backend._is_compact_schemas())]
-        for key in ("temperature", "num_ctx", "max_tokens", "strategy_first", "gather_first", "compact_schemas", "ollama_no_think"):
-            if key == "num_ctx" and not self.backend.is_ollama: continue
-            if key == "ollama_no_think" and not self.backend.is_ollama: continue
+                ("schema mode", self.backend._schema_mode())]
+        for key in ("temperature", "num_ctx", "max_tokens", "ollama_max_tokens", "ollama_keep_alive",
+                    "strategy_first", "gather_first", "compact_schemas", "ollama_no_think"):
+            if key in ("num_ctx", "ollama_no_think", "ollama_max_tokens", "ollama_keep_alive") and not self.backend.is_ollama: continue
             v = self.backend._eff(key)
             rows.append((key, v))
         for k, v in rows:

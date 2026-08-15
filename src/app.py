@@ -39,6 +39,19 @@ class App:
         self._step_count = 0             # tool steps in the current turn
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
+        # Pre-load the local model in the background at startup so the first
+        # real prompt doesn't pay a ~30s cold load+prefill (config: ollama_warm).
+        if (self.backend and not self.quiet and self.cfg.get("ollama_warm", True)
+                and getattr(self.backend, "is_ollama", False)):
+            try:
+                _sysp = self.cfg.system_prompt()
+                _tools = None
+                if self.cfg.get("tools_enabled", False):
+                    _mode = self.backend._schema_mode()
+                    _tools = Tools.get_schemas(True, compact=_mode != "full", micro=_mode == "micro")
+                threading.Thread(target=self.backend._warm, args=(_sysp, _tools), daemon=True).start()
+            except Exception:
+                pass
 
     def _validate_config(self):
         name, prof = self.cfg.active_profile()
@@ -363,12 +376,25 @@ class App:
             return True
         return choice in ("y", "")
 
+    def _spinner_msg(self):
+        """Label the wait spinner honestly. 'prefilling' = the model is still
+        chewing the prompt (the real "stuck" wait on slow local hardware);
+        'generating' = it started emitting tokens. Falls back to 'working'."""
+        if self.cfg.get("extended_thinking", False):
+            return "thinking"
+        return "prefilling context…"
+
+    def _start_spinner(self):
+        if self.quiet:
+            self.spinner = None
+            return
+        self.spinner = Spinner(self._spinner_msg())
+        self.spinner.start()
+
     def _stream_tool_chat(self, msgs):
         self.spinner = None
         self._auto_continue = False  # reset per task: re-confirm long-task continuation each turn
-        if not self.quiet:
-            self.spinner = Spinner("thinking")
-            self.spinner.start()
+        self._start_spinner()
         fmt = None if self.quiet else MarkdownFormatter(fold=self.cfg.get("fold_long_blocks", True), fold_head=self.cfg.get("fold_head", 8))
         current_block = ""  # current text run; resets on each tool -> only the LAST run (the answer) is returned
         did_tools = False   # once any tool runs, later text is inter-step reasoning
@@ -456,11 +482,15 @@ class App:
                         self.last_process[-1]["result"] = event['result'][:200]
                         if str(event['result']).lower().startswith("error"):
                             self.last_process[-1]["status"] = "error"
-                    if self.quiet: continue
-                    if _is_compact(): continue  # suppress result content in compact mode
-                    res = event['result']
-                    if len(res) > 800: res = res[:800] + "..."
-                    print(f"{C.DIM}{res}{C.RESET}\n")
+                    if not self.quiet:
+                        if not _is_compact():
+                            res = event['result']
+                            if len(res) > 800: res = res[:800] + "..."
+                            print(f"{C.DIM}{res}{C.RESET}\n")
+                        # The next tool-loop iteration is about to re-prefill the
+                        # (now history-laden) prompt — show its wait instead of
+                        # a silent freeze. The final answer's first text stops it.
+                        self._start_spinner()
                 elif et == "notice":
                     if fmt: fmt.flush()
                     flush(thinking=True)
@@ -715,6 +745,15 @@ class App:
                 "for large files page once per line-range with "
                 "read_file(path, start=LINE) in the same batched response.")
 
+        # Local non-thinking chat models over-use tools on casual questions
+        # (qwen2.5 lists files for 'say hi') — a 60s+ tool loop on slow phones.
+        # Tell them to answer trivial chat directly so tools only fire when real.
+        if getattr(self.backend, "_local_chat_model", lambda: False)():
+            msgs[0]["content"] += (
+                "\n\nIf the user's request is a simple question or casual chat that "
+                "needs no files or commands, ANSWER DIRECTLY in plain text and do "
+                "NOT call any tool.")
+
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).
         if self.backend._eff("strategy_first", False) and not self.quiet:
@@ -874,7 +913,7 @@ class App:
         msgs.append({"role": "user", "content": prompt})
 
         fmt = MarkdownFormatter(fold=self.cfg.get("fold_long_blocks", True), fold_head=self.cfg.get("fold_head", 8)) if (show and not self.quiet and not json_mode) else None
-        spinner = Spinner("thinking") if (show and not self.quiet) else None
+        spinner = Spinner(self._spinner_msg()) if (show and not self.quiet) else None
         if spinner: spinner.start()
         reply = ""
         try:
