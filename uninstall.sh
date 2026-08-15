@@ -3,6 +3,12 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/kabarbaik-xyz/termux-ai/main/uninstall.sh | bash
 set -e
 
+# POSIX `sh` (dash) has no read -p / read -n; emulate a prompt that reads one line.
+prompt() {
+    printf '%s' "$1"
+    IFS= read -r REPLY || REPLY=""
+}
+
 INSTALL_DIR="${HOME}/.local/bin"
 SCRIPT_PATH="${INSTALL_DIR}/ai"
 BACKUP_PATH="${SCRIPT_PATH}.bak"
@@ -19,12 +25,12 @@ if [ -f "$PID_FILE" ]; then
     PID=$(echo "$PID_CONTENT" | cut -d',' -f1)
     ENGINE=$(echo "$PID_CONTENT" | cut -d',' -f2)
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-        read -p "   Stop running ${ENGINE:-ollama} server (PID: $PID)? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            kill -- -"$PID" 2>/dev/null || kill "$PID" 2>/dev/null || true
-            echo "   ✓ Stopped ${ENGINE:-ollama} server"
-        fi
+        prompt "   Stop running ${ENGINE:-ollama} server (PID: $PID)? [Y/n] "
+        case "$REPLY" in
+            [Nn]) : ;;
+            *) kill -- -"$PID" 2>/dev/null || kill "$PID" 2>/dev/null || true
+               echo "   ✓ Stopped ${ENGINE:-ollama} server" ;;
+        esac
     fi
 fi
 
@@ -50,26 +56,36 @@ fi
 
 # ── Remove config & history ──────────────────────────────────────────────────
 if [ -d "$CONFIG_DIR" ]; then
-    read -p "   Remove config & chat history ($CONFIG_DIR)? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf "$CONFIG_DIR"
-        echo "   ✓ Removed $CONFIG_DIR"
-    else
-        echo "   ℹ  Kept $CONFIG_DIR"
-    fi
+    prompt "   Remove config & chat history ($CONFIG_DIR)? [y/N] "
+    case "$REPLY" in
+        [Yy]) rm -rf "$CONFIG_DIR"
+              echo "   ✓ Removed $CONFIG_DIR" ;;
+        *) echo "   ℹ  Kept $CONFIG_DIR" ;;
+    esac
 fi
 
-# ── Clean .bashrc ─────────────────────────────────────────────────────────────
-if grep -q "# Termux AI" "$HOME/.bashrc" 2>/dev/null; then
-    read -p "   Remove PATH entry from ~/.bashrc? [y/N] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        sed -i '/# Termux AI/d' "$HOME/.bashrc"
-        sed -i '\|\.local/bin|d' "$HOME/.bashrc"
-        echo "   ✓ Cleaned ~/.bashrc"
+# ── Clean shell PATH entries (all shells we may have touched) ────────────────
+# POSIX `sh`: no arrays, so a whitespace-separated list is used.
+PATH_FILES=""
+for f in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$f" ] && PATH_FILES="$PATH_FILES $f"
+done
+
+NEEDS_CLEAN=0
+for f in $PATH_FILES; do
+    if grep -q "# Termux AI" "$f" 2>/dev/null; then NEEDS_CLEAN=1; fi
+done
+
+if [ "$NEEDS_CLEAN" = "1" ]; then
+    prompt "   Remove Termux AI PATH entries from your shell config? [y/N] "
+    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
+        for f in $PATH_FILES; do
+            sed -i '/# Termux AI/d' "$f" 2>/dev/null
+            sed -i '\|\.local/bin|d' "$f" 2>/dev/null
+            echo "   ✓ Cleaned $f"
+        done
     else
-        echo "   ℹ  Left ~/.bashrc unchanged"
+        echo "   ℹ  Left shell config unchanged"
     fi
 fi
 

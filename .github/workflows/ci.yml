@@ -19,6 +19,15 @@ jobs:
       - name: Show Python version
         run: python3 --version
 
+      - name: Shell-check installer scripts
+        run: |
+          if command -v shellcheck &>/dev/null; then
+            shellcheck install.sh uninstall.sh
+          else
+            bash -n install.sh uninstall.sh
+            echo "shellcheck not installed; bash -n passed"
+          fi
+
       - name: Compile-check every source fragment
         run: python3 -m py_compile src/*.py
 

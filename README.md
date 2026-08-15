@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.1.1-green)
+![version](https://img.shields.io/badge/version-7.2.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -61,8 +61,22 @@ ai
 
 ### Option A: Ollama (free, local, no API key)
 
+Install Ollama for your platform:
+
 ```bash
+# Termux (Android)
 pkg install ollama
+
+# Linux (Debian/Ubuntu/Fedora/Arch...) — official installer
+curl -fsSL https://ollama.com/install.sh | sh
+
+# macOS
+brew install ollama
+```
+
+Then pull a model and start the server:
+
+```bash
 ollama pull llama3.2
 ollama serve &
 ```
@@ -593,8 +607,13 @@ rm ~/.local/bin/ai
 
 - **Python 3.8+** (stdlib only — zero pip dependencies)
 - **Termux** (recommended) or any Linux/macOS terminal
-- `readline` — for command history with arrow keys (`pkg install readline` on Termux)
-- `poppler` — optional, for PDF reading (`pkg install poppler` on Termux)
+- `readline` — for command history with arrow keys (`pkg install readline` on Termux; built in on most Linux/macOS Python builds)
+- `poppler` — optional, for PDF reading (`pkg install poppler` on Termux, `apt-get install poppler-utils` on Debian/Ubuntu; the installer prints the right command)
+
+The installer (`install.sh`) auto-detects your platform and prints the correct
+package commands; `ai` itself stays a single portable file. On Linux, `~/.local/bin`
+is added to `~/.profile`, `~/.bashrc`, and `~/.zshrc` (whichever exists) so `ai`
+is on your PATH in login, interactive, and zsh shells.
 
 ---
 

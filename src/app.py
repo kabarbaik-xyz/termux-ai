@@ -58,8 +58,12 @@ class App:
         if ("localhost" in base or "127.0.0.1" in base) and not getattr(self, "quiet", False):
             free = _free_ram_gb()
             if free is not None and free < 2.0:
-                self.warn(f"Only {free:.1f} GB RAM free. A large local model may get killed by Android."
-                          f" Try a smaller model or /config set num_ctx 2048.")
+                if IS_TERMUX:
+                    self.warn(f"Only {free:.1f} GB RAM free. A large local model may get killed by Android."
+                              f" Try a smaller model or /config set num_ctx 2048.")
+                else:
+                    self.warn(f"Only {free:.1f} GB RAM free. A large local model may get swapped or killed."
+                              f" Try a smaller model or /config set num_ctx 2048.")
         # One-time migration hint: max_tokens is GLOBAL (cloud + Anthropic read
         # it too). Earlier /models advice suggested lowering it for slow local
         # models -- which silently capped cloud replies. If a user did that and
@@ -188,8 +192,13 @@ class App:
 
             backup = current_file.with_suffix('.bak')
             shutil.copy2(current_file, backup)
-            current_file.write_text(new_code, encoding='utf-8')
-            os.chmod(current_file, 0o755)
+            try:
+                current_file.write_text(new_code, encoding='utf-8')
+                os.chmod(current_file, 0o755)
+            except PermissionError:
+                self.err(f"Can't write {current_file} (installed system-wide). "
+                         "Get the latest version via install.sh or your package manager.")
+                return
             self.success(f"Updated to v{remote}! Backup saved to {backup.name}. Please restart.")
         except Exception as e:
             self.err(f"Update failed: {e}")

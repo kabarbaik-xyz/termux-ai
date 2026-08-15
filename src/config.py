@@ -1,4 +1,37 @@
 # ══ termux_ai.config ══ (fragment; merged by build.py)
+# The pre-7.2 Termux-only default persona, kept so existing Linux/macOS installs
+# that never customized it get upgraded to a platform-aware prompt automatically.
+LEGACY_PROMPT = (
+    "You are an AI pair-programmer and terminal assistant running in Termux on the "
+    "user's Android device. You work in their current directory: you can run shell "
+    "commands, read/write files, and search code.\n\n"
+    "ENVIRONMENT: Termux (Android). Paths like /sdcard, ~ ($HOME), $PREFIX are valid; "
+    "install packages with `pkg`. Commands run in a Linux shell.\n\n"
+    "STYLE: be concise; use code blocks for commands and code; don't over-explain."
+)
+
+
+def _platform_prompt():
+    """Default persona for the *current* platform (Termux vs Linux vs macOS)."""
+    if IS_TERMUX:
+        device = "running in Termux on the user's Android device"
+        env = ("ENVIRONMENT: Termux (Android). Paths like /sdcard, ~ ($HOME), $PREFIX are valid; "
+               "install packages with `pkg`. Commands run in a Linux shell.")
+    elif IS_MAC:
+        device = "running on macOS"
+        env = ("ENVIRONMENT: macOS. Install packages with `brew`. Commands run in a POSIX shell.")
+    else:
+        device = "running on Linux (Debian/Ubuntu or another distro)"
+        env = ("ENVIRONMENT: Linux. Install packages with `apt-get` (Debian/Ubuntu), `dnf` "
+               "(Fedora), `pacman` (Arch), or the distro's package manager. Commands run in a Linux shell.")
+    return (
+        f"You are an AI pair-programmer and terminal assistant {device}. You work in "
+        "their current directory: you can run shell commands, read/write files, and "
+        f"search code.\n\n{env}\n\n"
+        "STYLE: be concise; use code blocks for commands and code; don't over-explain."
+    )
+
+
 class Config:
     # Fixed tool-use discipline appended to EVERY system prompt, so a user's
     # /system persona override can never accidentally drop the agent rules.
@@ -14,14 +47,7 @@ class Config:
 
     DEFAULTS = {
         "backend": "ollama",
-        "system_prompt": (
-            "You are an AI pair-programmer and terminal assistant running in Termux on the "
-            "user's Android device. You work in their current directory: you can run shell "
-            "commands, read/write files, and search code.\n\n"
-            "ENVIRONMENT: Termux (Android). Paths like /sdcard, ~ ($HOME), $PREFIX are valid; "
-            "install packages with `pkg`. Commands run in a Linux shell.\n\n"
-            "STYLE: be concise; use code blocks for commands and code; don't over-explain."
-        ),
+        "system_prompt": _platform_prompt(),
         "system_instruction": "",
         "temperature": 0.7,
         "max_tokens": 8192,
@@ -120,8 +146,16 @@ class Config:
         if save: self.save()
 
     def system_prompt(self):
-        """Effective system prompt = persona (user-overridable) + fixed tool rules."""
-        persona = self.get("system_instruction") or self.get("system_prompt") or ""
+        """Effective system prompt = persona (user-overridable) + fixed tool rules.
+
+        Auto-upgrades the pre-7.2 Termux-only default for existing Linux/macOS
+        installs that never customized their persona; a user-set prompt is kept."""
+        persona = self.get("system_instruction") or ""
+        if not persona:
+            sp = self.get("system_prompt") or ""
+            if not sp or sp == LEGACY_PROMPT:
+                sp = _platform_prompt()
+            persona = sp
         return (persona + "\n\n" + Config.TOOL_RULES) if persona else Config.TOOL_RULES
     def active_profile(self): return self.get("backend", "ollama"), self.get("backends", {}).get(self.get("backend", "ollama"))
 

@@ -40,7 +40,7 @@ class FileReader:
                 if shutil.which("pdftotext"):
                     r = subprocess.run(["pdftotext", "-layout", p, "-"], capture_output=True, text=True, timeout=15)
                     return r.stdout[:max_chars] if r.returncode == 0 else "[Error reading PDF]"
-                return "[Error: pdftotext not found. Run: pkg install poppler]"
+                return f"[Error: pdftotext not found. Run: {install_hint('poppler')}]"
             elif ext == ".docx": return FileReader._read_docx(p)[:max_chars]
             elif ext == ".pptx": return FileReader._read_pptx(p)[:max_chars]
             elif ext == ".xlsx": return FileReader._read_xlsx(p)[:max_chars]

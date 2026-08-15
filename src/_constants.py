@@ -15,6 +15,50 @@ def _secure_file(path, mode=0o600):
 
 IS_TERMUX = "com.termux" in os.environ.get("PREFIX", "")
 IS_TTY = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+IS_MAC = sys.platform == "darwin"
+IS_LINUX = os.name == "posix" and not IS_TERMUX and not IS_MAC
+
+# Distro-aware install hints (Termux/Linux/macOS) for copy-paste messages.
+_PKG_MGRS = ("apt-get", "dnf", "pacman", "zypper", "apk")
+_PKG_CMDS = {
+    "pkg": "pkg install {pkg}",
+    "brew": "brew install {pkg}",
+    "apt-get": "sudo apt-get install -y {pkg}",
+    "dnf": "sudo dnf install -y {pkg}",
+    "pacman": "sudo pacman -S {pkg}",
+    "zypper": "sudo zypper install {pkg}",
+    "apk": "apk add {pkg}",
+}
+_PKG_NAMES = {
+    "poppler": {"pkg": "poppler", "brew": "poppler", "apt-get": "poppler-utils",
+                "dnf": "poppler-utils", "pacman": "poppler", "zypper": "poppler-tools", "apk": "poppler-utils"},
+    "espeak": {"pkg": "espeak", "brew": "espeak", "apt-get": "espeak-ng",
+               "dnf": "espeak-ng", "pacman": "espeak-ng", "zypper": "espeak-ng", "apk": "espeak-ng"},
+}
+
+
+def _pkg_mgr():
+    if IS_TERMUX: return "pkg"
+    if IS_MAC: return "brew"
+    for m in _PKG_MGRS:
+        if shutil.which(m): return m
+    return None
+
+
+def install_hint(logical, pkg_name=None):
+    """Return a copy-paste install command for a logical package on this platform."""
+    mgr = _pkg_mgr()
+    if mgr is None:
+        return f"install {pkg_name or logical} with your package manager"
+    pkg = pkg_name or _PKG_NAMES.get(logical, {}).get(mgr, logical)
+    return _PKG_CMDS[mgr].format(pkg=pkg)
+
+
+def ollama_hint():
+    """Return the right 'install Ollama' command for this platform."""
+    if IS_TERMUX: return "pkg install ollama"
+    if IS_MAC: return "brew install ollama"
+    return "curl -fsSL https://ollama.com/install.sh | sh"
 
 try:
     import readline

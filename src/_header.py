@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""termux-ai: A friendly AI chat CLI for Termux and any terminal.
+"""termux-ai: A friendly AI chat CLI for Termux (Android) and any Linux/macOS terminal.
 
 Single-file, zero-dependency (stdlib only). Talks to any OpenAI-compatible
 endpoint, or natively to Anthropic's Messages API.
@@ -9,4 +9,4 @@ import select, tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "7.1.1"
+__version__ = "7.2.0"

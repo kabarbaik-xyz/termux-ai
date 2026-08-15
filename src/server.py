@@ -19,7 +19,10 @@ class ServerManager:
     def _require_ollama():
         """Print an install hint and return False when ollama is missing."""
         if not ServerManager._installed():
-            print(f"{C.RED}ollama is not installed. Install it with: pkg install ollama [ollama-backend-vulkan]{C.RESET}")
+            hint = ollama_hint()
+            if IS_TERMUX:
+                hint += " [ollama-backend-vulkan]"
+            print(f"{C.RED}ollama is not installed. Install it with: {hint}{C.RESET}")
             return False
         return True
 
