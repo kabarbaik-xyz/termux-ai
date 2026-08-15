@@ -3737,7 +3737,7 @@ class App:
         buf = []            # text buffered after the first tool, awaiting dim/normal render
 
         # Compact process mode: suppress tool-call chatter, show clean summary.
-        mode = self.cfg.get("compact_process", "auto") if not self.quiet else "off"
+        mode = self.cfg.get("compact_process", "on") if not self.quiet else "off"
         threshold = max(1, int(self.cfg.get("compact_threshold", 4)))
         self._step_count = 0
         self.last_process = []
@@ -4863,7 +4863,7 @@ class App:
             if not self.last_process:
                 self.info("No tool steps in the last turn.")
                 return
-            mode = self.cfg.get("compact_process", "auto")
+            mode = self.cfg.get("compact_process", "on")
             self.info(f"Last turn: {len(self.last_process)} step(s) | compact mode: {mode}")
             print()
             for s in self.last_process:
@@ -4889,7 +4889,7 @@ class App:
                     "auto": "smart (compact when 4+ steps, inline otherwise)"}[sub]
             self.success(f"Process display: {desc}.")
         else:
-            self.info(f"Compact process: {self.cfg.get('compact_process', 'auto')}. Use /process on|off|auto.")
+            self.info(f"Compact process: {self.cfg.get('compact_process', 'on')}. Use /process on|off|auto.")
 
     def _cmd_setup(self, args):
         self._run_setup("")

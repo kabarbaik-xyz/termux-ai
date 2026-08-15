@@ -401,7 +401,7 @@ class App:
         buf = []            # text buffered after the first tool, awaiting dim/normal render
 
         # Compact process mode: suppress tool-call chatter, show clean summary.
-        mode = self.cfg.get("compact_process", "auto") if not self.quiet else "off"
+        mode = self.cfg.get("compact_process", "on") if not self.quiet else "off"
         threshold = max(1, int(self.cfg.get("compact_threshold", 4)))
         self._step_count = 0
         self.last_process = []

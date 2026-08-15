@@ -441,7 +441,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             if not self.last_process:
                 self.info("No tool steps in the last turn.")
                 return
-            mode = self.cfg.get("compact_process", "auto")
+            mode = self.cfg.get("compact_process", "on")
             self.info(f"Last turn: {len(self.last_process)} step(s) | compact mode: {mode}")
             print()
             for s in self.last_process:
@@ -467,7 +467,7 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
                     "auto": "smart (compact when 4+ steps, inline otherwise)"}[sub]
             self.success(f"Process display: {desc}.")
         else:
-            self.info(f"Compact process: {self.cfg.get('compact_process', 'auto')}. Use /process on|off|auto.")
+            self.info(f"Compact process: {self.cfg.get('compact_process', 'on')}. Use /process on|off|auto.")
 
     def _cmd_setup(self, args):
         self._run_setup("")
