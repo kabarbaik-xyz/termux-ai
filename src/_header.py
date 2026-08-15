@@ -7,7 +7,7 @@ endpoint, or natively to Anthropic's Messages API.
 import os, sys, json, sqlite3, urllib.request, urllib.error, urllib.parse, subprocess, atexit, shutil, time, threading, re, html, shlex, signal, ipaddress, calendar
 import select, tempfile
 import zipfile
-import hashlib
+import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.2.0"
+__version__ = "7.2.5"

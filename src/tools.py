@@ -1,6 +1,6 @@
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
 class Tools:
-    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "graphify"}
+    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "graphify"}
     # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
     # build noise (node_modules, .git, __pycache__, dist, ...) doesn't flood the
     # AI's context when it scans a local codebase. (AI can still read_file a
@@ -17,6 +17,7 @@ class Tools:
         {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer", "description": "Seconds to wait before killing the command (default 30, max 600). Set HIGHER for slow commands (npm install, builds, test suites) so they finish in ONE call instead of polling with sleep — each call is one agentic iteration, and polling wastes your step budget."}}, "required": ["command"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
+        {"type": "function", "function": {"name": "web_search", "description": "Search the web for up-to-date information (current events, weather, people, places, definitions, recent facts) and return the top results with titles, URLs, and snippets. Use this INSTEAD of guessing a URL for fetch_url when you don't know the exact page. Results come from Bing; Wikipedia is used as a fallback when Bing is unreachable.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "clone_repo", "description": "Clone a public git repo (HTTPS only) into an isolated temp dir and return the local path, so you can read/list/search/edit its files locally. BUILD MODE only. depth defaults to 1 (shallow, fast); set 0 for full history.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "depth": {"type": "integer", "default": 1}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "graphify", "description": "Scan a codebase directory and return a structured code graph: dependency graph (Mermaid), all function/class definitions, API endpoints, and data models. Call this FIRST to map the codebase structure before deep-diving into files. Zero dependencies, runs locally.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory to scan (default: current dir)"}, "mode": {"type": "string", "enum": ["all", "deps", "calls", "api", "models"], "description": "all=everything, deps=import graph, calls=definitions, api=endpoints, models=data schemas"}}, "required": ["path"]}}},
     ]
@@ -257,6 +258,7 @@ class Tools:
         "list_files": "List a directory. recursive=true for the full tree (skips node_modules/.git/build dirs).",
         "search_files": "Search text in files (grep).",
         "fetch_url": "Fetch a URL, return readable text (~500KB cap). Prefer over curl for URLs.",
+        "web_search": "Search the web, return top results (titles, URLs, snippets). For up-to-date facts/news/weather.",
         "clone_repo": "Clone a public git repo to a temp dir. depth=0 for full history.",
         "graphify": "Code graph (deps, defs, API, models). Call first to map a codebase.",
         # run_command keeps its full description: the Plan-mode allowlist it
@@ -396,9 +398,116 @@ class Tools:
         looks_html = ("html" in ctype or text.lstrip()[:200].lower().startswith("<!doctype html")
                       or "<html" in text.lower()[:500])
         if looks_html:
-            text = Tools._html_to_text(text)
-        note = " (truncated at %d KB)" % (max_bytes // 1000) if truncated else ""
-        return "Fetched %s%s\n\n%s" % (final_url, note, text.strip())
+            # Wikipedia pages carry ~500KB of sidebar/nav/footer junk around a
+            # small article body; slice out the main content so the model gets
+            # the article, not the menu (a 64s prefill on a phone otherwise).
+            if "wikipedia.org" in host:
+                text = Tools._wikipedia_main(text)
+                text = Tools._html_to_text(text)
+                text = Tools._wikipedia_clean(text)
+            else:
+                text = Tools._html_to_text(text)
+        notes = []
+        if truncated:
+            notes.append("truncated at %d KB" % (max_bytes // 1000))
+        text = text.strip()
+        text_cap = 120000
+        if len(text) > text_cap:
+            text = text[:text_cap]
+            notes.append("excerpt (first %d KB)" % (text_cap // 1000))
+        note = " (%s)" % ", ".join(notes) if notes else ""
+        return "Fetched %s%s\n\n%s" % (final_url, note, text)
+
+    @staticmethod
+    def _wikipedia_main(s):
+        """Slice the article body out of a raw Wikipedia page: everything the
+        reader cares about lives in the #mw-content-text div (the sidebar,
+        'Jump to content', footer and interwiki columns are all outside it)."""
+        m = re.search(r'(?is)<div[^>]*id=["\']mw-content-text["\'][^>]*>', s)
+        if not m:
+            return s
+        rest = s[m.start():]
+        e = re.search(r'(?is)<div[^>]*id=["\']catlinks["\']', rest)
+        if e:
+            rest = rest[:e.start()]
+        return rest
+
+    @staticmethod
+    def _wikipedia_clean(s):
+        """Drop the leftover template noise that survives tag-stripping on
+        Wikipedia pages: unrendered wikitext ({{...}}) and Parsoid infobox
+        JSON blobs ("wt": "..."), both of which are useless to the model."""
+        s = re.sub(r"(?m)^.*\{\{.*$", "", s)          # unrendered wikitext templates
+        s = re.sub(r"(?m)^.*\"wt\":\s*\".*$", "", s)  # Parsoid JSON blobs
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
+
+    @staticmethod
+    def _web_search(query, timeout=12, max_results=5):
+        """Search the web and return the top results. Primary source: Bing's
+        HTML results (no API key; result links are base64-wrapped and decoded).
+        Fallback: Wikipedia's search API when Bing is unreachable."""
+        q = (query or "").strip()
+        if not q:
+            return "Error: query is empty"
+        qq = urllib.parse.quote(q)
+        results = []
+        try:
+            req = urllib.request.Request(
+                "https://www.bing.com/search?q=" + qq,
+                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                         "Accept-Language": "en-US,en;q=0.9"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read(1500000).decode("utf-8", "replace")
+            for b in re.findall(r'(?is)<li class="b_algo[^"]*".*?</li>', body):
+                m = re.search(r'(?is)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', b)
+                if not m:
+                    continue
+                url = m.group(1)
+                u = re.search(r'(?:[?&]|&amp;)u=a1([A-Za-z0-9+/=]+)', url)
+                if u:
+                    try:
+                        real = base64.b64decode(u.group(1) + "=" * (-len(u.group(1)) % 4)) \
+                            .decode("utf-8", "replace")
+                        if real.startswith("http"):
+                            url = real
+                    except Exception:
+                        pass
+                title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+                sn = re.search(r'(?is)<p[^>]*>(.*?)</p>', b)
+                snippet = re.sub(r"<[^>]+>", "", sn.group(1)).strip() if sn else ""
+                if url and title:
+                    results.append((title, url, snippet))
+                if len(results) >= max_results:
+                    break
+        except Exception:
+            pass
+        if not results:
+            try:
+                req = urllib.request.Request(
+                    "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch="
+                    + qq + "&format=json&srlimit=%d" % max_results,
+                    headers={"User-Agent": "termux-ai/%s (+CLI)" % __version__})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    d = json.loads(r.read().decode("utf-8", "replace"))
+                for it in (d.get("query") or {}).get("search") or []:
+                    title = it.get("title", "")
+                    url = "https://en.wikipedia.org/wiki/" + \
+                        urllib.parse.quote(title.replace(" ", "_"))
+                    snippet = re.sub(r"<[^>]+>", "", it.get("snippet", ""))
+                    results.append((title, url, snippet))
+            except Exception:
+                pass
+        if not results:
+            return ("No web search results for '%s' (Bing/Wikipedia unreachable from here). "
+                    "Try fetch_url with a known URL." % q)
+        lines = ["Web search results for '%s':" % q]
+        for i, (title, url, snippet) in enumerate(results, 1):
+            lines.append("%d. %s\n   URL: %s" % (i, title, url))
+            if snippet:
+                lines.append("   %s" % snippet[:240])
+        return "\n".join(lines)
 
     # ---- graphify: native code-graph scanner (zero deps, stdlib only) ----
     _G_EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".sql"}
@@ -663,6 +772,8 @@ class Tools:
                 return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
             elif name == "fetch_url":
                 return Tools._fetch_url(args.get("url", ""))
+            elif name == "web_search":
+                return Tools._web_search(args.get("query", ""))
             elif name == "clone_repo":
                 return Tools._clone_repo(args.get("url", ""), args.get("depth", 1), build_mode)
             elif name == "graphify":

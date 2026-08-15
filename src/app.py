@@ -750,12 +750,16 @@ class App:
 
         # Local non-thinking chat models over-use tools on casual questions
         # (qwen2.5 lists files for 'say hi') — a 60s+ tool loop on slow phones.
-        # Tell them to answer trivial chat directly so tools only fire when real.
+        # Tell them to answer trivial chat directly so tools only fire when real,
+        # and to summarize web content instead of pasting raw pages.
         if getattr(self.backend, "_local_chat_model", lambda: False)():
             msgs[0]["content"] += (
                 "\n\nIf the user's request is a simple question or casual chat that "
                 "needs no files or commands, ANSWER DIRECTLY in plain text and do "
-                "NOT call any tool.")
+                "NOT call any tool.\n"
+                "For factual questions you can't answer from memory, use web_search "
+                "to find sources. When you use web_search or fetch_url, reply with a "
+                "CONCISE SUMMARY in your own words \u2014 never paste raw page text.")
 
         # Strategy-first: when enabled, ask the model to outline a strategy before
         # show it, and inject it so the model executes deliberately (less wandering).

@@ -5,6 +5,7 @@ import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
 import io
 import json
 import hashlib
+import base64
 import unittest.mock as um
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -591,6 +592,77 @@ class TestFetchUrl(_TmpHome):
         self.assertIn("Hello World", out)
         self.assertIn("Body text", out)
         self.assertNotIn("<html>", out)         # HTML stripped
+
+    def test_fetch_wikipedia_extracts_main_content(self):
+        """_fetch_url on a wikipedia.org host slices #mw-content-text so the
+        model gets the article, not the sidebar/nav/footer (~500KB of junk)."""
+        page = ('<html><body><div id="mw-panel">Main menu<br>Navigation<br>Donate</div>'
+            '<div id="mw-content-text"><h1>Prabowo</h1><p>Born 1951.</p>'
+            '<p>{{nobold|{{lang|id|Bapak}}}}</p>'
+            '<p>"native_name":{"wt":"ngoko"}</p></div>'
+            '<div id="catlinks">Categories...</div></body></html>').encode()
+        class FakeResp:
+            headers = {"Content-Type": "text/html"}
+            _data = page
+            def read(self, n=-1): return self._data
+            def geturl(self): return "https://en.wikipedia.org/wiki/Prabowo_Subianto"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        with um.patch.object(m.urllib.request, "urlopen", return_value=FakeResp()):
+            out = m.Tools._fetch_url("https://en.wikipedia.org/wiki/Prabowo_Subianto")
+        self.assertIn("Prabowo", out)
+        self.assertIn("Born 1951.", out)
+        self.assertNotIn("Main menu", out)      # sidebar junk removed
+        self.assertNotIn("Donate", out)
+        self.assertNotIn("catlinks", out)       # footer categories removed
+        self.assertNotIn("{{", out)             # wikitext template cruft gone
+        self.assertNotIn('"wt":', out)          # Parsoid JSON gone
+
+    def test_web_search_parses_bing_and_decodes_base64_urls(self):
+        """Bing's HTML results: 10 b_algo blocks, and result links are wrapped
+        (/ck/a?...u=a1<base64>) — the base64 must be decoded to the real URL."""
+        target = "https://www.accuweather.com/en/id/yogyakarta/208977/weather"
+        wrapped = "https://www.bing.com/ck/a?!&&p=1&amp;u=a1" + base64.b64encode(target.encode()).decode()
+        body = ('<li class="b_algo"><h2><a href="' + wrapped + '">Yogyakarta Weather</a></h2>'
+                '<p>Hourly forecast for Yogyakarta.</p></li>'
+                '<li class="b_algo"><h2><a href="https://weather.com/id-YO">Weather.com</a></h2>'
+                '<p>10-day outlook.</p></li>').encode()
+        class FakeResp:
+            headers = {"Content-Type": "text/html"}
+            _data = body
+            def read(self, n=-1): return self._data
+            def geturl(self): return "https://www.bing.com/search?q=weather"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        with um.patch.object(m.urllib.request, "urlopen", return_value=FakeResp()):
+            out = m.Tools._web_search("yogyakarta weather", timeout=5)
+        self.assertIn("Yogyakarta Weather", out)
+        self.assertIn(target, out)              # base64-wrapped URL decoded
+        self.assertIn("weather.com", out)       # plain URL kept
+
+    def test_web_search_falls_back_to_wikipedia(self):
+        """When Bing is unreachable, _web_search uses Wikipedia's search API."""
+        calls = {"n": 0}
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise m.urllib.error.URLError("bing unreachable")
+            class FakeResp:
+                headers = {"Content-Type": "application/json"}
+                _data = (b'{"query":{"search":[{"title":"Yogyakarta",'
+                         b'"snippet":"City on <b>Java</b> island."}]}}')
+                def read(self, n=-1): return self._data
+                def geturl(self): return req.full_url
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return FakeResp()
+        with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = m.Tools._web_search("yogyakarta", timeout=5)
+        self.assertIn("Yogyakarta", out)
+        self.assertIn("https://en.wikipedia.org/wiki/Yogyakarta", out)
+
+    def test_web_search_empty_query(self):
+        self.assertIn("Error: query is empty", m.Tools._web_search("  "))
 
     def test_github_token_attached_for_api(self):
         os.environ["GITHUB_TOKEN"] = "ghp_test123"
@@ -1660,42 +1732,56 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(c._eff("ollama_max_tokens", 0), 0)
         self.assertFalse(c._local_chat_model())
 
-    def test_casual_chat_gate_heuristic(self):
-        """_casual_chat() flags trivial chat (no tools needed) but keeps tools
-        for anything task-like (paths/extensions/verbs/long messages)."""
-        for casual in ("what can I do for you?", "hi", "how are you?", "", "thanks!"):
-            self.assertTrue(m._casual_chat(casual), casual)
+    def test_chat_kind_heuristic(self):
+        """_chat_kind() splits messages into chat (no tools) / knowledge (web
+        tools) / task (full tools) so a small local model stops looping file
+        tools on trivial chat but can still look up facts on the web."""
+        for chat in ("what can I do for you?", "hi", "how are you?", "",
+                     "thanks!", "what should I call you?", "can I call you donAI?"):
+            self.assertEqual(m._chat_kind(chat), "chat", chat)
+        for know in ("who is Prabowo Subianto?",
+                     "tell me the weather today",
+                     "tell me the weather today, I'm in yogyakarta",
+                     "what is the capital of France?",
+                     "explain photosynthesis",
+                     "latest news about AI chips"):
+            self.assertEqual(m._chat_kind(know), "knowledge", know)
         for task in ("create app/main.py that prints hello",
                      "install the deps and run the tests",
                      "fix the bug in the server",
                      "read src/deep/file.py",
                      "list files in ./project",
-                     "run pytest"):
-            self.assertFalse(m._casual_chat(task), task)
+                     "run pytest",
+                     "can you help me create a website",
+                     "show me the config in app/settings.py"):
+            self.assertEqual(m._chat_kind(task), "task", task)
         # long ambiguous messages keep tools (safe default)
-        self.assertFalse(m._casual_chat("hey I was wondering if you could help me with a "
-                                        "small thing I've been thinking about for a while "
-                                        "and I'd really appreciate some guidance on it today"))
+        self.assertEqual(m._chat_kind("hey I was wondering if you could help me with a "
+                                      "small thing I've been thinking about for a while "
+                                      "and I'd really appreciate some guidance on it today"), "task")
 
-    def test_use_tools_gate(self):
-        """Local non-thinking chat models get NO tools for casual chat (kills the
-        ~200s tool loop) but keep them for tasks; cloud and build-mode-off are
-        unaffected."""
+    def test_tools_for_gate(self):
+        """Local non-thinking chat models get NO tools for casual chat (kills
+        the ~200s tool loop), web-only tools for knowledge questions, and the
+        full toolset for tasks; cloud and build-mode-off are unaffected."""
         b = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
         self.assertTrue(b._local_chat_model())
-        self.assertFalse(b._use_tools_for(
+        self.assertIsNone(b._tools_for(
             [{"role": "system", "content": "s"}, {"role": "user", "content": "what can I do for you?"}], True))
-        self.assertFalse(b._use_tools_for(
-            [{"role": "user", "content": "hi"}], True))
-        self.assertTrue(b._use_tools_for(
-            [{"role": "user", "content": "create app/main.py that prints hello"}], True))
+        self.assertIsNone(b._tools_for([{"role": "user", "content": "hi"}], True))
+        self.assertEqual(b._tools_for(
+            [{"role": "user", "content": "who is Prabowo Subianto?"}], True), "web")
+        self.assertEqual(b._tools_for(
+            [{"role": "user", "content": "tell me the weather today"}], True), "web")
+        self.assertEqual(b._tools_for(
+            [{"role": "user", "content": "create app/main.py that prints hello"}], True), "all")
         # build mode off -> never tools
-        self.assertFalse(b._use_tools_for(
+        self.assertIsNone(b._tools_for(
             [{"role": "user", "content": "create app/main.py"}], False))
         # cloud backend: tools always offered regardless of phrasing
         c = m.OpenAICompatible({}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
         self.assertFalse(c._local_chat_model())
-        self.assertTrue(c._use_tools_for([{"role": "user", "content": "what can I do for you?"}], True))
+        self.assertEqual(c._tools_for([{"role": "user", "content": "what can I do for you?"}], True), "all")
 
     def test_warm_is_ollama_only_and_never_raises(self):
         """_warm() pre-loads the local model; remote backends are a no-op and

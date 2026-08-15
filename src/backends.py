@@ -88,14 +88,17 @@ def _suggest_num_ctx(free_gb, model_gb):
     return 16384
 
 
-# ── Casual-chat gate ─────────────────────────────────────────────────────────
+# ── Tool-selection gate ───────────────────────────────────────────────────────
 # Small LOCAL non-thinking models (qwen2.5:1.7b/3b, llama3.2, ...) loop tools on
 # trivial questions: they see file tools + a "gather context" workflow and answer
 # 'what can I do for you?' with list_files/read_file calls. Every tool iteration
 # re-prefills the whole prompt + growing history on a slow phone (~40-75s each),
 # so a 3-4 round loop is 200s+ while `ollama run` (no tools) answers instantly.
-# Deterministic gate: for these models, do NOT offer tools at all when the user's
-# message looks like pure casual chat, so the model can only answer directly.
+# Deterministic three-way gate for these models:
+#   chat      -> NO tools at all (model can only answer directly)
+#   knowledge -> web-only tools (web_search + fetch_url), no file/command tools
+#   task      -> the full toolset
+# Cloud models are smarter and keep the full toolset every turn.
 _TASK_RE = re.compile(
     r"\b(create|build|write|make|fix|install|run|read|list|search|find|clone|edit|"
     r"update|delete|remove|add|debug|test|refactor|implement|check|configure|setup|"
@@ -105,20 +108,42 @@ _PATH_RE = re.compile(r"(?:^|[\s\"'`])(?:\.{1,2}/|~/|/|[\w.\-]+/)[\w.\-]*(?:/[\w
 _EXT_RE = re.compile(r"\b[\w\-]+\.(py|js|ts|tsx|jsx|go|rs|c|h|cpp|hpp|java|kt|rb|sh|"
                      r"bash|zsh|json|yaml|yml|toml|md|txt|html|css|sql|lock|env|ini|cfg|conf|log|db)\b",
                      re.IGNORECASE)
+_ACTION_RE = re.compile(
+    r"\b(can you|help me|i need|i want( to)?|please|would you|could you|show me|"
+    r"give me|do it|do that)\b", re.IGNORECASE)
+_SELF_CHAT_RE = re.compile(
+    r"\bwhat (can|should|do|could|would|will) (i|you)\b|\bwhat('?s| is| are) (your|my)\b|"
+    r"\bwho are you\b|\bhow are you\b|\bcan i call you\b|\bdo you (know|like|understand|have)\b|"
+    r"\bhow do you\b|\byou are (a|an|the)\b", re.IGNORECASE)
+_KNOWLEDGE_RE = re.compile(
+    r"\b(who|when|where|why|how)\b|\bwhat('?s| is| are| was| were| does| did)\b|"
+    r"\btell me (about|the|more)\b|\binformation about\b|\bexplain\b|\bdefine\b|"
+    r"\bmeaning of\b|\bhistory of\b|\bcapital of\b|\bpopulation\b|\bweather\b|"
+    r"\bforecast\b|\bnews\b|\bcurrent\b|\blatest\b|\btoday'?s\b", re.IGNORECASE)
 
 
-def _casual_chat(text):
-    """Heuristic: is a user message pure casual chat (no task/file intent)?
-    True -> send NO tools for a small local chat model. Task verbs, file
-    paths/extensions, or a long message keep tools (safe default)."""
+def _chat_kind(text):
+    """Classify a user message for tool selection:
+    'chat'      — pure casual chat, no tools
+    'knowledge' — a factual question the model may not know offline -> web tools
+    'task'      — file/command work -> full toolset
+    Heuristics, not AI: task verbs/paths/extensions win first, then self-chat
+    ("what can I do for you?"), then knowledge words, else length decides."""
     t = (text or "").strip()
     if not t:
-        return True
+        return "chat"
     if _PATH_RE.search(t) or _EXT_RE.search(t):
-        return False          # has a file path / filename extension -> a task
+        return "task"            # has a file path / filename extension -> a task
     if _TASK_RE.search(t):
-        return False          # explicit task verb -> a task
-    return len(t) <= 120      # no task signals: short = chat; long = keep tools
+        return "task"            # explicit task verb -> a task
+    if _ACTION_RE.search(t):
+        return "task"            # "can you ...", "help me ..." -> a task
+    tl = t.lower()
+    if _SELF_CHAT_RE.search(tl):
+        return "chat"            # "what can I do for you?" -> just chat
+    if _KNOWLEDGE_RE.search(tl):
+        return "knowledge"       # "who is Prabowo?", "weather today" -> web lookup
+    return "chat" if len(t) <= 120 else "task"   # no signals: short = chat
 
 
 class Backend:
@@ -169,19 +194,26 @@ class Backend:
         models (qwen2.5 keeps listing files for 'say hi')."""
         return self.is_local and not is_thinking_model(self._model(), None)
 
-    def _use_tools_for(self, msgs, build_mode):
-        """Should this turn offer tools at all? Build mode off -> no tools.
-        Small local chat models additionally get a deterministic casual-chat
-        gate: a trivial question ('say hi', 'what can I do for you?') sends NO
-        tools, so the model can only answer directly instead of looping tool
-        calls for minutes on a slow phone."""
+    def _tools_for(self, msgs, build_mode):
+        """Which tools to offer this turn (small local chat models only):
+          None  -> no tools (build mode off, or pure casual chat that would
+                   otherwise loop tool calls for minutes on a slow phone)
+          "web" -> web-only tools (web_search + fetch_url) so a knowledge
+                   question can be looked up without the file-tool loop
+          "all" -> the full toolset (tasks; and every non-gated backend)
+        """
         if not build_mode:
-            return False
+            return None
         if not self._local_chat_model():
-            return True
+            return "all"
         last = next((mm.get("content") or "" for mm in reversed(msgs)
                      if mm.get("role") == "user"), "")
-        return not _casual_chat(last)
+        kind = _chat_kind(last)
+        if kind == "chat":
+            return None
+        if kind == "knowledge":
+            return "web"
+        return "all"
 
     def _schema_mode(self):
         """full | compact | micro — which tool-schema level to send.
@@ -908,18 +940,24 @@ class OpenAICompatible(Backend):
             compacted = self._compact_iteration_history(msgs)
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
-            # Deterministic casual-chat gate: small local chat models get NO tools
-            # for trivial questions (else they loop tool calls for minutes on a
-            # slow phone). Tasks keep tools; temperature clamp only applies when
-            # tools are actually on so pure chat keeps the tuned temperature.
-            use_tools = self._use_tools_for(msgs, build_mode)
-            temp = min(self._eff("temperature", 0.7), 0.4) if use_tools else self._eff("temperature", 0.7)
+            # Deterministic tool-selection gate: small local chat models get NO
+            # tools for casual chat (else they loop tool calls for minutes on a
+            # slow phone), web-only tools for knowledge questions, and the full
+            # toolset for tasks. Temperature clamp only applies when tools are
+            # actually on so pure chat keeps the tuned temperature.
+            tools_sel = self._tools_for(msgs, build_mode)
+            temp = min(self._eff("temperature", 0.7), 0.4) if tools_sel else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
             _smode = self._schema_mode()
-            d = self._payload(msgs, True,
-                              tools=(Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro") if use_tools else None),
-                              temperature=temp)
+            if tools_sel == "all":
+                schemas = Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro")
+            elif tools_sel == "web":
+                schemas = [s for s in Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro")
+                           if s["function"]["name"] in ("web_search", "fetch_url")]
+            else:
+                schemas = None
+            d = self._payload(msgs, True, tools=schemas, temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
