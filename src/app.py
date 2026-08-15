@@ -735,7 +735,10 @@ class App:
 
         # Gather-then-execute: recommend the model read everything it needs up
         # front (batched), then act -- rather than dribbling reads across steps.
-        if self.backend._eff("gather_first", True):
+        # Skipped for small local chat models: it actively pushes them to call
+        # tools on trivial questions, which is what makes casual chat take 200s+.
+        if (self.backend._eff("gather_first", True)
+                and not getattr(self.backend, "_local_chat_model", lambda: False)()):
             msgs[0]["content"] += (
                 "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
                 "In your first one or two responses, batch the reads you'll need "

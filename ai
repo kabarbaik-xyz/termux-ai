@@ -1791,6 +1791,39 @@ def _suggest_num_ctx(free_gb, model_gb):
     return 16384
 
 
+# ── Casual-chat gate ─────────────────────────────────────────────────────────
+# Small LOCAL non-thinking models (qwen2.5:1.7b/3b, llama3.2, ...) loop tools on
+# trivial questions: they see file tools + a "gather context" workflow and answer
+# 'what can I do for you?' with list_files/read_file calls. Every tool iteration
+# re-prefills the whole prompt + growing history on a slow phone (~40-75s each),
+# so a 3-4 round loop is 200s+ while `ollama run` (no tools) answers instantly.
+# Deterministic gate: for these models, do NOT offer tools at all when the user's
+# message looks like pure casual chat, so the model can only answer directly.
+_TASK_RE = re.compile(
+    r"\b(create|build|write|make|fix|install|run|read|list|search|find|clone|edit|"
+    r"update|delete|remove|add|debug|test|refactor|implement|check|configure|setup|"
+    r"migrate|deploy|start|stop|compile|execute|generate|format|lint|init|review|patch)\b",
+    re.IGNORECASE)
+_PATH_RE = re.compile(r"(?:^|[\s\"'`])(?:\.{1,2}/|~/|/|[\w.\-]+/)[\w.\-]*(?:/[\w.\-]+)+")
+_EXT_RE = re.compile(r"\b[\w\-]+\.(py|js|ts|tsx|jsx|go|rs|c|h|cpp|hpp|java|kt|rb|sh|"
+                     r"bash|zsh|json|yaml|yml|toml|md|txt|html|css|sql|lock|env|ini|cfg|conf|log|db)\b",
+                     re.IGNORECASE)
+
+
+def _casual_chat(text):
+    """Heuristic: is a user message pure casual chat (no task/file intent)?
+    True -> send NO tools for a small local chat model. Task verbs, file
+    paths/extensions, or a long message keep tools (safe default)."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _PATH_RE.search(t) or _EXT_RE.search(t):
+        return False          # has a file path / filename extension -> a task
+    if _TASK_RE.search(t):
+        return False          # explicit task verb -> a task
+    return len(t) <= 120      # no task signals: short = chat; long = keep tools
+
+
 class Backend:
     def __init__(self, cfg):
         self.c = cfg
@@ -1838,6 +1871,20 @@ class Backend:
         trivial-question tool loops — the #1 'why is it so slow' cause on small
         models (qwen2.5 keeps listing files for 'say hi')."""
         return self.is_local and not is_thinking_model(self._model(), None)
+
+    def _use_tools_for(self, msgs, build_mode):
+        """Should this turn offer tools at all? Build mode off -> no tools.
+        Small local chat models additionally get a deterministic casual-chat
+        gate: a trivial question ('say hi', 'what can I do for you?') sends NO
+        tools, so the model can only answer directly instead of looping tool
+        calls for minutes on a slow phone."""
+        if not build_mode:
+            return False
+        if not self._local_chat_model():
+            return True
+        last = next((mm.get("content") or "" for mm in reversed(msgs)
+                     if mm.get("role") == "user"), "")
+        return not _casual_chat(last)
 
     def _schema_mode(self):
         """full | compact | micro — which tool-schema level to send.
@@ -2564,11 +2611,18 @@ class OpenAICompatible(Backend):
             compacted = self._compact_iteration_history(msgs)
             if compacted:
                 yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
-            temp = min(self._eff("temperature", 0.7), 0.4) if build_mode else self._eff("temperature", 0.7)
+            # Deterministic casual-chat gate: small local chat models get NO tools
+            # for trivial questions (else they loop tool calls for minutes on a
+            # slow phone). Tasks keep tools; temperature clamp only applies when
+            # tools are actually on so pure chat keeps the tuned temperature.
+            use_tools = self._use_tools_for(msgs, build_mode)
+            temp = min(self._eff("temperature", 0.7), 0.4) if use_tools else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
             _smode = self._schema_mode()
-            d = self._payload(msgs, True, tools=Tools.get_schemas(build_mode, compact=_smode != "full", micro=_smode == "micro"), temperature=temp)
+            d = self._payload(msgs, True,
+                              tools=(Tools.get_schemas(True, compact=_smode != "full", micro=_smode == "micro") if use_tools else None),
+                              temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
             content_buf = ""
@@ -3868,7 +3922,10 @@ class App:
 
         # Gather-then-execute: recommend the model read everything it needs up
         # front (batched), then act -- rather than dribbling reads across steps.
-        if self.backend._eff("gather_first", True):
+        # Skipped for small local chat models: it actively pushes them to call
+        # tools on trivial questions, which is what makes casual chat take 200s+.
+        if (self.backend._eff("gather_first", True)
+                and not getattr(self.backend, "_local_chat_model", lambda: False)()):
             msgs[0]["content"] += (
                 "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
                 "In your first one or two responses, batch the reads you'll need "

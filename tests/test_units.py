@@ -1660,6 +1660,43 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(c._eff("ollama_max_tokens", 0), 0)
         self.assertFalse(c._local_chat_model())
 
+    def test_casual_chat_gate_heuristic(self):
+        """_casual_chat() flags trivial chat (no tools needed) but keeps tools
+        for anything task-like (paths/extensions/verbs/long messages)."""
+        for casual in ("what can I do for you?", "hi", "how are you?", "", "thanks!"):
+            self.assertTrue(m._casual_chat(casual), casual)
+        for task in ("create app/main.py that prints hello",
+                     "install the deps and run the tests",
+                     "fix the bug in the server",
+                     "read src/deep/file.py",
+                     "list files in ./project",
+                     "run pytest"):
+            self.assertFalse(m._casual_chat(task), task)
+        # long ambiguous messages keep tools (safe default)
+        self.assertFalse(m._casual_chat("hey I was wondering if you could help me with a "
+                                        "small thing I've been thinking about for a while "
+                                        "and I'd really appreciate some guidance on it today"))
+
+    def test_use_tools_gate(self):
+        """Local non-thinking chat models get NO tools for casual chat (kills the
+        ~200s tool loop) but keep them for tasks; cloud and build-mode-off are
+        unaffected."""
+        b = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        self.assertTrue(b._local_chat_model())
+        self.assertFalse(b._use_tools_for(
+            [{"role": "system", "content": "s"}, {"role": "user", "content": "what can I do for you?"}], True))
+        self.assertFalse(b._use_tools_for(
+            [{"role": "user", "content": "hi"}], True))
+        self.assertTrue(b._use_tools_for(
+            [{"role": "user", "content": "create app/main.py that prints hello"}], True))
+        # build mode off -> never tools
+        self.assertFalse(b._use_tools_for(
+            [{"role": "user", "content": "create app/main.py"}], False))
+        # cloud backend: tools always offered regardless of phrasing
+        c = m.OpenAICompatible({}, "openai", {"base_url": "https://api.openai.com/v1", "model": "gpt-4o", "api_key": "x"})
+        self.assertFalse(c._local_chat_model())
+        self.assertTrue(c._use_tools_for([{"role": "user", "content": "what can I do for you?"}], True))
+
     def test_warm_is_ollama_only_and_never_raises(self):
         """_warm() pre-loads the local model; remote backends are a no-op and
         failures are swallowed (startup must never block or crash)."""
