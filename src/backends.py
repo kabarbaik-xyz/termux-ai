@@ -132,6 +132,19 @@ _KNOWLEDGE_RE = re.compile(
 _CONTINUE_RE = re.compile(
     r"\b(ok|oke|okay|okey|ya|iya|yap|sip|gas|lanjut\w*|lanjutkan|continue|"
     r"proceed|keep going|go on|silakan|silahkan|tolong lanjut)\b", re.IGNORECASE)
+# Self-heal: a small local model answering WITHOUT tools (the gate classified
+# the message as chat) but whose text reads like it WANTED tools ("I can't
+# access files" / "maaf, saya tidak bisa mengakses file"). One retry with tools
+# offered fixes the misclassification instead of the user rephrasing.
+_WANTS_TOOLS_RE = re.compile(
+    r"i (can'?t|cannot|don'?t have|am unable to) (access|read|open|see|check|list|run|execute)"
+    r"|i (do not|don'?t) have (access|the ability|permission)"
+    r"|no (access|tool|file) (to|for)"
+    r"|as (an? )?(ai|language model|text model)[,.]? i (can'?t|cannot|don'?t|am unable)"
+    r"|tidak bisa (mengakses|membaca|membuka|melihat|menjalankan|mengeksekusi)"
+    r"|tidak dapat (mengakses|membaca|membuka|melihat|menjalankan)"
+    r"|saya tidak (bisa|dapat|punya akses) (mengakses|membaca|melihat|membuka)"
+    r"|maaf,? saya (tidak|ga|gak|nggak) (bisa|dapat)", re.IGNORECASE)
 
 
 def _chat_kind(text):
@@ -1124,6 +1137,7 @@ class OpenAICompatible(Backend):
         # Shared loop bookkeeping (iteration ceiling + checkpoints + failure
         # guards) so the OpenAI and Anthropic loops can never drift.
         guard = LoopGuard(self.c, continue_fn)
+        self_heal = False   # one-shot: re-offer tools when a no-tools answer wanted them
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -1146,7 +1160,12 @@ class OpenAICompatible(Backend):
             # slow phone), web-only tools for knowledge questions, and the full
             # toolset for tasks. Temperature clamp only applies when tools are
             # actually on so pure chat keeps the tuned temperature.
-            tools_sel = self._tools_for(msgs, build_mode)
+            # Self-heal: if a previous no-tools answer looked like it WANTED
+            # tools, force the toolset on this retry (one shot per turn).
+            if self_heal:
+                tools_sel = "all" if build_mode else "plan"
+            else:
+                tools_sel = self._tools_for(msgs, build_mode)
             temp = min(self._eff("temperature", 0.7), 0.4) if tools_sel else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
@@ -1186,6 +1205,18 @@ class OpenAICompatible(Backend):
                         yield {"type": kind, "content": text}
 
             if not calls:
+                # Self-heal a mis-gated turn ONCE: the gate dropped tools (it
+                # read the message as casual chat) but the model's answer says
+                # it needed them. Re-offer tools and let it retry; a second
+                # tool-less answer stands (never loop).
+                if (tools_sel is None and not self_heal
+                        and _WANTS_TOOLS_RE.search(content_buf or "")):
+                    self_heal = True
+                    msgs.append({"role": "system", "content":
+                                 "Correction: tools ARE available for this request. If the task "
+                                 "needs files, commands, or the web, call the appropriate tool now."})
+                    yield {"type": "notice", "content": "\n[tools re-offered: the answer indicated tools were needed]", "fatal": False}
+                    continue
                 return
 
             if finish_reason == "length" and calls:

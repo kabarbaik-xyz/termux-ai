@@ -22,6 +22,33 @@ class Database:
                 cid INTEGER PRIMARY KEY, msgs TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         """)
         self.conn.commit()
+        self._init_fts()
+
+    def _init_fts(self):
+        """FTS5 full-text index over messages (external-content: the index holds
+        only tokens, messages stays the source of truth). /search becomes an
+        instant MATCH instead of a full-table LIKE scan. Falls back silently to
+        LIKE when FTS5 is unavailable (exotic builds)."""
+        try:
+            self.conn.executescript("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
+                    content, content='messages', content_rowid='id');
+                CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO msg_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+                    INSERT INTO msg_fts(msg_fts, rowid, content) VALUES('delete', old.id, old.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+                    INSERT INTO msg_fts(msg_fts, rowid, content) VALUES('delete', old.id, old.content);
+                    INSERT INTO msg_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+            """)
+            self.conn.execute("INSERT INTO msg_fts(msg_fts) VALUES('rebuild')")  # sync older rows once per open
+            self.conn.commit()
+            self._fts_ok = True
+        except Exception:
+            self._fts_ok = False
         _secure_file(DB_FILE)
 
     def _table_cols(self, table):
@@ -85,9 +112,25 @@ class Database:
         ).fetchall()
 
     def search_convs(self, query):
+        q = (query or "").strip()
+        # Fast path: FTS5 MATCH (instant, ranked by the index). The user term is
+        # quoted so raw punctuation can't break FTS syntax; any failure falls
+        # back to the original LIKE scan (always correct, just linear).
+        if q and getattr(self, "_fts_ok", False):
+            try:
+                match = '"%s"' % q.replace('"', '""')
+                return self.conn.execute(
+                    "SELECT DISTINCT c.id, c.title, c.model FROM conversations c "
+                    "JOIN messages m ON m.conversation_id = c.id "
+                    "WHERE m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?) "
+                    "OR c.title LIKE ? "
+                    "ORDER BY c.updated_at DESC LIMIT 200",
+                    (match, f"%{q}%")).fetchall()
+            except Exception:
+                pass
         return self.conn.execute(
             "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
-            (f"%{query}%", f"%{query}%")
+            (f"%{q}%", f"%{q}%")
         ).fetchall()
 
     def del_conv(self, cid):

@@ -2146,6 +2146,76 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(cs[0]["function"]["name"], "read_file")  # fragments joined
         self.assertEqual(json.loads(cs[0]["function"]["arguments"]), {"path": "a"})
 
+    def test_gate_self_heal_reoffers_tools_once(self):
+        """A mis-gated turn (gate read the message as chat -> no tools) whose
+        answer says it WANTED tools ("maaf, saya tidak bisa mengakses file") is
+        retried ONCE with the toolset forced on; a second tool-less answer
+        stands (never loops). Cloud is unaffected (never gated)."""
+        b = m.OpenAICompatible({"tools_enabled": True}, "ollama",
+                               {"base_url": "http://localhost:11434/v1", "model": "qwen2.5:3b"})
+        self.assertIsNone(b._tools_for([{"role": "user", "content": "coba cek file saya dong"}], True))
+        n, healed_payloads = [], []
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            n.append(1)
+            if len(n) == 1:
+                yield {"choices": [{"delta": {"content": "Maaf, saya tidak bisa mengakses file di perangkat Anda."}}]}
+            elif len(n) == 2:
+                healed_payloads.append(data)
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                    "function": {"name": "list_files", "arguments": '{"path":"."}'}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {"content": "ini isinya"}, "finish_reason": "stop"}]}
+        with um.patch.object(b, "_stream_req", side_effect=fs), \
+             um.patch.object(m.Tools, "run_checked", side_effect=lambda n_, a, bm, mr: (True, "f1\nf2")):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "coba cek file saya dong"}],
+                                          confirm_batch_fn=lambda c: True))
+        self.assertEqual(len(n), 3)                       # heal retry + tool round + final
+        self.assertTrue(healed_payloads[0].get("tools")) # tools re-offered
+        self.assertTrue(any(e["type"] == "tool_progress" for e in evts))
+        # one-shot: an always-refusing model heals exactly once then stands
+        n2 = []
+        def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+            n2.append(1)
+            yield {"choices": [{"delta": {"content": "Maaf, saya tidak bisa mengakses file."}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fs2):
+            list(b.chat_with_tools([{"role": "user", "content": "coba cek file saya dong"}],
+                                   confirm_batch_fn=lambda c: True))
+        self.assertEqual(len(n2), 2)
+
+    def test_web_cache_ttl_dedupes_and_bypassable(self):
+        """Web tools (fetch/search/weather) share a short-TTL cache keyed on the
+        lowercased arg -- repeated lookups in a turn don't re-fetch; TTL 0 via
+        AI_WEB_CACHE_TTL disables; errors are never cached."""
+        m.Tools._web_cache.clear()
+        calls = []
+        def fake(url, timeout=10, max_bytes=500000):
+            calls.append(url); return "content " + url
+        with um.patch.object(m.Tools, "_fetch_url", side_effect=fake):
+            a = m.Tools.run("fetch_url", {"url": "https://x.test/a"})
+            b = m.Tools.run("fetch_url", {"url": "https://X.test/A"})   # same key case-insensitively
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(a, b)
+        # TTL 0 disables (always fresh)
+        os.environ["AI_WEB_CACHE_TTL"] = "0"
+        try:
+            m.Tools._web_cache.clear()
+            with um.patch.object(m.Tools, "_fetch_url", side_effect=fake):
+                m.Tools.run("fetch_url", {"url": "https://x.test/a"})
+                m.Tools.run("fetch_url", {"url": "https://x.test/a"})
+            self.assertEqual(len(calls), 3)   # 1 + 2 fresh
+        finally:
+            os.environ.pop("AI_WEB_CACHE_TTL", None)
+        # errors are not cached
+        m.Tools._web_cache.clear()
+        n = []
+        def err_fetch(url, timeout=10, max_bytes=500000):
+            n.append(url); raise m.urllib.error.URLError("down")
+        with um.patch.object(m.Tools, "_fetch_url", side_effect=err_fetch):
+            r1 = m.Tools.run("fetch_url", {"url": "https://x.test/e"})
+            r2 = m.Tools.run("fetch_url", {"url": "https://x.test/e"})
+        self.assertEqual(len(n), 2)           # both attempted (nothing cached)
+        self.assertIn("Error", r1)
+
     def test_run_checked_structured_flags(self):
         """Tools.run_checked is the structured boundary: genuine failures raise
         ToolError inside _run_impl and come back as (False, 'Error: ...') with

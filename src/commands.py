@@ -421,6 +421,29 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
         print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)} active{' (autoload)' if self.cfg.get('skill_autoload') else ''}")
+        # Engine internals: what the loop is actually doing this session.
+        b = self.backend
+        if b:
+            loc = getattr(b, "is_local", False)
+            gate = getattr(b, "_local_chat_model", lambda: False)()
+            line = [f"{C.BOLD}Engine:{C.RESET} local={loc}"]
+            if gate:
+                line.append("gate=chat/web/task (local chat model; self-heal on)")
+            if getattr(b, "is_ollama", False):
+                line.append(f"warm={'ON' if self.cfg.get('ollama_warm', True) else 'off'}")
+                line.append(f"no_think={'ON' if b._eff('ollama_no_think', True) else 'off (thinking!)'}")
+            if loc:
+                line.append(f"schemas={b._schema_mode()}")
+                line.append(f"parallel={'ON' if self.cfg.get('parallel_tools', True) else 'off'}")
+            nct = needs_completion_tokens(b._model(), prof.get("base_url") or "")
+            if nct:
+                line.append("max_completion_tokens (o-series API)")
+            line.append(f"/process={self.cfg.get('compact_process', 'on')}")
+            print(" ".join(line))
+            print(f"{C.DIM}  /tune shows per-model tuning; /context shows project memory.{C.RESET}")
+        ctx = self._project_context()
+        if ctx:
+            print(f"{C.BOLD}Context:{C.RESET} CONTEXT.md attached ({len(ctx)} chars)")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

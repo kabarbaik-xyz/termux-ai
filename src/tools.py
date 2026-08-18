@@ -833,6 +833,29 @@ class Tools:
         except ToolError as e:
             return False, str(e)
 
+    _web_cache = {}   # (name, key) -> (monotonic_ts, result) for web tools
+
+    @staticmethod
+    def _cached_web(name, key, fn, ttl=None):
+        """Short-TTL cache for WEB tools only (fetch_url/web_search/weather —
+        NOT file tools, which must always be fresh). Repeated lookups within a
+        turn or quick follow-ups stop re-fetching; AI_WEB_CACHE_TTL seconds
+        (default 60, 0 disables). Errors are never cached."""
+        if ttl is None:
+            try: ttl = float(os.environ.get("AI_WEB_CACHE_TTL", "60") or 0)
+            except ValueError: ttl = 60.0
+        if ttl <= 0:
+            return fn()
+        k = (name, (key or "").strip().lower())
+        now = time.monotonic()
+        hit = Tools._web_cache.get(k)
+        if hit and now - hit[0] < ttl and not hit[1].lstrip().lower().startswith("error"):
+            return hit[1]
+        out = fn()
+        if not (out or "").lstrip().lower().startswith("error"):
+            Tools._web_cache[k] = (now, out)
+        return out
+
     @staticmethod
     def _run_impl(name, args, build_mode=False):
         try:
@@ -932,11 +955,11 @@ class Tools:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
             elif name == "fetch_url":
-                return Tools._fetch_url(args.get("url", ""))
+                return Tools._cached_web(name, args.get("url", ""), lambda: Tools._fetch_url(args.get("url", "")))
             elif name == "web_search":
-                return Tools._web_search(args.get("query", ""))
+                return Tools._cached_web(name, args.get("query", ""), lambda: Tools._web_search(args.get("query", "")))
             elif name == "weather":
-                return Tools._weather(args.get("city", ""))
+                return Tools._cached_web(name, args.get("city", ""), lambda: Tools._weather(args.get("city", "")))
             elif name == "clone_repo":
                 return Tools._clone_repo(args.get("url", ""), args.get("depth", 1), build_mode)
             elif name == "graphify":

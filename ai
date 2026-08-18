@@ -12,7 +12,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.2.8"
+__version__ = "7.2.9"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -628,6 +628,33 @@ class Database:
                 cid INTEGER PRIMARY KEY, msgs TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         """)
         self.conn.commit()
+        self._init_fts()
+
+    def _init_fts(self):
+        """FTS5 full-text index over messages (external-content: the index holds
+        only tokens, messages stays the source of truth). /search becomes an
+        instant MATCH instead of a full-table LIKE scan. Falls back silently to
+        LIKE when FTS5 is unavailable (exotic builds)."""
+        try:
+            self.conn.executescript("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(
+                    content, content='messages', content_rowid='id');
+                CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO msg_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+                    INSERT INTO msg_fts(msg_fts, rowid, content) VALUES('delete', old.id, old.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+                    INSERT INTO msg_fts(msg_fts, rowid, content) VALUES('delete', old.id, old.content);
+                    INSERT INTO msg_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+            """)
+            self.conn.execute("INSERT INTO msg_fts(msg_fts) VALUES('rebuild')")  # sync older rows once per open
+            self.conn.commit()
+            self._fts_ok = True
+        except Exception:
+            self._fts_ok = False
         _secure_file(DB_FILE)
 
     def _table_cols(self, table):
@@ -691,9 +718,25 @@ class Database:
         ).fetchall()
 
     def search_convs(self, query):
+        q = (query or "").strip()
+        # Fast path: FTS5 MATCH (instant, ranked by the index). The user term is
+        # quoted so raw punctuation can't break FTS syntax; any failure falls
+        # back to the original LIKE scan (always correct, just linear).
+        if q and getattr(self, "_fts_ok", False):
+            try:
+                match = '"%s"' % q.replace('"', '""')
+                return self.conn.execute(
+                    "SELECT DISTINCT c.id, c.title, c.model FROM conversations c "
+                    "JOIN messages m ON m.conversation_id = c.id "
+                    "WHERE m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?) "
+                    "OR c.title LIKE ? "
+                    "ORDER BY c.updated_at DESC LIMIT 200",
+                    (match, f"%{q}%")).fetchall()
+            except Exception:
+                pass
         return self.conn.execute(
             "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
-            (f"%{query}%", f"%{query}%")
+            (f"%{q}%", f"%{q}%")
         ).fetchall()
 
     def del_conv(self, cid):
@@ -1815,6 +1858,29 @@ class Tools:
         except ToolError as e:
             return False, str(e)
 
+    _web_cache = {}   # (name, key) -> (monotonic_ts, result) for web tools
+
+    @staticmethod
+    def _cached_web(name, key, fn, ttl=None):
+        """Short-TTL cache for WEB tools only (fetch_url/web_search/weather —
+        NOT file tools, which must always be fresh). Repeated lookups within a
+        turn or quick follow-ups stop re-fetching; AI_WEB_CACHE_TTL seconds
+        (default 60, 0 disables). Errors are never cached."""
+        if ttl is None:
+            try: ttl = float(os.environ.get("AI_WEB_CACHE_TTL", "60") or 0)
+            except ValueError: ttl = 60.0
+        if ttl <= 0:
+            return fn()
+        k = (name, (key or "").strip().lower())
+        now = time.monotonic()
+        hit = Tools._web_cache.get(k)
+        if hit and now - hit[0] < ttl and not hit[1].lstrip().lower().startswith("error"):
+            return hit[1]
+        out = fn()
+        if not (out or "").lstrip().lower().startswith("error"):
+            Tools._web_cache[k] = (now, out)
+        return out
+
     @staticmethod
     def _run_impl(name, args, build_mode=False):
         try:
@@ -1914,11 +1980,11 @@ class Tools:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
             elif name == "fetch_url":
-                return Tools._fetch_url(args.get("url", ""))
+                return Tools._cached_web(name, args.get("url", ""), lambda: Tools._fetch_url(args.get("url", "")))
             elif name == "web_search":
-                return Tools._web_search(args.get("query", ""))
+                return Tools._cached_web(name, args.get("query", ""), lambda: Tools._web_search(args.get("query", "")))
             elif name == "weather":
-                return Tools._weather(args.get("city", ""))
+                return Tools._cached_web(name, args.get("city", ""), lambda: Tools._weather(args.get("city", "")))
             elif name == "clone_repo":
                 return Tools._clone_repo(args.get("url", ""), args.get("depth", 1), build_mode)
             elif name == "graphify":
@@ -2144,6 +2210,19 @@ _KNOWLEDGE_RE = re.compile(
 _CONTINUE_RE = re.compile(
     r"\b(ok|oke|okay|okey|ya|iya|yap|sip|gas|lanjut\w*|lanjutkan|continue|"
     r"proceed|keep going|go on|silakan|silahkan|tolong lanjut)\b", re.IGNORECASE)
+# Self-heal: a small local model answering WITHOUT tools (the gate classified
+# the message as chat) but whose text reads like it WANTED tools ("I can't
+# access files" / "maaf, saya tidak bisa mengakses file"). One retry with tools
+# offered fixes the misclassification instead of the user rephrasing.
+_WANTS_TOOLS_RE = re.compile(
+    r"i (can'?t|cannot|don'?t have|am unable to) (access|read|open|see|check|list|run|execute)"
+    r"|i (do not|don'?t) have (access|the ability|permission)"
+    r"|no (access|tool|file) (to|for)"
+    r"|as (an? )?(ai|language model|text model)[,.]? i (can'?t|cannot|don'?t|am unable)"
+    r"|tidak bisa (mengakses|membaca|membuka|melihat|menjalankan|mengeksekusi)"
+    r"|tidak dapat (mengakses|membaca|membuka|melihat|menjalankan)"
+    r"|saya tidak (bisa|dapat|punya akses) (mengakses|membaca|melihat|membuka)"
+    r"|maaf,? saya (tidak|ga|gak|nggak) (bisa|dapat)", re.IGNORECASE)
 
 
 def _chat_kind(text):
@@ -3136,6 +3215,7 @@ class OpenAICompatible(Backend):
         # Shared loop bookkeeping (iteration ceiling + checkpoints + failure
         # guards) so the OpenAI and Anthropic loops can never drift.
         guard = LoopGuard(self.c, continue_fn)
+        self_heal = False   # one-shot: re-offer tools when a no-tools answer wanted them
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -3158,7 +3238,12 @@ class OpenAICompatible(Backend):
             # slow phone), web-only tools for knowledge questions, and the full
             # toolset for tasks. Temperature clamp only applies when tools are
             # actually on so pure chat keeps the tuned temperature.
-            tools_sel = self._tools_for(msgs, build_mode)
+            # Self-heal: if a previous no-tools answer looked like it WANTED
+            # tools, force the toolset on this retry (one shot per turn).
+            if self_heal:
+                tools_sel = "all" if build_mode else "plan"
+            else:
+                tools_sel = self._tools_for(msgs, build_mode)
             temp = min(self._eff("temperature", 0.7), 0.4) if tools_sel else self._eff("temperature", 0.7)
             # max_tokens is read inside _payload so the ollama_max_tokens override
             # (local-only cap) can apply without bleeding into cloud backends.
@@ -3198,6 +3283,18 @@ class OpenAICompatible(Backend):
                         yield {"type": kind, "content": text}
 
             if not calls:
+                # Self-heal a mis-gated turn ONCE: the gate dropped tools (it
+                # read the message as casual chat) but the model's answer says
+                # it needed them. Re-offer tools and let it retry; a second
+                # tool-less answer stands (never loop).
+                if (tools_sel is None and not self_heal
+                        and _WANTS_TOOLS_RE.search(content_buf or "")):
+                    self_heal = True
+                    msgs.append({"role": "system", "content":
+                                 "Correction: tools ARE available for this request. If the task "
+                                 "needs files, commands, or the web, call the appropriate tool now."})
+                    yield {"type": "notice", "content": "\n[tools re-offered: the answer indicated tools were needed]", "fatal": False}
+                    continue
                 return
 
             if finish_reason == "length" and calls:
@@ -5244,6 +5341,29 @@ class App:
         name, prof = self.cfg.active_profile()
         print(f"{C.BOLD}Backend:{C.RESET} {name} ({prof.get('model', 'N/A')})")
         print(f"{C.BOLD}Tools:{C.RESET} {'Build Mode' if self.cfg.get('tools_enabled') else 'Plan Mode'} | Strategy-first: {'ON' if self.cfg.get('strategy_first') else 'off'} | Thinking: {'ON' if self.cfg.get('extended_thinking') else 'off'} | Skills: {len(self.active_session_skills)} active{' (autoload)' if self.cfg.get('skill_autoload') else ''}")
+        # Engine internals: what the loop is actually doing this session.
+        b = self.backend
+        if b:
+            loc = getattr(b, "is_local", False)
+            gate = getattr(b, "_local_chat_model", lambda: False)()
+            line = [f"{C.BOLD}Engine:{C.RESET} local={loc}"]
+            if gate:
+                line.append("gate=chat/web/task (local chat model; self-heal on)")
+            if getattr(b, "is_ollama", False):
+                line.append(f"warm={'ON' if self.cfg.get('ollama_warm', True) else 'off'}")
+                line.append(f"no_think={'ON' if b._eff('ollama_no_think', True) else 'off (thinking!)'}")
+            if loc:
+                line.append(f"schemas={b._schema_mode()}")
+                line.append(f"parallel={'ON' if self.cfg.get('parallel_tools', True) else 'off'}")
+            nct = needs_completion_tokens(b._model(), prof.get("base_url") or "")
+            if nct:
+                line.append("max_completion_tokens (o-series API)")
+            line.append(f"/process={self.cfg.get('compact_process', 'on')}")
+            print(" ".join(line))
+            print(f"{C.DIM}  /tune shows per-model tuning; /context shows project memory.{C.RESET}")
+        ctx = self._project_context()
+        if ctx:
+            print(f"{C.BOLD}Context:{C.RESET} CONTEXT.md attached ({len(ctx)} chars)")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")
