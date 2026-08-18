@@ -477,6 +477,32 @@ class TestProjectContext(_TmpHome):
         app._ctx_disabled = True
         self.assertEqual(app._project_context(), "")
 
+    def test_warm_prefix_matches_first_real_turn(self):
+        """KV-cache guarantee: the startup warm-prime sends the SAME system
+        prompt (persona + CONTEXT.md + gather workflow) the first real turn
+        sends. Ollama's cache only hits on a byte-identical prefix -- any drift
+        (e.g. warm sending the bare persona) silently wastes the prime. This
+        locks _assemble_system_prompt as the single source for BOTH."""
+        # scenario: CONTEXT.md present + gather_first on (CLOUD backend -- local
+        # chat models correctly skip the gather line)
+        open("CONTEXT.md", "w").write("FACT-7")
+        app = m.App(); app.quiet = True
+        app.cfg.set("ollama_warm", True, save=False)
+        app.cfg.set_path("backends.cloud", {"base_url": "https://x.test/v1", "model": "gpt-4o", "api_key": "k"}, save=False)
+        app.cfg.set("backend", "cloud", save=False)
+        app.backend = m.get_backend(app.cfg)
+        expected = app._assemble_system_prompt()
+        self.assertIn("FACT-7", expected)                 # CONTEXT.md included
+        self.assertIn("WORKFLOW: gather", expected)        # gather line included
+        # the first real _chat sends exactly this as msgs[0]
+        captured = {}
+        def fake_chat(msgs, confirm_batch_fn=None, continue_fn=None):
+            captured["sysp"] = msgs[0]["content"]
+            yield {"type": "text", "content": "ok"}
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake_chat):
+            app._chat("hello")
+        self.assertEqual(captured["sysp"], expected)       # byte-identical prefix
+
     def test_chat_attaches_context_to_system_prompt(self):
         open("CONTEXT.md", "w").write("UNIQUE-PROJECT-FACT-42")
         app = self._app()
@@ -643,13 +669,13 @@ class TestFetchUrl(_TmpHome):
         self.assertNotIn("<b>", out)
 
     def test_rejects_non_http(self):
-        self.assertIn("must start with http", m.Tools._fetch_url("ftp://x.com"))
-        self.assertIn("must start with http", m.Tools._fetch_url("example.com"))
+        self.assertIn("must start with http", m.Tools.run("fetch_url", {"url": "ftp://x.com"}))
+        self.assertIn("must start with http", m.Tools.run("fetch_url", {"url": "example.com"}))
 
     def test_blocks_private_addresses(self):
-        self.assertIn("SSRF", m.Tools._fetch_url("http://127.0.0.1:8080/"))
-        self.assertIn("SSRF", m.Tools._fetch_url("http://localhost/"))
-        self.assertIn("SSRF", m.Tools._fetch_url("http://10.0.0.1/"))
+        self.assertIn("SSRF", m.Tools.run("fetch_url", {"url": "http://127.0.0.1:8080/"}))
+        self.assertIn("SSRF", m.Tools.run("fetch_url", {"url": "http://localhost/"}))
+        self.assertIn("SSRF", m.Tools.run("fetch_url", {"url": "http://10.0.0.1/"}))
 
     def test_nat64_mapping_not_flagged_private(self):
         """A NAT64-mapped address (64:ff9b::/96, common on Android without
@@ -672,7 +698,7 @@ class TestFetchUrl(_TmpHome):
                 def __enter__(self): return self
                 def __exit__(self, *a): return False
             with um.patch.object(m.urllib.request, "urlopen", return_value=FakeResp()):
-                out = m.Tools._fetch_url("http://127.0.0.1/")
+                out = m.Tools.run("fetch_url", {"url": "http://127.0.0.1/"})
         finally:
             os.environ.pop("AI_FETCH_ALLOW_PRIVATE", None)
         self.assertIn("ok from local", out)
@@ -760,8 +786,52 @@ class TestFetchUrl(_TmpHome):
         self.assertIn("Yogyakarta", out)
         self.assertIn("https://en.wikipedia.org/wiki/Yogyakarta", out)
 
+    def test_web_search_canary_fixtures(self):
+        """CANARY: each SERP parser is pinned to a frozen HTML/JSON fixture.
+        If a provider changes its markup, THIS fails loudly in CI instead of
+        silently degrading to the fallback chain in production."""
+        fx = Path(__file__).resolve().parent / "fixtures"
+        bing = m.Tools._parse_bing_html((fx / "bing_serp.html").read_text())
+        self.assertEqual(len(bing), 2)
+        self.assertEqual(bing[0][0], "Yogyakarta Weather Forecast")
+        self.assertTrue(bing[0][1].startswith("https://www.accuweather.com/"))  # u=a1 unwrapped
+        self.assertEqual(bing[1][1], "https://weather.com/id-YO")               # direct kept
+        self.assertIn("10-day", bing[1][2])
+
+        ddg = m.Tools._parse_ddg_html((fx / "ddg_serp.html").read_text())
+        self.assertEqual(len(ddg), 2)
+        self.assertEqual(ddg[0][0], "Yogyakarta | History, Map, & Facts | Britannica")  # entity unescaped
+        self.assertEqual(ddg[0][1], "https://www.britannica.com/place/Yogyakarta")      # uddg unwrapped
+        self.assertIn("island of Java", ddg[0][2])                                    # snippet paired
+        self.assertEqual(ddg[1][1], "https://en.wikipedia.org/wiki/Yogyakarta")        # direct kept
+
+        wiki = m.Tools._parse_wikipedia_json((fx / "wikipedia_search.json").read_text())
+        self.assertEqual(wiki[0], ("Yogyakarta", "https://en.wikipedia.org/wiki/Yogyakarta",
+                                   "City on Java island."))
+
+    def test_web_search_ddg_fallback_when_bing_down(self):
+        """Bing unreachable -> DuckDuckGo serves results (second keyless source
+        so a single provider outage/markup change doesn't kill web search)."""
+        fx = Path(__file__).resolve().parent / "fixtures"
+        ddg_body = (fx / "ddg_serp.html").read_bytes()
+        def fake_urlopen(req, timeout=10):
+            if "bing.com" in req.full_url:
+                raise m.urllib.error.URLError("bing down")
+            class FakeResp:
+                headers = {"Content-Type": "text/html"}
+                _data = ddg_body
+                def read(self, n=-1): return self._data
+                def geturl(self): return req.full_url
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return FakeResp()
+        with um.patch.object(m.urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = m.Tools._web_search("yogyakarta", timeout=5)
+        self.assertIn("Britannica", out)                                # DDG results used
+        self.assertIn("https://www.britannica.com/place/Yogyakarta", out)  # uddg unwrapped
+
     def test_web_search_empty_query(self):
-        self.assertIn("Error: query is empty", m.Tools._web_search("  "))
+        self.assertIn("Error: query is empty", m.Tools.run("web_search", {"query": "  "}))
 
     def test_weather_returns_forecast(self):
         """_weather geocodes the city (call 1) then pulls current + daily
@@ -793,7 +863,7 @@ class TestFetchUrl(_TmpHome):
         self.assertIn("rain 2%", out)
 
     def test_weather_empty_and_unknown(self):
-        self.assertIn("Error: city is empty", m.Tools._weather("  "))
+        self.assertIn("Error: city is empty", m.Tools.run("weather", {"city": "  "}))
         def fake_urlopen(req, timeout=10):
             class FakeResp:
                 _data = b'{"results":[]}'
@@ -1149,7 +1219,7 @@ class TestWriteFileAppend(_TmpHome):
                     "type": "function", "function": {"name": "list_files",
                     "arguments": '{"path":"./%d"}' % calls["n"]}}]}, "finish_reason": "tool_calls"}]}
             with um.patch.object(b, "_stream_req", side_effect=fs), \
-                 um.patch.object(m.Tools, "run", side_effect=lambda n, a, bm, mr: "ok"):
+                 um.patch.object(m.Tools, "run_checked", side_effect=lambda n, a, bm, mr: (True, "ok")):
                 evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}],
                                               confirm_batch_fn=lambda c: True, continue_fn=continue_fn))
             return calls["n"], any(e.get("fatal") for e in evts)
@@ -1555,7 +1625,7 @@ class TestBackendResilience(_TmpHome):
             else:
                 yield {"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}
         with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
-             um.patch.object(m.Tools, "run", side_effect=lambda n, a, bm, mr: "f"):
+             um.patch.object(m.Tools, "run_checked", side_effect=lambda n, a, bm, mr: (True, "f")):
             list(b.chat_with_tools([{"role": "user", "content": "go"}], confirm_batch_fn=lambda c: True))
         asst = [mm for mm in captured[1]["messages"] if mm.get("role") == "assistant"]
         self.assertTrue(any(mm.get("reasoning_content") == "planning..." for mm in asst))
@@ -1579,9 +1649,9 @@ class TestBackendResilience(_TmpHome):
             else:
                 yield {"choices": [{"delta": {}}]}
         def fake_run(name, args, bm, mr):
-            run_count["n"] += 1; return "ok"
+            run_count["n"] += 1; return (True, "ok")
         with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
-             um.patch.object(m.Tools, "run", side_effect=fake_run):
+             um.patch.object(m.Tools, "run_checked", side_effect=fake_run):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
         results = [e["result"] for e in evts if e["type"] == "tool_result"]
         self.assertEqual(run_count["n"], 1)                          # executed ONCE
@@ -1619,7 +1689,7 @@ class TestBackendResilience(_TmpHome):
             else:
                 yield {"choices": [{"delta": {}}, {"delta": {}}, {"delta": {}}, {"delta": {}}, {"delta": {}}]}
         with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
-             um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
+             um.patch.object(m.Tools, "run_checked", side_effect=lambda name, args, bm, mr: (True, "ok")):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
         notices = [e for e in evts if e["type"] == "notice"]
         self.assertTrue(any("Context phase" in e["content"] for e in notices))
@@ -1643,7 +1713,7 @@ class TestBackendResilience(_TmpHome):
             else:
                 yield {"choices": [{"delta": {} }]}
         with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
-             um.patch.object(m.Tools, "run", side_effect=lambda name, args, bm, mr: "ok"):
+             um.patch.object(m.Tools, "run_checked", side_effect=lambda name, args, bm, mr: (True, "ok")):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
         self.assertFalse(any("Context phase" in e.get("content", "") for e in evts if e["type"] == "notice"))
 
@@ -2051,6 +2121,55 @@ class TestBackendResilience(_TmpHome):
         self.assertNotIn("max_completion_tokens", d2)
         self.assertEqual(d2["temperature"], 0.7)
 
+    def test_openai_delta_accumulator_merge_rules(self):
+        """One place owns the streamed-delta merge rules: fragment concatenation
+        for name/arguments, overwrite for id/type, reasoning fallback field,
+        index-ordered calls, finish_reason retention, live-thinking callback."""
+        a = m.OpenAIDeltaAccumulator()
+        seen_thinking = []
+        a.feed({"choices": [{"delta": {"content": "he"}, "finish_reason": None}]}, live_thinking=seen_thinking.append)
+        a.feed({"choices": [{"delta": {"content": "llo"}, "finish_reason": None}]})
+        a.feed({"choices": [{"delta": {"reasoning": "think1"}, "finish_reason": None}]}, live_thinking=seen_thinking.append)
+        a.feed({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "c1", "type": "function", "function": {"name": "read_", "arguments": '{"pa'}}]}}]})
+        a.feed({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"name": "file", "arguments": 'th":"a"}'}}]}}]})
+        a.feed({"choices": [{"delta": {"tool_calls": [
+            {"index": 1, "id": "c2", "type": "function", "function": {"name": "list_files", "arguments": '{}'}}]}}]})
+        a.feed({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+        self.assertEqual(a.content, "hello")
+        self.assertEqual(a.reasoning, "think1")
+        self.assertEqual(seen_thinking, ["think1"])          # live callback fired
+        self.assertEqual(a.finish_reason, "tool_calls")
+        cs = a.calls
+        self.assertEqual([c["id"] for c in cs], ["c1", "c2"])  # index order
+        self.assertEqual(cs[0]["function"]["name"], "read_file")  # fragments joined
+        self.assertEqual(json.loads(cs[0]["function"]["arguments"]), {"path": "a"})
+
+    def test_run_checked_structured_flags(self):
+        """Tools.run_checked is the structured boundary: genuine failures raise
+        ToolError inside _run_impl and come back as (False, 'Error: ...') with
+        the SAME message text the string API always produced; successes are
+        (True, out). Loop guards key off the flag -- no string sniffing."""
+        ok, out = m.Tools.run_checked("read_file", {"path": "/definitely/not/here"})
+        self.assertFalse(ok)
+        self.assertTrue(out.startswith("Error:"))
+        # string API renders the identical text (model-facing, unchanged)
+        self.assertEqual(m.Tools.run("read_file", {"path": "/definitely/not/here"}), out)
+        # plan-mode block is a failure too
+        ok2, out2 = m.Tools.run_checked("write_file", {"path": "x", "content": "y"}, build_mode=False)
+        self.assertFalse(ok2); self.assertIn("Plan mode", out2)
+        # success path
+        ok3, out3 = m.Tools.run_checked("web_search", {"query": "  "})
+        self.assertFalse(ok3)                     # empty query is a tool error
+        ok4, out4 = m.Tools.run_checked("run_command", {"command": "echo hi"}, build_mode=True)
+        self.assertTrue(ok4); self.assertIn("hi", out4)
+        # guards consume the structured flag via _run_batch outcomes
+        b = m.Backend({})
+        with um.patch.object(m.Tools, "run_checked", side_effect=lambda n, a, bm, mr: (False, "Error: boom")):
+            outcomes = b._run_batch([("write_file", {"path": "w", "content": ""})], True, 10000, set(), {})
+        self.assertEqual(outcomes[0][3], False)   # ok flag rides the tuple
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API
@@ -2064,8 +2183,8 @@ class TestBackendResilience(_TmpHome):
             threads.add(threading.current_thread().name)
             _t.sleep(0.3 if name != "write_file" else 0.05)
             events.append(name)
-            return f"r:{name}"
-        with um.patch.object(m.Tools, "run", side_effect=fake_run):
+            return True, f"r:{name}"
+        with um.patch.object(m.Tools, "run_checked", side_effect=fake_run):
             t0 = _t.time()
             out = b._run_batch([("read_file", {"path": "a"}), ("search_files", {"query": "x"}),
                                 ("list_files", {"path": "."}), ("write_file", {"path": "w", "content": ""})],
@@ -2083,10 +2202,10 @@ class TestBackendResilience(_TmpHome):
         def fake_run(name, args, bm, mr):
             order.append((name, _t.perf_counter()))
             _t.sleep(0.15)
-            return "ok"
+            return True, "ok"
         # reads-before-writes within one batch
         b = m.Backend({})
-        with um.patch.object(m.Tools, "run", side_effect=fake_run):
+        with um.patch.object(m.Tools, "run_checked", side_effect=fake_run):
             b._run_batch([("write_file", {"path": "w", "content": ""}), ("read_file", {"path": "a"})], True, 10000, set(), {})
         w = next(t for n, t in order if n == "write_file")
         r = next(t for n, t in order if n == "read_file")
@@ -2095,7 +2214,7 @@ class TestBackendResilience(_TmpHome):
         # parallel_tools off -> everything sequential (single thread is fine;
         # behavior identical, just not concurrent)
         b2 = m.Backend({"parallel_tools": False})
-        with um.patch.object(m.Tools, "run", side_effect=lambda n, a, bm, mr: f"r:{n}"):
+        with um.patch.object(m.Tools, "run_checked", side_effect=lambda n, a, bm, mr: (True, f"r:{n}")):
             out = b2._run_batch([("read_file", {"path": "a"}), ("list_files", {"path": "."})], True, 10000, set(), {})
         self.assertEqual([o[1] for o in out], ["r:read_file", "r:list_files"])
 
@@ -2106,8 +2225,8 @@ class TestBackendResilience(_TmpHome):
         done = {("read_file", json.dumps({"path": "a"}, sort_keys=True))}
         calls = []
         def fake_run(name, args, bm, mr):
-            calls.append(name); return "executed"
-        with um.patch.object(m.Tools, "run", side_effect=fake_run):
+            calls.append(name); return (True, "executed")
+        with um.patch.object(m.Tools, "run_checked", side_effect=fake_run):
             out = b._run_batch([("read_file", {"path": "a"}), ("list_files", {"path": "."})], True, 10000, done, {})
         self.assertIn("ALREADY DONE", out[0][1])
         self.assertFalse(out[0][2])
@@ -2302,9 +2421,9 @@ class TestBackendResilience(_TmpHome):
             else:
                 yield {"choices": [{"delta": {}}]}
         def fake_run(name, args, bm, mr):
-            run_count["n"] += 1; return "line content here\n" * 10
+            run_count["n"] += 1; return (True, "line content here\n" * 10)
         with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
-             um.patch.object(m.Tools, "run", side_effect=fake_run):
+             um.patch.object(m.Tools, "run_checked", side_effect=fake_run):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
         results = [e["result"] for e in evts if e["type"] == "tool_result"]
         self.assertEqual(run_count["n"], 1)                          # only first (fresh) executed
@@ -2324,6 +2443,7 @@ class TestBackendResilience(_TmpHome):
             if calls["n"] == 1:
                 raise m.BackendError("Request timed out.", transient=True)
             return "ok"
+            return True, "ok"
         with um.patch("time.sleep"):
             self.assertEqual(self.b._with_retry(fn), "ok")
         self.assertEqual(calls["n"], 2)

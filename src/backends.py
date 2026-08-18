@@ -231,6 +231,57 @@ class LoopGuard:
         return "stop"
 
 
+class OpenAIDeltaAccumulator:
+    """Merges streamed OpenAI-compat deltas (content, reasoning_content,
+    tool_calls fragments) into complete buffers. Extracted from the tool loop
+    so the merge rules (string-concat name/arguments, id/type overwrite,
+    reasoning fallback field) live in ONE tested place."""
+
+    def __init__(self):
+        self.content = ""
+        self.reasoning = ""
+        self.tool_calls = {}     # index -> {id, type, function:{name, arguments}}
+        self.finish_reason = None
+
+    def feed(self, chunk, live_thinking=None):
+        """Merge one parsed SSE chunk. live_thinking(s) (optional) receives
+        native LOCAL thinking chunks for immediate dim display."""
+        if not isinstance(chunk, dict) or not chunk.get("choices"):
+            return
+        ch0 = chunk["choices"][0]
+        delta = ch0.get("delta") or {}
+        fr = ch0.get("finish_reason")
+        if fr: self.finish_reason = fr
+        if delta.get("content"):
+            self.content += delta["content"]
+        if delta.get("reasoning_content") or delta.get("reasoning"):
+            r = delta.get("reasoning_content") or delta.get("reasoning") or ""
+            self.reasoning += r
+            if live_thinking:
+                live_thinking(r)
+        if delta.get("tool_calls"):
+            for tc in delta["tool_calls"]:
+                idx = tc.get("index", 0)
+                slot = self.tool_calls.setdefault(idx, {"id": "", "type": "function",
+                                                        "function": {"name": "", "arguments": ""}})
+                for k, v in tc.items():
+                    if k not in ("index", "function"):
+                        slot[k] = v
+                if tc.get("function"):
+                    for fk, fv in tc["function"].items():
+                        if fk == "name":
+                            slot["function"]["name"] += fv
+                        elif fk == "arguments":
+                            slot["function"]["arguments"] += fv
+                        else:
+                            slot["function"][fk] = fv
+
+    @property
+    def calls(self):
+        """Ordered list of complete tool calls (by stream index)."""
+        return [self.tool_calls[k] for k in sorted(self.tool_calls)]
+
+
 class Backend:
     def __init__(self, cfg):
         self.c = cfg
@@ -376,19 +427,19 @@ class Backend:
         for idx, (name, args) in enumerate(items):
             key = (name, json.dumps(args, sort_keys=True))
             if key in done_calls:
-                results[idx] = (name, "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]", False)
+                results[idx] = (name, "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]", False, True)
                 continue
             if name == "read_file" and Backend._is_redundant_read(args, coverage):
-                results[idx] = (name, "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]", False)
+                results[idx] = (name, "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]", False, True)
                 continue
             done_calls.add(key)
             (par if name in Backend.SAFE_PARALLEL else seq).append((idx, name, args))
 
         def _exec(name, args):
             try:
-                return Tools.run(name, args, build_mode, max_res)
+                return Tools.run_checked(name, args, build_mode, max_res)
             except Exception as e:   # defensive: a worker crash must not kill the batch
-                return f"Error: {e}"
+                return False, f"Error: {e}"
 
         if par:
             if len(par) >= 2 and self.c.get("parallel_tools", True):
@@ -397,13 +448,13 @@ class Backend:
                     outs = list(ex.map(lambda t: _exec(t[1], t[2]), par))
             else:
                 outs = [_exec(n, a) for _, n, a in par]
-            for (idx, name, args), r in zip(par, outs):
-                results[idx] = (name, r, True)
+            for (idx, name, args), (ok, r) in zip(par, outs):
+                results[idx] = (name, r, True, ok)
                 if name == "read_file":
                     Backend._track_read(args, r, coverage)
         for idx, name, args in seq:
-            r = _exec(name, args)
-            results[idx] = (name, r, True)
+            ok, r = _exec(name, args)
+            results[idx] = (name, r, True, ok)
             if name == "read_file":
                 Backend._track_read(args, r, coverage)
         return results
@@ -512,12 +563,6 @@ class Backend:
                     sys.stderr.flush()
                 time.sleep(delay)
 
-    @staticmethod
-    def _is_failure(result):
-        """True when a tool result is a genuine error/blocked (a normal empty
-        result or non-zero exit code is NOT a failure). Used for reflect-on-
-        failure and consecutive-failure detection."""
-        return (result or "").lstrip().lower().startswith("error")
 
     CONTEXT_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather"}
     FILE_TOOLS = {"read_file", "list_files", "search_files"}
@@ -1120,44 +1165,17 @@ class OpenAICompatible(Backend):
             d = self._payload(msgs, True, tools=schemas, temperature=temp)
             mapper = self._native_to_openai if self._native_ollama() else None
 
-            content_buf = ""
-            reasoning_buf = ""   # reasoning models (deepseek/o1-class) require this passed back on tool-call turns
-            tool_calls_buf = {}
-            finish_reason = None
-
+            acc = OpenAIDeltaAccumulator()
+            _live = []   # native LOCAL thinking chunks, re-yielded dim as they arrive
             for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
-                if not chunk.get("choices"): continue
-                ch0 = chunk["choices"][0]
-                delta = ch0.get("delta", {})
-                fr = ch0.get("finish_reason")
-                if fr: finish_reason = fr
-                if delta.get("content"):
-                    content_buf += delta["content"]
-                if delta.get("reasoning_content") or delta.get("reasoning"):
-                    r = delta.get("reasoning_content") or delta.get("reasoning") or ""
-                    reasoning_buf += r
-                    if mapper:   # native LOCAL thinking (opt-in): show it live (dim)
-                        yield {"type": "thinking", "content": r}
-                if delta.get("tool_calls"):
-                    for tc in delta["tool_calls"]:
-                        idx = tc.get("index", 0)
-                        if idx not in tool_calls_buf:
-                            tool_calls_buf[idx] = {"id": tc.get("id", ""), "type": "function", "function": {"name": "", "arguments": ""}}
+                acc.feed(chunk, live_thinking=(_live.append if mapper else None))
+                if _live:
+                    yield {"type": "thinking", "content": "".join(_live)}
+                    _live.clear()
 
-                        for k, v in tc.items():
-                            if k not in ("index", "function"):
-                                tool_calls_buf[idx][k] = v
-
-                        if tc.get("function"):
-                            for fk, fv in tc["function"].items():
-                                if fk == "name":
-                                    tool_calls_buf[idx]["function"]["name"] += fv
-                                elif fk == "arguments":
-                                    tool_calls_buf[idx]["function"]["arguments"] += fv
-                                else:
-                                    tool_calls_buf[idx]["function"][fk] = fv
-
-            calls = list(tool_calls_buf.values())
+            content_buf, reasoning_buf = acc.content, acc.reasoning
+            calls = acc.calls
+            finish_reason = acc.finish_reason
 
             if content_buf:
                 # Route <think> reasoning blocks (deepseek-r1, ...) into dim
@@ -1216,14 +1234,14 @@ class OpenAICompatible(Backend):
             # after the reads; original order preserved for the API contract).
             outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
             batch_results = []
-            any_productive = any(w for _, _, w in outcomes)
-            for i, (c, (name, result, _)) in enumerate(zip(calls, outcomes)):
+            any_productive = any(w for _, _, w, _ok in outcomes)
+            for i, (c, (name, result, _, _ok)) in enumerate(zip(calls, outcomes)):
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": name, "args": json.loads(c["function"].get("arguments") or "{}")}
                 yield {"type": "tool_result", "name": name, "result": result}
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
                 batch_results.append((name, result))
 
-            failed = [n for n, r in batch_results if Backend._is_failure(r)]
+            failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
                 yield {"type": "notice", "content": _stop, "fatal": True}
@@ -1402,8 +1420,8 @@ class AnthropicBackend(Backend):
             # after the reads; original order preserved for the API contract).
             outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
             batch_results = []
-            any_productive = any(w for _, _, w in outcomes)
-            for i, (tu, (name, result, _)) in enumerate(zip(tool_uses, outcomes)):
+            any_productive = any(w for _, _, w, _ok in outcomes)
+            for i, (tu, (name, result, _, _ok)) in enumerate(zip(tool_uses, outcomes)):
                 yield {"type": "tool_progress", "current": i+1, "total": total, "name": name, "args": (tu.get("input") or {})}
                 yield {"type": "tool_result", "name": name, "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
@@ -1411,7 +1429,7 @@ class AnthropicBackend(Backend):
 
             payload.append({"role": "user", "content": results})
 
-            failed = [n for n, r in batch_results if Backend._is_failure(r)]
+            failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
                 yield {"type": "notice", "content": _stop, "fatal": True}

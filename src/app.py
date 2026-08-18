@@ -45,7 +45,10 @@ class App:
         if (self.backend and not self.quiet and self.cfg.get("ollama_warm", True)
                 and getattr(self.backend, "is_ollama", False)):
             try:
-                _sysp = self.cfg.system_prompt()
+                # SAME system prompt the first real turn will send (persona +
+                # CONTEXT.md + gather workflow) so the KV-cache prime actually
+                # hits -- an identical prefix is required or the prime is wasted.
+                _sysp = self._assemble_system_prompt()
                 _tools = None
                 if self.cfg.get("tools_enabled", False):
                     _mode = self.backend._schema_mode()
@@ -776,6 +779,35 @@ class App:
         }
         return TRIGGERS.get(name, ())
 
+    def _assemble_system_prompt(self):
+        """The FULL system prompt for a turn: persona+tool rules, active session
+        skills, autoload catalog, CONTEXT.md project memory, and the gather-
+        first workflow line. Used by _chat AND the startup warm-priming call so
+        the two prefixes are byte-identical -- Ollama's KV cache only hits on an
+        exact prefix match, so any divergence silently wastes the prime."""
+        sysp = self.cfg.system_prompt()
+        if self.active_session_skills:
+            sysp += "\n\n" + "\n\n".join(f"# Active skill: {n}\n{b}" for n, b in self.active_session_skills)
+        if self.cfg.get("skill_autoload", False):
+            cat = self.skills.catalog()
+            if cat:
+                sysp += "\n\n" + cat
+        _ctx = self._project_context()
+        if _ctx:
+            sysp += ("\n\n# Project context (CONTEXT.md — kept current by you; update it with "
+                     "write_file when you learn durable facts about this project):\n" + _ctx)
+        if (self.backend and self.backend._eff("gather_first", True)
+                and not getattr(self.backend, "_local_chat_model", lambda: False)()):
+            sysp += (
+                "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
+                "In your first one or two responses, batch the reads you'll need "
+                "(read_file / list_files / search_files) into a single response with "
+                "several parallel calls. Then stop reading and EXECUTE with "
+                "write_file / run_command. Never re-read a file you already fetched; "
+                "for large files page once per line-range with "
+                "read_file(path, start=LINE) in the same batched response.")
+        return sysp
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -793,37 +825,9 @@ class App:
         self.last_user_msg = user_input
         self.db.clear_resume_state(self.cid)   # a fresh user turn supersedes any pending checkpoint
 
-        sysp = self.cfg.system_prompt()
-        if self.active_session_skills:
-            sysp += "\n\n" + "\n\n".join(f"# Active skill: {n}\n{b}" for n, b in self.active_session_skills)
-        if self.cfg.get("skill_autoload", False):
-            cat = self.skills.catalog()
-            if cat:
-                sysp += "\n\n" + cat
-        # Project memory: auto-attach ./CONTEXT.md (or .ai/context.md) so a
-        # session starts knowing the project instead of re-discovering it every
-        # time -- the single biggest smarts win for repeat work on a repo.
-        _ctx = self._project_context()
-        if _ctx:
-            sysp += ("\n\n# Project context (CONTEXT.md — kept current by you; update it with "
-                     "write_file when you learn durable facts about this project):\n" + _ctx)
+        sysp = self._assemble_system_prompt()
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
-
-        # Gather-then-execute: recommend the model read everything it needs up
-        # front (batched), then act -- rather than dribbling reads across steps.
-        # Skipped for small local chat models: it actively pushes them to call
-        # tools on trivial questions, which is what makes casual chat take 200s+.
-        if (self.backend._eff("gather_first", True)
-                and not getattr(self.backend, "_local_chat_model", lambda: False)()):
-            msgs[0]["content"] += (
-                "\n\nWORKFLOW: gather ALL the context you need up front, then act. "
-                "In your first one or two responses, batch the reads you'll need "
-                "(read_file / list_files / search_files) into a single response with "
-                "several parallel calls. Then stop reading and EXECUTE with "
-                "write_file / run_command. Never re-read a file you already fetched; "
-                "for large files page once per line-range with "
-                "read_file(path, start=LINE) in the same batched response.")
 
         # Local non-thinking chat models over-use tools on casual questions
         # (qwen2.5 lists files for 'say hi') — a 60s+ tool loop on slow phones.

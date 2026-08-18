@@ -1,4 +1,12 @@
 # ══ termux_ai.tools ══ (fragment; merged by build.py)
+class ToolError(Exception):
+    """A tool-level failure (invalid args, blocked action, exec error). The
+    agentic loop converts it to a structured (ok=False, msg) result; the string
+    API (Tools.run) renders it as 'Error: ...' exactly as before."""
+
+    def __init__(self, message):
+        super().__init__(message)
+
 class Tools:
     SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
     # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
@@ -149,7 +157,7 @@ class Tools:
             segments = [[os.path.expanduser(t) for t in shlex.split(seg)]
                         for seg in Tools._split_pipes(cmd_str)]
         except ValueError:
-            return "Error: invalid command syntax."
+            raise ToolError("Error: invalid command syntax.")
 
         procs, stderr_tmp, prev_out = [], None, None
         try:
@@ -165,14 +173,14 @@ class Tools:
                     if prev_out is not None:
                         try: prev_out.close()
                         except Exception: pass
-                    return "Error starting command %s: %s" % (toks[0], e)
+                    raise ToolError("Error starting command %s: %s" % (toks[0], e))
                 if prev_out is not None:
                     prev_out.close()
                 procs.append(p)
                 prev_out = p.stdout
 
             if not procs:
-                return "Error: empty command."
+                raise ToolError("Error: empty command.")
 
             out_fd = procs[-1].stdout
             chunks, total = [], 0
@@ -367,13 +375,13 @@ class Tools:
     def _fetch_url(url, timeout=10, max_bytes=500000):
         url = (url or "").strip()
         if not re.match(r"^https?://", url, re.I):
-            return "Error: URL must start with http:// or https://"
+            raise ToolError("Error: URL must start with http:// or https://")
         try:
             host = urllib.parse.urlparse(url).hostname or ""
         except Exception:
             host = ""
         if Tools._is_private_host(host) and not Tools._allow_private():
-            return ("Error: refusing to fetch private/local address '%s' (SSRF guard). "
+            raise ToolError("Error: refusing to fetch private/local address '%s' (SSRF guard). "
                     "Set env AI_FETCH_ALLOW_PRIVATE=1 to allow." % host)
         headers = {"User-Agent": "termux-ai/%s (+CLI)" % __version__}
         if host == "api.github.com":
@@ -390,9 +398,9 @@ class Tools:
         except urllib.error.HTTPError as e:
             return "HTTP %d %s for %s" % (e.code, e.reason, url)
         except urllib.error.URLError as e:
-            return "Error: could not fetch %s (%s)" % (url, getattr(e, "reason", e))
+            raise ToolError("Error: could not fetch %s (%s)" % (url, getattr(e, "reason", e)))
         except Exception as e:
-            return "Error: %s" % e
+            raise ToolError("Error: %s" % e)
         truncated = len(data) > max_bytes
         if truncated:
             data = data[:max_bytes]
@@ -445,46 +453,116 @@ class Tools:
         return s.strip()
 
     @staticmethod
-    def _web_search(query, timeout=12, max_results=5):
-        """Search the web and return the top results. Primary source: Bing's
-        HTML results (no API key; result links are base64-wrapped and decoded).
-        Fallback: Wikipedia's search API when Bing is unreachable."""
-        q = (query or "").strip()
-        if not q:
-            return "Error: query is empty"
-        qq = urllib.parse.quote(q)
+    def _parse_bing_html(body, max_results=5):
+        """Parse Bing's HTML SERP into [(title, url, snippet)]. Pure function --
+        canary-tested against a frozen fixture so a markup change fails loudly
+        in CI instead of silently degrading to the fallbacks in production."""
+        results = []
+        for b in re.findall(r'(?is)<li class="b_algo[^"]*".*?</li>', body):
+            m = re.search(r'(?is)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', b)
+            if not m:
+                continue
+            url = m.group(1)
+            u = re.search(r'(?:[?&]|&amp;)u=a1([A-Za-z0-9+/=]+)', url)
+            if u:
+                try:
+                    real = base64.b64decode(u.group(1) + "=" * (-len(u.group(1)) % 4)) \
+                        .decode("utf-8", "replace")
+                    if real.startswith("http"):
+                        url = real
+                except Exception:
+                    pass
+            title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+            sn = re.search(r'(?is)<p[^>]*>(.*?)</p>', b)
+            snippet = re.sub(r"<[^>]+>", "", sn.group(1)).strip() if sn else ""
+            if url and title:
+                results.append((title, url, snippet))
+            if len(results) >= max_results:
+                break
+        return results
+
+    @staticmethod
+    def _unwrap_ddg_href(href):
+        """DuckDuckGo wraps result links: //duckduckgo.com/l/?uddg=<pct-encoded>
+        -> unwrap to the real URL. Direct and protocol-relative links pass
+        through (//host -> https://host)."""
+        h = html.unescape(href or "")
+        m = re.search(r'[?&]uddg=([^&]+)', h)
+        if m:
+            real = urllib.parse.unquote(m.group(1))
+            return real if real.startswith("http") else h
+        if h.startswith("//"):
+            return "https:" + h
+        return h
+
+    @staticmethod
+    def _parse_ddg_html(body, max_results=5):
+        """Parse html.duckduckgo.com's SERP into [(title, url, snippet)]
+        (result__a titles + result__snippet bodies, paired by index)."""
+        titles = re.findall(
+            r'(?is)<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', body)
+        snips = re.findall(
+            r'(?is)<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', body)
+        results = []
+        for i, (href, raw_t) in enumerate(titles):
+            url = Tools._unwrap_ddg_href(href)
+            title = html.unescape(re.sub(r"<[^>]+>", "", raw_t)).strip()
+            snippet = html.unescape(re.sub(r"<[^>]+>", "", snips[i])).strip() if i < len(snips) else ""
+            if url.startswith("http") and title:
+                results.append((title, url, snippet))
+            if len(results) >= max_results:
+                break
+        return results
+
+    @staticmethod
+    def _parse_wikipedia_json(text, max_results=5):
+        """Parse Wikipedia's search JSON into [(title, url, snippet)]."""
         results = []
         try:
-            req = urllib.request.Request(
-                "https://www.bing.com/search?q=" + qq,
-                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                         "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-                         "Accept-Language": "en-US,en;q=0.9"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                body = r.read(1500000).decode("utf-8", "replace")
-            for b in re.findall(r'(?is)<li class="b_algo[^"]*".*?</li>', body):
-                m = re.search(r'(?is)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', b)
-                if not m:
-                    continue
-                url = m.group(1)
-                u = re.search(r'(?:[?&]|&amp;)u=a1([A-Za-z0-9+/=]+)', url)
-                if u:
-                    try:
-                        real = base64.b64decode(u.group(1) + "=" * (-len(u.group(1)) % 4)) \
-                            .decode("utf-8", "replace")
-                        if real.startswith("http"):
-                            url = real
-                    except Exception:
-                        pass
-                title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
-                sn = re.search(r'(?is)<p[^>]*>(.*?)</p>', b)
-                snippet = re.sub(r"<[^>]+>", "", sn.group(1)).strip() if sn else ""
-                if url and title:
-                    results.append((title, url, snippet))
+            d = json.loads(text)
+            for it in (d.get("query") or {}).get("search") or []:
+                title = it.get("title", "")
+                url = "https://en.wikipedia.org/wiki/" + \
+                    urllib.parse.quote(title.replace(" ", "_"))
+                snippet = re.sub(r"<[^>]+>", "", it.get("snippet", ""))
+                results.append((title, url, snippet))
                 if len(results) >= max_results:
                     break
         except Exception:
             pass
+        return results
+
+    @staticmethod
+    def _web_search(query, timeout=12, max_results=5):
+        """Search the web, keyless. Source chain (each parser is pure and
+        canary-tested): Bing HTML -> DuckDuckGo HTML -> Wikipedia API. A markup
+        change at one provider degrades to the next instead of failing the
+        whole tool."""
+        q = (query or "").strip()
+        if not q:
+            raise ToolError("Error: query is empty")
+        qq = urllib.parse.quote(q)
+        results = []
+        UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        try:
+            req = urllib.request.Request("https://www.bing.com/search?q=" + qq,
+                                         headers={"User-Agent": UA,
+                                                  "Accept-Language": "en-US,en;q=0.9"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read(1500000).decode("utf-8", "replace")
+            results = Tools._parse_bing_html(body, max_results)
+        except Exception:
+            pass
+        if not results:
+            try:
+                req = urllib.request.Request("https://html.duckduckgo.com/html/?q=" + qq,
+                                             headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    body = r.read(1500000).decode("utf-8", "replace")
+                results = Tools._parse_ddg_html(body, max_results)
+            except Exception:
+                pass
         if not results:
             try:
                 req = urllib.request.Request(
@@ -492,17 +570,12 @@ class Tools:
                     + qq + "&format=json&srlimit=%d" % max_results,
                     headers={"User-Agent": "termux-ai/%s (+CLI)" % __version__})
                 with urllib.request.urlopen(req, timeout=timeout) as r:
-                    d = json.loads(r.read().decode("utf-8", "replace"))
-                for it in (d.get("query") or {}).get("search") or []:
-                    title = it.get("title", "")
-                    url = "https://en.wikipedia.org/wiki/" + \
-                        urllib.parse.quote(title.replace(" ", "_"))
-                    snippet = re.sub(r"<[^>]+>", "", it.get("snippet", ""))
-                    results.append((title, url, snippet))
+                    results = Tools._parse_wikipedia_json(
+                        r.read().decode("utf-8", "replace"), max_results)
             except Exception:
                 pass
         if not results:
-            return ("No web search results for '%s' (Bing/Wikipedia unreachable from here). "
+            return ("No web search results for '%s' (Bing/DuckDuckGo/Wikipedia unreachable from here). "
                     "Try fetch_url with a known URL." % q)
         lines = ["Web search results for '%s':" % q]
         for i, (title, url, snippet) in enumerate(results, 1):
@@ -517,7 +590,7 @@ class Tools:
         (free, no API key): geocode the name, then pull current + daily data."""
         city = (city or "").strip()
         if not city:
-            return "Error: city is empty"
+            raise ToolError("Error: city is empty")
         try:
             req = urllib.request.Request(
                 "https://geocoding-api.open-meteo.com/v1/search?name="
@@ -533,7 +606,7 @@ class Tools:
             country = res.get("country") or ""
             lat, lon = res.get("latitude"), res.get("longitude")
         except Exception as e:
-            return "Error: could not locate '%s' (%s)" % (city, e)
+            raise ToolError("Error: could not locate '%s' (%s)" % (city, e))
         try:
             url = ("https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f"
                    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
@@ -543,7 +616,7 @@ class Tools:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 d = json.loads(r.read().decode("utf-8", "replace"))
         except Exception as e:
-            return "Error: could not fetch weather for '%s' (%s)" % (name, e)
+            raise ToolError("Error: could not fetch weather for '%s' (%s)" % (name, e))
         WMO = {0: "Clear sky", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
                45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Drizzle",
                55: "Dense drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
@@ -625,7 +698,7 @@ class Tools:
         """Scan a directory and return a structured code graph (Mermaid + tables).
         Zero external dependencies — pure os.walk + regex."""
         p = os.path.expanduser(path or ".")
-        if not os.path.isdir(p): return f"Error: '{p}' is not a directory."
+        if not os.path.isdir(p): raise ToolError(f"Error: '{p}' is not a directory.")
         defs, imports, routes, models = [], {}, [], []
         local_names = set()
         for root, dirs, fnames in os.walk(p):
@@ -697,13 +770,13 @@ class Tools:
         the path. Build-mode only (writes to disk + runs git). Shallow by
         default (depth 1); depth 0 = full history."""
         if not build_mode:
-            return "Error: clone_repo requires Build mode (/tools on)."
+            raise ToolError("Error: clone_repo requires Build mode (/tools on).")
         url = (url or "").strip()
         if not url:
-            return "Error: url is missing."
+            raise ToolError("Error: url is missing.")
         # HTTPS only: blocks ssh://, git@host:, file:// (info leak / code exec).
         if not re.match(r"^https://", url, re.I):
-            return "Error: clone_repo only supports https:// URLs (ssh/git@/file are blocked)."
+            raise ToolError("Error: clone_repo only supports https:// URLs (ssh/git@/file are blocked).")
         try:
             depth = int(depth)
         except (TypeError, ValueError):
@@ -724,13 +797,13 @@ class Tools:
                 except OSError: pass
                 p.communicate()
                 shutil.rmtree(target, ignore_errors=True)
-                return "Error: git clone timed out after %ds (repo too large?)." % timeout
+                raise ToolError("Error: git clone timed out after %ds (repo too large?)." % timeout)
             if p.returncode != 0:
                 shutil.rmtree(target, ignore_errors=True)
-                return "Error cloning: " + (err or out or "unknown error").strip()[:500]
+                raise ToolError("Error cloning: " + (err or out or "unknown error").strip()[:500])
         except Exception as e:
             shutil.rmtree(target, ignore_errors=True)
-            return "Error: %s" % e
+            raise ToolError("Error: %s" % e)
         try:
             files = sorted(os.listdir(target))
         except Exception:
@@ -741,35 +814,45 @@ class Tools:
 
     @staticmethod
     def run(name, args, build_mode=False, max_result=10000):
-        # Note: we intentionally do NOT memoize results. A previous cache caused
-        # stale file contents to be served to the model within a session (C1).
-        # Each call executes fresh; loop detection lives in chat_with_tools.
-        result = Tools._run_impl(name, args, build_mode)
-        if result is None:
-            result = "Error: Tool returned no output."
-        if len(result) > max_result: result = result[:max_result] + "\n…[truncated]"
-        return result
+        """String-boundary API (model-facing, tests): returns output text;
+        tool failures come back as 'Error: ...' strings exactly as before."""
+        ok, out = Tools.run_checked(name, args, build_mode, max_result)
+        return out
+
+    @staticmethod
+    def run_checked(name, args, build_mode=False, max_result=10000):
+        """Structured API for the agentic loop: (ok, output). Failures raise
+        ToolError inside _run_impl and are caught here, so loop guards key off
+        a real flag instead of sniffing the 'Error' string prefix."""
+        try:
+            result = Tools._run_impl(name, args, build_mode)
+            if result is None:
+                raise ToolError("Error: Tool returned no output.")
+            if len(result) > max_result: result = result[:max_result] + "\n…[truncated]"
+            return True, result
+        except ToolError as e:
+            return False, str(e)
 
     @staticmethod
     def _run_impl(name, args, build_mode=False):
         try:
             if name == "read_file":
                 p = os.path.expanduser(args.get("path", ""))
-                if not p: return "Error: Path is missing."
+                if not p: raise ToolError("Error: Path is missing.")
                 # V-03: deny known sensitive paths to prevent credential exfiltration
                 rp = os.path.realpath(p).lower()
                 _sensitive = (".ssh/", ".aws/", ".env", ".git/credentials", ".netrc",
                               ".gnupg/", "id_rsa", "id_ecdsa", "id_ed25519",
                               ".docker/config", ".kube/config", ".npmrc")
                 if any(s in rp for s in _sensitive):
-                    return "Error: Access denied — this path may contain secrets (SSH keys, credentials, config). Use run_command if you genuinely need it and have user approval."
-                if not os.path.exists(p): return f"Error: Not found at {p}"
-                if os.path.isdir(p): return "Error: Is a directory"
+                    raise ToolError("Error: Access denied — this path may contain secrets (SSH keys, credentials, config). Use run_command if you genuinely need it and have user approval.")
+                if not os.path.exists(p): raise ToolError(f"Error: Not found at {p}")
+                if os.path.isdir(p): raise ToolError("Error: Is a directory")
                 return FileReader.read(p, start_line=args.get("start"), end_line=args.get("end"))
             elif name == "write_file":
-                if not build_mode: return "Error: Write access is disabled in Plan mode."
+                if not build_mode: raise ToolError("Error: Write access is disabled in Plan mode.")
                 p = os.path.expanduser(args.get("path", ""))
-                if not p: return "Error: Path is missing."
+                if not p: raise ToolError("Error: Path is missing.")
                 content = args.get("content", "")
                 append = bool(args.get("append", False))
 
@@ -780,7 +863,7 @@ class Tools:
                 except ValueError:
                     inside_cwd = False
                 if not inside_cwd:
-                    return f"Error: Cannot write files outside current working directory ({cwd})."
+                    raise ToolError(f"Error: Cannot write files outside current working directory ({cwd}).")
 
                 Path(p).parent.mkdir(parents=True, exist_ok=True)
                 if append:
@@ -803,12 +886,12 @@ class Tools:
                 return "\n".join(entries) or "(empty)"
             elif name == "run_command":
                 cmd_str = args.get("command", "")
-                if not cmd_str: return "Error: Command is missing."
+                if not cmd_str: raise ToolError("Error: Command is missing.")
                 if not build_mode:
                     ok, reason = Tools._plan_check(cmd_str)
                     if not ok:
                         allowed = ", ".join(sorted(Tools.PLAN_READONLY_CMDS - {"git"}))
-                        return ("Error: Plan mode blocked this command: %s. Plan mode permits ONLY "
+                        raise ToolError("Error: Plan mode blocked this command: %s. Plan mode permits ONLY "
                                 "these read-only programs (no shell): %s. Do NOT retry this or "
                                 "similar (interpreters, redirects, &&/;/||, mutating commands are all "
                                 "blocked). Reformulate using only the allowed list, or ask the user to "
@@ -839,7 +922,7 @@ class Tools:
                         return (out or "") + (err or "") + f"\n…[command timed out after {timeout}s]"
                     return (out or "") + (err or "")
                 except Exception as e:
-                    return f"Error executing command: {e}"
+                    raise ToolError(f"Error executing command: {e}")
             elif name == "search_files":
                 path = args.get("path", ".")
                 cmd = ["grep", "-rn"]
@@ -859,5 +942,8 @@ class Tools:
             elif name == "graphify":
                 return Tools._graphify(args.get("path", "."), args.get("mode", "all"))
             return "Unknown tool"
-        except Exception as e: return f"Error: {e}"
+        except ToolError:
+            raise                       # deliberate tool failure -> structured path
+        except Exception as e:
+            raise ToolError(f"Error: {e}")   # unexpected failure -> structured too
 
