@@ -431,6 +431,105 @@ class TestCliSkillArgs(_TmpHome):
             self.assertTrue(app._apply_skill_args("fullstack"))
 
 
+class TestProjectContext(_TmpHome):
+    """CONTEXT.md project memory: auto-attached to the system prompt each turn,
+    cached per session, refreshed on mtime change, cap-enforced, toggleable."""
+
+    def setUp(self):
+        super().setUp()
+        self._old_cwd = os.getcwd()
+        self.tmp = tempfile.mkdtemp(prefix="aictx_")
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _app(self):
+        app = m.App(); app.quiet = True; return app
+
+    def test_attaches_and_refreshes_on_change(self):
+        open("CONTEXT.md", "w").write("Stack: python, stdlib only.")
+        app = self._app()
+        ctx = app._project_context()
+        self.assertIn("Stack: python", ctx)
+        # cached: same content returned without a re-read
+        self.assertEqual(app._project_context(), ctx)
+        # file changed (new mtime) -> refreshed
+        import time as _t; _t.sleep(0.02)
+        open("CONTEXT.md", "w").write("Stack: python + rust.")
+        self.assertIn("rust", app._project_context())
+
+    def test_fallback_path_and_absent(self):
+        os.makedirs(".ai", exist_ok=True)
+        open(".ai/context.md", "w").write("alt path")
+        app = self._app()
+        self.assertIn("alt path", app._project_context())
+        # absent -> empty string, no crash
+        os.remove(".ai/context.md")
+        self.assertEqual(app._project_context(), "")
+
+    def test_cap_and_session_off(self):
+        open("CONTEXT.md", "w").write("x" * 50000)
+        app = self._app()
+        app.cfg.set("max_context_md", 1000, save=False)
+        self.assertLessEqual(len(app._project_context()), 1000)
+        app._ctx_disabled = True
+        self.assertEqual(app._project_context(), "")
+
+    def test_chat_attaches_context_to_system_prompt(self):
+        open("CONTEXT.md", "w").write("UNIQUE-PROJECT-FACT-42")
+        app = self._app()
+        captured = {}
+        def fake_chat(msgs, confirm_batch_fn=None, continue_fn=None):
+            captured["sysp"] = msgs[0]["content"]
+            yield {"type": "text", "content": "ok"}
+            return
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake_chat):
+            app._chat("hello")
+        self.assertIn("UNIQUE-PROJECT-FACT-42", captured["sysp"])
+        self.assertIn("Project context", captured["sysp"])
+
+
+class TestSkillSuggest(_TmpHome):
+    """One-line skill hints: fires on distinctive trigger words, silent for
+    generic chat, never when a session skill is active, and configurable off."""
+
+    def _app(self):
+        app = m.App(); app.quiet = False; return app
+
+    def _out(self, app, text):
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try: app._suggest_skill(text)
+        finally: sys.stdout = old
+        return buf.getvalue()
+
+    def test_fires_on_trigger_word(self):
+        app = self._app()
+        out = self._out(app, "please write playwright test scenarios for this frontend")
+        self.assertIn("frontend-tester", out)
+        self.assertIn("/skill frontend-tester", out)
+        out2 = self._out(app, "can you do a pentest on this box")
+        self.assertIn("pentest", out2)
+
+    def test_silent_for_generic_chat(self):
+        app = self._app()
+        self.assertEqual(self._out(app, "fix the bug in app.py"), "")
+        self.assertEqual(self._out(app, "hello there"), "")
+
+    def test_silent_when_session_skill_active_or_config_off(self):
+        app = self._app()
+        app.active_session_skills.append(("fullstack", "body"))
+        self.assertEqual(self._out(app, "write playwright tests"), "")
+        app2 = self._app()
+        app2.cfg.set("skill_suggest", False, save=False)
+        self.assertEqual(self._out(app2, "write playwright tests"), "")
+
+    def test_silent_in_quiet_mode(self):
+        app = m.App(); app.quiet = True
+        self.assertEqual(self._out(app, "write playwright tests"), "")
+
+
 class TestConfirmStopsSpinner(_TmpHome):
     """Regression: when the backend asks for tool approval, the spinner thread is
     still running (the callback fires before the event that stops it). The
@@ -1951,6 +2050,68 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(d2["max_tokens"], 8192)
         self.assertNotIn("max_completion_tokens", d2)
         self.assertEqual(d2["temperature"], 0.7)
+
+    def test_run_batch_parallel_reads_order_preserved(self):
+        """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
+        call, not the sum) while results stay in the original order for the API
+        contract; mutating calls run sequentially AFTER the reads (a batch's
+        reads must see pre-write state, like the old sequential loop)."""
+        import threading, time as _t
+        b = m.Backend({})
+        threads = set()
+        events = []
+        def fake_run(name, args, bm, mr):
+            threads.add(threading.current_thread().name)
+            _t.sleep(0.3 if name != "write_file" else 0.05)
+            events.append(name)
+            return f"r:{name}"
+        with um.patch.object(m.Tools, "run", side_effect=fake_run):
+            t0 = _t.time()
+            out = b._run_batch([("read_file", {"path": "a"}), ("search_files", {"query": "x"}),
+                                ("list_files", {"path": "."}), ("write_file", {"path": "w", "content": ""})],
+                               True, 10000, set(), {})
+            dt = _t.time() - t0
+        self.assertEqual([o[0] for o in out], ["read_file", "search_files", "list_files", "write_file"])  # order
+        self.assertEqual([o[1] for o in out], ["r:read_file", "r:search_files", "r:list_files", "r:write_file"])
+        self.assertTrue(all(o[2] for o in out))
+        self.assertGreaterEqual(len(threads), 2)          # actually ran on multiple threads
+        self.assertLess(dt, 0.3 + 0.3 + 0.3)              # NOT the serial sum (~0.95s)
+
+    def test_run_batch_mutators_after_reads_and_config_off(self):
+        import time as _t
+        order = []
+        def fake_run(name, args, bm, mr):
+            order.append((name, _t.perf_counter()))
+            _t.sleep(0.15)
+            return "ok"
+        # reads-before-writes within one batch
+        b = m.Backend({})
+        with um.patch.object(m.Tools, "run", side_effect=fake_run):
+            b._run_batch([("write_file", {"path": "w", "content": ""}), ("read_file", {"path": "a"})], True, 10000, set(), {})
+        w = next(t for n, t in order if n == "write_file")
+        r = next(t for n, t in order if n == "read_file")
+        # read (parallel pool) finishes before the mutator starts
+        self.assertLessEqual(r, w)
+        # parallel_tools off -> everything sequential (single thread is fine;
+        # behavior identical, just not concurrent)
+        b2 = m.Backend({"parallel_tools": False})
+        with um.patch.object(m.Tools, "run", side_effect=lambda n, a, bm, mr: f"r:{n}"):
+            out = b2._run_batch([("read_file", {"path": "a"}), ("list_files", {"path": "."})], True, 10000, set(), {})
+        self.assertEqual([o[1] for o in out], ["r:read_file", "r:list_files"])
+
+    def test_run_batch_shortcircuits_preserved(self):
+        """Already-done and redundant-read short-circuits keep working through
+        the batch executor (claimed sequentially, no re-execution)."""
+        b = m.Backend({})
+        done = {("read_file", json.dumps({"path": "a"}, sort_keys=True))}
+        calls = []
+        def fake_run(name, args, bm, mr):
+            calls.append(name); return "executed"
+        with um.patch.object(m.Tools, "run", side_effect=fake_run):
+            out = b._run_batch([("read_file", {"path": "a"}), ("list_files", {"path": "."})], True, 10000, done, {})
+        self.assertIn("ALREADY DONE", out[0][1])
+        self.assertFalse(out[0][2])
+        self.assertEqual(calls, ["list_files"])          # read short-circuited
 
     def test_loop_guard_stuck_and_failure_backstops(self):
         """LoopGuard is the single implementation of the loop backstops shared by

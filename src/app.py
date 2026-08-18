@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -37,6 +37,7 @@ class App:
         self._pending_checkpoint = None  # in-flight msgs snapshot when a turn is interrupted mid-stream
         self.last_process = []           # step-by-step log of the last turn (for /process)
         self._step_count = 0             # tool steps in the current turn
+        self._ctx_cache = None           # ((path, mtime), body) for CONTEXT.md project memory
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
         # Pre-load the local model in the background at startup so the first
@@ -273,7 +274,7 @@ class App:
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
-            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
+            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/graphify [path] [mode]", "Code graph: deps, defs, API, models"), ("/process [on|off|auto]", "Show/compact tool-call output"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
@@ -708,6 +709,73 @@ class App:
         self.warn("Could not complete the interrupted turn yet. Checkpoint kept.")
         return False
 
+    def _project_context(self):
+        """Read ./CONTEXT.md (or .ai/context.md) — per-session cached, refreshed
+        when the file's mtime changes (the model may rewrite it mid-session).
+        Returns '' when absent. Gives every session durable project memory:
+        stack, structure, conventions, gotchas."""
+        for cand in ("CONTEXT.md", os.path.join(".ai", "context.md")):
+            if getattr(self, "_ctx_disabled", False):
+                return ""
+            p = Path(cand)
+            try:
+                if not p.is_file():
+                    continue
+                mt = p.stat().st_mtime
+                if self._ctx_cache and self._ctx_cache[0] == (str(p), mt):
+                    return self._ctx_cache[1]
+                body = p.read_text(errors="replace")[: self.cfg.get("max_context_md", 12000)]
+                self._ctx_cache = ((str(p), mt), body)
+                return body
+            except OSError:
+                continue
+        return ""
+
+    def _suggest_skill(self, user_input):
+        """One-line hint when the input strongly matches a skill (opt-in via
+        skill_suggest, default on). Keyword triggers come from the skill body:
+        distinctive tokens (playwright, pentest, deploy, finops...) appearing in
+        the user's message. Never fires for an already-active session skill or
+        when any skill is active in session mode (avoid noise); zero cost when
+        it doesn't match."""
+        if not self.cfg.get("skill_suggest", True) or self.quiet:
+            return
+        if self.active_session_skills:
+            return
+        text = user_input.lower()
+        best = None
+        for name, meta in self.skills.list():
+            body_l = (name + " " + (self.skills.load(name)[1] or "")).lower()
+            for kw in self._skill_trigger_words(name, body_l):
+                if kw in text:
+                    best = (name, kw)
+                    break
+            if best:
+                break
+        if best:
+            name, kw = best
+            print(f"{C.DIM} tip: this sounds like the '{name}' skill — /skill {name} to activate for this task{C.RESET}")
+
+    @staticmethod
+    def _skill_trigger_words(name, body_l):
+        """Distinctive trigger tokens per bundled skill (name stems + signature
+        terms from the body). Short/generic words are excluded."""
+        TRIGGERS = {
+            "frontend-tester": ("playwright", "e2e test", "end-to-end test", "test scenario"),
+            "pentest": ("pentest", "penetration test", "vulnerability scan", "exploit"),
+            "brainstorm": ("brainstorm", "ide", "brainstorming"),
+            "fullstack": ("fullstack", "full-stack", "landing page", "web platform", "build a website"),
+            "cloud-arch": ("cloud architecture", "cloud infra", "kubernetes", "terraform"),
+            "data-engineer": ("data pipeline", "etl", "data warehouse", "airflow"),
+            "finops": ("finops", "cloud cost", "billing optimization"),
+            "commit": ("commit message", "write a commit", "conventional commit"),
+            "python": ("python refactor", "python package", "pip package"),
+            "qa": ("qa test", "test plan", "manual testing", "corner case"),
+            "reverse-engineer": ("reverse engineer", "reverse-engineer", "prd from code"),
+            "review": ("code review", "pr review", "review this pr"),
+        }
+        return TRIGGERS.get(name, ())
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -732,6 +800,13 @@ class App:
             cat = self.skills.catalog()
             if cat:
                 sysp += "\n\n" + cat
+        # Project memory: auto-attach ./CONTEXT.md (or .ai/context.md) so a
+        # session starts knowing the project instead of re-discovering it every
+        # time -- the single biggest smarts win for repeat work on a repo.
+        _ctx = self._project_context()
+        if _ctx:
+            sysp += ("\n\n# Project context (CONTEXT.md — kept current by you; update it with "
+                     "write_file when you learn durable facts about this project):\n" + _ctx)
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 
@@ -1008,6 +1083,7 @@ class App:
         "/tokens": "_cmd_tokens", "/diff": "_cmd_diff", "/compact": "_cmd_compact",
         "/regen": "_cmd_regen", "/retry": "_cmd_regen",
         "/tune": "_cmd_tune",
+        "/context": "_cmd_context",
     }
 
     def _execute_command(self, cmd_str):
@@ -1069,6 +1145,7 @@ class App:
                 if user_input.startswith("/"):
                     self._execute_command(user_input)
                 else:
+                    self._suggest_skill(user_input)
                     self._chat(user_input)
 
             except KeyboardInterrupt:

@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.2.6-green)
+![version](https://img.shields.io/badge/version-7.2.7-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -455,6 +455,8 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 
 - **Batch confirmation** — all tool calls in one response are shown together; you approve or decline the entire batch with a single y/N
 - **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`, `fetch_url`) execute automatically without prompting
+- **Parallel batch execution** — batched read-only calls (read/list/search/fetch/search-web/weather/graphify) run **concurrently** in a small thread pool (`parallel_tools`, default on; `parallel_workers`, default 4), so a batch of reads takes as long as the slowest call instead of their sum. Mutating calls (`write_file`, `run_command`, `clone_repo`) stay sequential and run **after** the reads, preserving the old ordered semantics; results are always returned to the model in the original call order
+- **Project memory (CONTEXT.md)** — if the cwd has a `CONTEXT.md` (or `.ai/context.md`), it's attached to every message as project context (stack, structure, conventions, gotchas — capped at `max_context_md`, default 12 KB) so repeat sessions don't re-discover the project. The AI is instructed to KEEP it current (tool rule 7). Manage with `/context` (show / `init` / `edit` / `refresh` / `off`)
 - **Web research** — `fetch_url` does an HTTP GET and returns the page as readable text (HTML stripped). The AI uses it to read/research websites directly. It refuses private/local addresses (127.0.0.1, localhost, 10.x …) as an SSRF guard unless `AI_FETCH_ALLOW_PRIVATE=1` is set; ~500 KB cap, 10s timeout.
 - **GitHub repos** — for `api.github.com` calls, `fetch_url` auto-attaches `GITHUB_TOKEN`/`GH_TOKEN` (lifts the rate limit from 60→5000/hr). To **analyze a repo locally**, the AI uses `clone_repo <https-url>` (Build mode): it shallow-clones (`--depth 1`) into an isolated temp dir and returns the path, after which `read_file`/`search_files`/`list_files` work on it. HTTPS-only (blocks ssh/git@/file). Great for "summarize this repo", "find the bug in …", or "clone it and run the tests". Best with a capable model (`qwen2.5:3b`+ or cloud); a 0.5b can't manage multi-step repo tasks.
 - **CWD sandbox** — `write_file` is restricted to the current working directory for safety
@@ -506,6 +508,8 @@ Change any setting from inside the CLI:
 Skills are reusable, user-authorable capability modules — a name + description + instructions (markdown). They're compatible in spirit with the [Agent Skills standard](https://agentskills.io), so you can adapt skills from Claude Code / Codex / pi.
 
 Skills live in `~/.config/termux-ai/skills/`. A skill is either `name.md` (flat) or `name/SKILL.md` (a directory that may bundle helper scripts the AI can run).
+
+When your message contains a distinctive trigger word ("playwright", "pentest", "finops" ...), a one-line **tip** suggests the matching skill — run `/skill <name>` to activate it for that task (`skill_suggest` in config to disable).
 
 ```markdown
 ---

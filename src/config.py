@@ -42,7 +42,10 @@ class Config:
         "3. If an action FAILS or is BLOCKED, do not retry it or anything similar \u2014 say what you'll do differently, then do that.\n"
         "4. Use the fewest steps that solve it. One well-chosen command beats several.\n"
         "5. YOU decide when you're done: answer with NO tool call the moment you can. The iteration limit is only an emergency brake.\n"
-        "6. Be careful with destructive actions (rm, overwrites); prefer minimal, targeted changes."
+        "6. Be careful with destructive actions (rm, overwrites); prefer minimal, targeted changes.\n"
+        "7. Project memory: if a # Project context section names CONTEXT.md, KEEP IT CURRENT — when you learn a durable fact about the "
+        "project (stack, structure, conventions, gotchas, decisions), update CONTEXT.md with write_file (preserve what's there; append "
+        "or edit the relevant section). Do not write transient session state into it."
     )
 
     DEFAULTS = {
@@ -63,12 +66,14 @@ class Config:
         "tools_enabled": False,
         "strategy_first": False,
         "skill_autoload": False,
+        "skill_suggest": True,   # one-line hint when the input strongly matches a skill
         "extended_thinking": False,
         "thinking_budget": 8000,
         "tts_replies": False,
         "multi_line": False,
         "auto_compact": True,
         "max_file_chars": 20000,
+        "max_context_md": 12000,   # cap for the CONTEXT.md project-memory attachment
         "max_tool_result": 30000,
         "max_iterations": 100,
         "repeat_limit": 3,

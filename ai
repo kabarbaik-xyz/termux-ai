@@ -7,11 +7,12 @@ endpoint, or natively to Anthropic's Messages API.
 """
 import os, sys, json, sqlite3, urllib.request, urllib.error, urllib.parse, subprocess, atexit, shutil, time, threading, re, html, shlex, signal, ipaddress, calendar
 import select, tempfile
+import concurrent.futures
 import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.2.6"
+__version__ = "7.2.7"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -829,7 +830,10 @@ class Config:
         "3. If an action FAILS or is BLOCKED, do not retry it or anything similar \u2014 say what you'll do differently, then do that.\n"
         "4. Use the fewest steps that solve it. One well-chosen command beats several.\n"
         "5. YOU decide when you're done: answer with NO tool call the moment you can. The iteration limit is only an emergency brake.\n"
-        "6. Be careful with destructive actions (rm, overwrites); prefer minimal, targeted changes."
+        "6. Be careful with destructive actions (rm, overwrites); prefer minimal, targeted changes.\n"
+        "7. Project memory: if a # Project context section names CONTEXT.md, KEEP IT CURRENT — when you learn a durable fact about the "
+        "project (stack, structure, conventions, gotchas, decisions), update CONTEXT.md with write_file (preserve what's there; append "
+        "or edit the relevant section). Do not write transient session state into it."
     )
 
     DEFAULTS = {
@@ -850,12 +854,14 @@ class Config:
         "tools_enabled": False,
         "strategy_first": False,
         "skill_autoload": False,
+        "skill_suggest": True,   # one-line hint when the input strongly matches a skill
         "extended_thinking": False,
         "thinking_budget": 8000,
         "tts_replies": False,
         "multi_line": False,
         "auto_compact": True,
         "max_file_chars": 20000,
+        "max_context_md": 12000,   # cap for the CONTEXT.md project-memory attachment
         "max_tool_result": 30000,
         "max_iterations": 100,
         "repeat_limit": 3,
@@ -2279,6 +2285,55 @@ class Backend:
         except TimeoutError:
             raise BackendError("Request timed out.", transient=True)
 
+    # Read-only, independent tools safe to run concurrently in a batch.
+    SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
+
+    def _run_batch(self, items, build_mode, max_res, done_calls, coverage):
+        """Execute a batch of [(name, args)] tool calls, preserving the ORIGINAL
+        order in the returned [(name, result, was_new)] list. Read-only tools run
+        in a small thread pool (config parallel_tools, default on — they're
+        independent: separate files/requests, no shared mutable state); mutating
+        tools (write_file, run_command, clone_repo) run sequentially AFTER the
+        reads so a batch's reads always see pre-write state, exactly like the
+        old sequential loop. Already-done / redundant-read short-circuits are
+        claimed sequentially (done_calls/coverage stay race-free)."""
+        results = [None] * len(items)
+        par, seq = [], []
+        for idx, (name, args) in enumerate(items):
+            key = (name, json.dumps(args, sort_keys=True))
+            if key in done_calls:
+                results[idx] = (name, "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]", False)
+                continue
+            if name == "read_file" and Backend._is_redundant_read(args, coverage):
+                results[idx] = (name, "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]", False)
+                continue
+            done_calls.add(key)
+            (par if name in Backend.SAFE_PARALLEL else seq).append((idx, name, args))
+
+        def _exec(name, args):
+            try:
+                return Tools.run(name, args, build_mode, max_res)
+            except Exception as e:   # defensive: a worker crash must not kill the batch
+                return f"Error: {e}"
+
+        if par:
+            if len(par) >= 2 and self.c.get("parallel_tools", True):
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(int(self.c.get("parallel_workers", 4)), len(par))) as ex:
+                    outs = list(ex.map(lambda t: _exec(t[1], t[2]), par))
+            else:
+                outs = [_exec(n, a) for _, n, a in par]
+            for (idx, name, args), r in zip(par, outs):
+                results[idx] = (name, r, True)
+                if name == "read_file":
+                    Backend._track_read(args, r, coverage)
+        for idx, name, args in seq:
+            r = _exec(name, args)
+            results[idx] = (name, r, True)
+            if name == "read_file":
+                Backend._track_read(args, r, coverage)
+        return results
+
     def _sse_lines(self, resp, idle_timeout=120, ndjson=False):
         buf = b""
         last_byte = time.monotonic()
@@ -3077,32 +3132,22 @@ class OpenAICompatible(Backend):
             msgs.append(msg)
 
             total = len(calls)
-            batch_results = []
-            any_productive = False
-            for i, c in enumerate(calls):
+            items = []
+            for c in calls:
                 fn = c["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except Exception: args = {}
-
-                yield {"type": "tool_progress", "current": i+1, "total": total, "name": fn["name"], "args": args}
-
-                # Short-circuit: don't re-execute work already done this turn.
-                # Redirect the model instead of killing the task.
-                key = (fn["name"], json.dumps(args, sort_keys=True))
-                if key in done_calls:
-                    result = "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]"
-                elif fn["name"] == "read_file" and Backend._is_redundant_read(args, coverage):
-                    result = "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]"
-                else:
-                    result = Tools.run(fn["name"], args, build_mode, max_res)
-                    done_calls.add(key)
-                    if fn["name"] == "read_file":
-                        Backend._track_read(args, result, coverage)
-                    any_productive = True
-
-                yield {"type": "tool_result", "name": fn["name"], "result": result}
+                items.append((fn["name"], args))
+            # Execute the batch (read-only calls in parallel, mutators sequential
+            # after the reads; original order preserved for the API contract).
+            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
+            batch_results = []
+            any_productive = any(w for _, _, w in outcomes)
+            for i, (c, (name, result, _)) in enumerate(zip(calls, outcomes)):
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": name, "args": json.loads(c["function"].get("arguments") or "{}")}
+                yield {"type": "tool_result", "name": name, "result": result}
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
-                batch_results.append((fn["name"], result))
+                batch_results.append((name, result))
 
             failed = [n for n, r in batch_results if Backend._is_failure(r)]
             _stop, _reflect = guard.note_results(any_productive, failed)
@@ -3278,27 +3323,17 @@ class AnthropicBackend(Backend):
             results = []
 
             total = len(tool_uses)
+            items = [(tu["name"], (tu.get("input") or {})) for tu in tool_uses]
+            # Execute the batch (read-only calls in parallel, mutators sequential
+            # after the reads; original order preserved for the API contract).
+            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
             batch_results = []
-            any_productive = False
-            for i, tu in enumerate(tool_uses):
-                args = tu.get("input", {}) or {}
-                yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
-
-                key = (tu["name"], json.dumps(args, sort_keys=True))
-                if key in done_calls:
-                    result = "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]"
-                elif tu["name"] == "read_file" and Backend._is_redundant_read(args, coverage):
-                    result = "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]"
-                else:
-                    result = Tools.run(tu["name"], args, build_mode, max_res)
-                    done_calls.add(key)
-                    if tu["name"] == "read_file":
-                        Backend._track_read(args, result, coverage)
-                    any_productive = True
-
-                yield {"type": "tool_result", "name": tu["name"], "result": result}
+            any_productive = any(w for _, _, w in outcomes)
+            for i, (tu, (name, result, _)) in enumerate(zip(tool_uses, outcomes)):
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": name, "args": (tu.get("input") or {})}
+                yield {"type": "tool_result", "name": name, "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
-                batch_results.append((tu["name"], result))
+                batch_results.append((name, result))
 
             payload.append({"role": "user", "content": results})
 
@@ -3521,7 +3556,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -3550,6 +3585,7 @@ class App:
         self._pending_checkpoint = None  # in-flight msgs snapshot when a turn is interrupted mid-stream
         self.last_process = []           # step-by-step log of the last turn (for /process)
         self._step_count = 0             # tool steps in the current turn
+        self._ctx_cache = None           # ((path, mtime), body) for CONTEXT.md project memory
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
         # Pre-load the local model in the background at startup so the first
@@ -3786,7 +3822,7 @@ class App:
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
             "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
-            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
+            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
             "Utils": [("/status", "System & API status"), ("/graphify [path] [mode]", "Code graph: deps, defs, API, models"), ("/process [on|off|auto]", "Show/compact tool-call output"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
         }
@@ -4221,6 +4257,73 @@ class App:
         self.warn("Could not complete the interrupted turn yet. Checkpoint kept.")
         return False
 
+    def _project_context(self):
+        """Read ./CONTEXT.md (or .ai/context.md) — per-session cached, refreshed
+        when the file's mtime changes (the model may rewrite it mid-session).
+        Returns '' when absent. Gives every session durable project memory:
+        stack, structure, conventions, gotchas."""
+        for cand in ("CONTEXT.md", os.path.join(".ai", "context.md")):
+            if getattr(self, "_ctx_disabled", False):
+                return ""
+            p = Path(cand)
+            try:
+                if not p.is_file():
+                    continue
+                mt = p.stat().st_mtime
+                if self._ctx_cache and self._ctx_cache[0] == (str(p), mt):
+                    return self._ctx_cache[1]
+                body = p.read_text(errors="replace")[: self.cfg.get("max_context_md", 12000)]
+                self._ctx_cache = ((str(p), mt), body)
+                return body
+            except OSError:
+                continue
+        return ""
+
+    def _suggest_skill(self, user_input):
+        """One-line hint when the input strongly matches a skill (opt-in via
+        skill_suggest, default on). Keyword triggers come from the skill body:
+        distinctive tokens (playwright, pentest, deploy, finops...) appearing in
+        the user's message. Never fires for an already-active session skill or
+        when any skill is active in session mode (avoid noise); zero cost when
+        it doesn't match."""
+        if not self.cfg.get("skill_suggest", True) or self.quiet:
+            return
+        if self.active_session_skills:
+            return
+        text = user_input.lower()
+        best = None
+        for name, meta in self.skills.list():
+            body_l = (name + " " + (self.skills.load(name)[1] or "")).lower()
+            for kw in self._skill_trigger_words(name, body_l):
+                if kw in text:
+                    best = (name, kw)
+                    break
+            if best:
+                break
+        if best:
+            name, kw = best
+            print(f"{C.DIM} tip: this sounds like the '{name}' skill — /skill {name} to activate for this task{C.RESET}")
+
+    @staticmethod
+    def _skill_trigger_words(name, body_l):
+        """Distinctive trigger tokens per bundled skill (name stems + signature
+        terms from the body). Short/generic words are excluded."""
+        TRIGGERS = {
+            "frontend-tester": ("playwright", "e2e test", "end-to-end test", "test scenario"),
+            "pentest": ("pentest", "penetration test", "vulnerability scan", "exploit"),
+            "brainstorm": ("brainstorm", "ide", "brainstorming"),
+            "fullstack": ("fullstack", "full-stack", "landing page", "web platform", "build a website"),
+            "cloud-arch": ("cloud architecture", "cloud infra", "kubernetes", "terraform"),
+            "data-engineer": ("data pipeline", "etl", "data warehouse", "airflow"),
+            "finops": ("finops", "cloud cost", "billing optimization"),
+            "commit": ("commit message", "write a commit", "conventional commit"),
+            "python": ("python refactor", "python package", "pip package"),
+            "qa": ("qa test", "test plan", "manual testing", "corner case"),
+            "reverse-engineer": ("reverse engineer", "reverse-engineer", "prd from code"),
+            "review": ("code review", "pr review", "review this pr"),
+        }
+        return TRIGGERS.get(name, ())
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -4245,6 +4348,13 @@ class App:
             cat = self.skills.catalog()
             if cat:
                 sysp += "\n\n" + cat
+        # Project memory: auto-attach ./CONTEXT.md (or .ai/context.md) so a
+        # session starts knowing the project instead of re-discovering it every
+        # time -- the single biggest smarts win for repeat work on a repo.
+        _ctx = self._project_context()
+        if _ctx:
+            sysp += ("\n\n# Project context (CONTEXT.md — kept current by you; update it with "
+                     "write_file when you learn durable facts about this project):\n" + _ctx)
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 
@@ -4521,6 +4631,7 @@ class App:
         "/tokens": "_cmd_tokens", "/diff": "_cmd_diff", "/compact": "_cmd_compact",
         "/regen": "_cmd_regen", "/retry": "_cmd_regen",
         "/tune": "_cmd_tune",
+        "/context": "_cmd_context",
     }
 
     def _execute_command(self, cmd_str):
@@ -4582,6 +4693,7 @@ class App:
                 if user_input.startswith("/"):
                     self._execute_command(user_input)
                 else:
+                    self._suggest_skill(user_input)
                     self._chat(user_input)
 
             except KeyboardInterrupt:
@@ -4619,6 +4731,54 @@ class App:
         v = not self.cfg.get("strategy_first", False)
         self.cfg.set("strategy_first", v)
         self.success(f"Strategy-first mode {'ON (model outlines a strategy before acting)' if v else 'OFF'}.")
+
+    def _cmd_context(self, args):
+        """/context          — show the project memory file (CONTEXT.md)
+        /context init     — create a starter CONTEXT.md in the cwd (skips if present)
+        /context edit     — open it in $EDITOR (or nano/vi)
+        /context refresh  — drop the session cache (auto-refreshes on mtime change anyway)
+        /context off      — stop attaching it for this session"""
+        sub = args[0].lower() if args else ""
+        path = next((c for c in (Path("CONTEXT.md"), Path(".ai/context.md")) if c.is_file()), None)
+        if sub == "init":
+            if path:
+                self.info(f"{path} already exists."); return
+            starter = ("# Project context\n\n## What this is\n(one sentence)\n\n## Stack\n"
+                       "- \n\n## Structure\n- \n\n## Conventions\n- \n\n## Gotchas / decisions\n- \n")
+            try:
+                Path("CONTEXT.md").write_text(starter)
+                self._ctx_cache = None
+                self.success("Created CONTEXT.md — it's attached to every message now. Fill it in or ask the AI to.")
+            except OSError as e:
+                self.err(f"Could not write CONTEXT.md: {e}")
+            return
+        if sub == "off":
+            self._ctx_disabled = True
+            self.success("CONTEXT.md attachment disabled for this session.")
+            return
+        if sub == "refresh":
+            self._ctx_cache = None
+            self.success("Context cache dropped; re-read on the next message.")
+            return
+        if sub == "edit":
+            if not path:
+                self.warn("No CONTEXT.md here. /context init first."); return
+            import subprocess as _sp
+            ed = os.environ.get("EDITOR", "")
+            ed = ed if ed else next((e for e in ("nano", "vim", "vi") if shutil.which(e)), "vi")
+            _sp.run([ed, str(path)])
+            self._ctx_cache = None
+            return
+        if not path:
+            self.info("No CONTEXT.md in this directory. It's a project-memory file attached to "
+                      "every message (stack, structure, conventions, gotchas) so sessions don't "
+                      "re-discover the project each time.")
+            self.info("  /context init   — create a starter file")
+            return
+        body = self._project_context() or "(empty)"
+        n = len(body.splitlines())
+        self.info(f"{path} ({n} lines) — attached to every message this session:")
+        print(body[:4000])
 
     def _cmd_tune(self, args):
         """Per-model auto-tuning report + optional manual override.

@@ -359,6 +359,55 @@ class Backend:
         except TimeoutError:
             raise BackendError("Request timed out.", transient=True)
 
+    # Read-only, independent tools safe to run concurrently in a batch.
+    SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
+
+    def _run_batch(self, items, build_mode, max_res, done_calls, coverage):
+        """Execute a batch of [(name, args)] tool calls, preserving the ORIGINAL
+        order in the returned [(name, result, was_new)] list. Read-only tools run
+        in a small thread pool (config parallel_tools, default on — they're
+        independent: separate files/requests, no shared mutable state); mutating
+        tools (write_file, run_command, clone_repo) run sequentially AFTER the
+        reads so a batch's reads always see pre-write state, exactly like the
+        old sequential loop. Already-done / redundant-read short-circuits are
+        claimed sequentially (done_calls/coverage stay race-free)."""
+        results = [None] * len(items)
+        par, seq = [], []
+        for idx, (name, args) in enumerate(items):
+            key = (name, json.dumps(args, sort_keys=True))
+            if key in done_calls:
+                results[idx] = (name, "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]", False)
+                continue
+            if name == "read_file" and Backend._is_redundant_read(args, coverage):
+                results[idx] = (name, "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]", False)
+                continue
+            done_calls.add(key)
+            (par if name in Backend.SAFE_PARALLEL else seq).append((idx, name, args))
+
+        def _exec(name, args):
+            try:
+                return Tools.run(name, args, build_mode, max_res)
+            except Exception as e:   # defensive: a worker crash must not kill the batch
+                return f"Error: {e}"
+
+        if par:
+            if len(par) >= 2 and self.c.get("parallel_tools", True):
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(int(self.c.get("parallel_workers", 4)), len(par))) as ex:
+                    outs = list(ex.map(lambda t: _exec(t[1], t[2]), par))
+            else:
+                outs = [_exec(n, a) for _, n, a in par]
+            for (idx, name, args), r in zip(par, outs):
+                results[idx] = (name, r, True)
+                if name == "read_file":
+                    Backend._track_read(args, r, coverage)
+        for idx, name, args in seq:
+            r = _exec(name, args)
+            results[idx] = (name, r, True)
+            if name == "read_file":
+                Backend._track_read(args, r, coverage)
+        return results
+
     def _sse_lines(self, resp, idle_timeout=120, ndjson=False):
         buf = b""
         last_byte = time.monotonic()
@@ -1157,32 +1206,22 @@ class OpenAICompatible(Backend):
             msgs.append(msg)
 
             total = len(calls)
-            batch_results = []
-            any_productive = False
-            for i, c in enumerate(calls):
+            items = []
+            for c in calls:
                 fn = c["function"]
                 try: args = json.loads(fn.get("arguments") or "{}")
                 except Exception: args = {}
-
-                yield {"type": "tool_progress", "current": i+1, "total": total, "name": fn["name"], "args": args}
-
-                # Short-circuit: don't re-execute work already done this turn.
-                # Redirect the model instead of killing the task.
-                key = (fn["name"], json.dumps(args, sort_keys=True))
-                if key in done_calls:
-                    result = "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]"
-                elif fn["name"] == "read_file" and Backend._is_redundant_read(args, coverage):
-                    result = "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]"
-                else:
-                    result = Tools.run(fn["name"], args, build_mode, max_res)
-                    done_calls.add(key)
-                    if fn["name"] == "read_file":
-                        Backend._track_read(args, result, coverage)
-                    any_productive = True
-
-                yield {"type": "tool_result", "name": fn["name"], "result": result}
+                items.append((fn["name"], args))
+            # Execute the batch (read-only calls in parallel, mutators sequential
+            # after the reads; original order preserved for the API contract).
+            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
+            batch_results = []
+            any_productive = any(w for _, _, w in outcomes)
+            for i, (c, (name, result, _)) in enumerate(zip(calls, outcomes)):
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": name, "args": json.loads(c["function"].get("arguments") or "{}")}
+                yield {"type": "tool_result", "name": name, "result": result}
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
-                batch_results.append((fn["name"], result))
+                batch_results.append((name, result))
 
             failed = [n for n, r in batch_results if Backend._is_failure(r)]
             _stop, _reflect = guard.note_results(any_productive, failed)
@@ -1358,27 +1397,17 @@ class AnthropicBackend(Backend):
             results = []
 
             total = len(tool_uses)
+            items = [(tu["name"], (tu.get("input") or {})) for tu in tool_uses]
+            # Execute the batch (read-only calls in parallel, mutators sequential
+            # after the reads; original order preserved for the API contract).
+            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
             batch_results = []
-            any_productive = False
-            for i, tu in enumerate(tool_uses):
-                args = tu.get("input", {}) or {}
-                yield {"type": "tool_progress", "current": i+1, "total": total, "name": tu["name"], "args": args}
-
-                key = (tu["name"], json.dumps(args, sort_keys=True))
-                if key in done_calls:
-                    result = "[ALREADY DONE: you ran this exact call before; the result is in your context above. Refer to it and try a DIFFERENT next step.]"
-                elif tu["name"] == "read_file" and Backend._is_redundant_read(args, coverage):
-                    result = "[ALREADY READ: these lines were fetched in a previous step and are in your context above. Don't re-read; proceed to the next action.]"
-                else:
-                    result = Tools.run(tu["name"], args, build_mode, max_res)
-                    done_calls.add(key)
-                    if tu["name"] == "read_file":
-                        Backend._track_read(args, result, coverage)
-                    any_productive = True
-
-                yield {"type": "tool_result", "name": tu["name"], "result": result}
+            any_productive = any(w for _, _, w in outcomes)
+            for i, (tu, (name, result, _)) in enumerate(zip(tool_uses, outcomes)):
+                yield {"type": "tool_progress", "current": i+1, "total": total, "name": name, "args": (tu.get("input") or {})}
+                yield {"type": "tool_result", "name": name, "result": result}
                 results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": result})
-                batch_results.append((tu["name"], result))
+                batch_results.append((name, result))
 
             payload.append({"role": "user", "content": results})
 

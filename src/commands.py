@@ -17,6 +17,54 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.cfg.set("strategy_first", v)
         self.success(f"Strategy-first mode {'ON (model outlines a strategy before acting)' if v else 'OFF'}.")
 
+    def _cmd_context(self, args):
+        """/context          — show the project memory file (CONTEXT.md)
+        /context init     — create a starter CONTEXT.md in the cwd (skips if present)
+        /context edit     — open it in $EDITOR (or nano/vi)
+        /context refresh  — drop the session cache (auto-refreshes on mtime change anyway)
+        /context off      — stop attaching it for this session"""
+        sub = args[0].lower() if args else ""
+        path = next((c for c in (Path("CONTEXT.md"), Path(".ai/context.md")) if c.is_file()), None)
+        if sub == "init":
+            if path:
+                self.info(f"{path} already exists."); return
+            starter = ("# Project context\n\n## What this is\n(one sentence)\n\n## Stack\n"
+                       "- \n\n## Structure\n- \n\n## Conventions\n- \n\n## Gotchas / decisions\n- \n")
+            try:
+                Path("CONTEXT.md").write_text(starter)
+                self._ctx_cache = None
+                self.success("Created CONTEXT.md — it's attached to every message now. Fill it in or ask the AI to.")
+            except OSError as e:
+                self.err(f"Could not write CONTEXT.md: {e}")
+            return
+        if sub == "off":
+            self._ctx_disabled = True
+            self.success("CONTEXT.md attachment disabled for this session.")
+            return
+        if sub == "refresh":
+            self._ctx_cache = None
+            self.success("Context cache dropped; re-read on the next message.")
+            return
+        if sub == "edit":
+            if not path:
+                self.warn("No CONTEXT.md here. /context init first."); return
+            import subprocess as _sp
+            ed = os.environ.get("EDITOR", "")
+            ed = ed if ed else next((e for e in ("nano", "vim", "vi") if shutil.which(e)), "vi")
+            _sp.run([ed, str(path)])
+            self._ctx_cache = None
+            return
+        if not path:
+            self.info("No CONTEXT.md in this directory. It's a project-memory file attached to "
+                      "every message (stack, structure, conventions, gotchas) so sessions don't "
+                      "re-discover the project each time.")
+            self.info("  /context init   — create a starter file")
+            return
+        body = self._project_context() or "(empty)"
+        n = len(body.splitlines())
+        self.info(f"{path} ({n} lines) — attached to every message this session:")
+        print(body[:4000])
+
     def _cmd_tune(self, args):
         """Per-model auto-tuning report + optional manual override.
         /tune                  show the active model's detected profile & effective values
