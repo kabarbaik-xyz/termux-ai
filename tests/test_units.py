@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for non-security internals: Database, file attachment,
 compaction, and small helpers. Run:  python3 tests/test_units.py"""
-import importlib.machinery, importlib.util, os, shutil, sys, tempfile, unittest
+import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile, unittest
 import io
 import json
 import hashlib
@@ -678,6 +678,76 @@ class TestSmartPaste(_TmpHome):
             self.assertEqual(app._traceback_context([("/nope/missing.py", 5)]), "")
         finally:
             os.unlink(p)
+
+class TestEditFileAndGitTools(_TmpHome):
+    """edit_file: surgical substring edits with unique-match enforcement and
+    helpful failures. git tool: read-only views everywhere, mutations gated."""
+
+    def setUp(self):
+        super().setUp()
+        self._old_cwd = os.getcwd()
+        self.tmp = tempfile.mkdtemp(prefix="aiedit_")
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_edit_file_surgical_semantics(self):
+        p = os.path.join(self.tmp, "app.py")
+        open(p, "w").write("def greet():\n    return 'hi'\n\ndef bye():\n    return 'bye'\n")
+        # unique find -> replaced, line range reported
+        r = m.Tools.run("edit_file", {"path": p, "find": "return 'hi'", "replace": "return 'hello'"}, build_mode=True)
+        self.assertIn("lines 2-2", r)
+        self.assertIn("return 'hello'", open(p).read())
+        # not found -> helpful error (ok=False)
+        ok, out = m.Tools.run_checked("edit_file", {"path": p, "find": "nope", "replace": "x"}, build_mode=True)
+        self.assertFalse(ok); self.assertIn("not found", out); self.assertIn("read_file", out)
+        # ambiguous -> told to disambiguate (two 'return ' lines now distinct; craft dup)
+        open(p, "w").write("x = 1\nx = 1\n")
+        ok2, out2 = m.Tools.run_checked("edit_file", {"path": p, "find": "x = 1", "replace": "x = 2"}, build_mode=True)
+        self.assertFalse(ok2); self.assertIn("2 places", out2)
+        # replace_all overrides
+        r3 = m.Tools.run("edit_file", {"path": p, "find": "x = 1", "replace": "x = 2", "replace_all": True}, build_mode=True)
+        self.assertEqual(open(p).read(), "x = 2\nx = 2\n")
+        # plan mode blocks
+        ok4, out4 = m.Tools.run_checked("edit_file", {"path": p, "find": "x", "replace": "y"}, build_mode=False)
+        self.assertFalse(ok4); self.assertIn("Plan mode", out4)
+
+    def test_git_tool_readonly_and_mutations(self):
+        # real repo
+        subprocess.run(["git", "init", "-q"], cwd=self.tmp, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=self.tmp, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=self.tmp, check=True, capture_output=True)
+        open("a.txt", "w").write("one\n")
+        # read-only in PLAN mode: status/diff/log work
+        r = m.Tools.run("git", {"action": "status"}, build_mode=False)
+        self.assertIn("a.txt", r)
+        # mutation blocked in plan
+        ok, out = m.Tools.run_checked("git", {"action": "stage", "path": "a.txt"}, build_mode=False)
+        self.assertFalse(ok); self.assertIn("Build mode", out)
+        # build mode: stage + commit flow
+        r2 = m.Tools.run("git", {"action": "stage", "path": "a.txt"}, build_mode=True)
+        self.assertIn("ok", r2.lower())
+        r3 = m.Tools.run("git", {"action": "commit", "message": "init"}, build_mode=True)
+        self.assertIn("init", r3)
+        r4 = m.Tools.run("git", {"action": "log"}, build_mode=False)
+        self.assertIn("init", r4)
+        # dirty diff shows changes
+        open("a.txt", "w").write("one\ntwo\n")
+        r5 = m.Tools.run("git", {"action": "diff"}, build_mode=False)
+        self.assertIn("+two", r5)
+        # checkout_file discards (after approval in real UI)
+        r6 = m.Tools.run("git", {"action": "checkout_file", "path": "a.txt"}, build_mode=True)
+        self.assertEqual(open("a.txt").read(), "one\n")
+
+    def test_git_confirm_gating(self):
+        app = m.App(); app.quiet = True
+        # read-only git batch auto-approves
+        self.assertTrue(app._confirm_batch([{"name": "git", "args": {"action": "status"}}]))
+        # mutating git batch needs approval (quiet -> declined)
+        self.assertFalse(app._confirm_batch([{"name": "git", "args": {"action": "commit", "message": "x"}}]))
+        self.assertFalse(app._confirm_batch([{"name": "write_file", "args": {"path": "x", "content": "y"}}]))
 
     def test_paste_raw_flag_and_quiet_skip_preview(self):
         """--raw / non-TTY paths send verbatim (no preview interaction); the

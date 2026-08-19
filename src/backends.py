@@ -425,7 +425,6 @@ class Backend:
 
     # Read-only, independent tools safe to run concurrently in a batch.
     SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
-
     def _run_batch(self, items, build_mode, max_res, done_calls, coverage):
         """Execute a batch of [(name, args)] tool calls, preserving the ORIGINAL
         order in the returned [(name, result, was_new)] list. Read-only tools run

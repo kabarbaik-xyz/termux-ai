@@ -339,7 +339,15 @@ class App:
         return f"\n\n--- Directory: {path} ({n} file(s)) ---\n" + "\n".join(chunks) + "--- End Directory ---\n"
 
     def _confirm_batch(self, calls):
-        if all(c["name"] in Tools.SAFE_TOOLS for c in calls):
+        # git read-only views are auto-approved; its mutations (stage/commit/
+        # unstage/checkout_file) go through the normal approval like write_file.
+        def _safe(c):
+            if c["name"] in Tools.SAFE_TOOLS:
+                if c["name"] == "git":
+                    return c.get("args", {}).get("action") in ("status", "diff", "log", "show")
+                return True
+            return False
+        if all(_safe(c) for c in calls):
             return True
 
         if self.quiet:

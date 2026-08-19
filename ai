@@ -1061,7 +1061,7 @@ class ToolError(Exception):
         super().__init__(message)
 
 class Tools:
-    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
+    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify", "git"}  # git here = read-only views only (mutations raise in Plan; confirm-gated in Build)
     # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
     # build noise (node_modules, .git, __pycache__, dist, ...) doesn't flood the
     # AI's context when it scans a local codebase. (AI can still read_file a
@@ -1081,9 +1081,11 @@ class Tools:
         {"type": "function", "function": {"name": "web_search", "description": "Search the web for up-to-date information (current events, weather, people, places, definitions, recent facts) and return the top results with titles, URLs, and snippets. Use this INSTEAD of guessing a URL for fetch_url when you don't know the exact page. Results come from Bing; Wikipedia is used as a fallback when Bing is unreachable.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "weather", "description": "Get current conditions and a 2-day forecast for a city or place (Open-Meteo, no API key). Use this for ANY weather question instead of searching the web or guessing URLs. Returns temperature, condition, humidity, wind, and daily high/low with rain chance.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
         {"type": "function", "function": {"name": "clone_repo", "description": "Clone a public git repo (HTTPS only) into an isolated temp dir and return the local path, so you can read/list/search/edit its files locally. BUILD MODE only. depth defaults to 1 (shallow, fast); set 0 for full history.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "depth": {"type": "integer", "default": 1}}, "required": ["url"]}}},
+        {"type": "function", "function": {"name": "edit_file", "description": "Edit a file by replacing an EXACT substring with new text (surgical edits — much cheaper and safer than rewriting a whole file with write_file). `find` must match EXACTLY ONCE in the file unless replace_all=true. Returns the edited line range. For whole-file creation or large rewrites use write_file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "find": {"type": "string", "description": "Exact text to find (include surrounding lines to make it unique)"}, "replace": {"type": "string", "description": "Replacement text"}, "replace_all": {"type": "boolean", "default": False, "description": "Replace every occurrence instead of requiring exactly one"}}, "required": ["path", "find", "replace"]}}},
+        {"type": "function", "function": {"name": "git", "description": "Git repository operations without shell overhead: status (working tree state), diff (uncommitted changes), log (recent commits), show (a commit/file), stage (add files), commit (message required), unstage, checkout_file (discard changes to ONE file -- destructive). Read-only views run everywhere; mutations need Build mode and are confirmed like write_file.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["status", "diff", "log", "show", "stage", "commit", "unstage", "checkout_file"]}, "path": {"type": "string", "description": "File path for stage/unstage/checkout_file/show"}, "message": {"type": "string", "description": "Commit message (action=commit)"}, "n": {"type": "integer", "default": 10, "description": "Limit for log"}}, "required": ["action"]}}},
         {"type": "function", "function": {"name": "graphify", "description": "Scan a codebase directory and return a structured code graph: dependency graph (Mermaid), all function/class definitions, API endpoints, and data models. Call this FIRST to map the codebase structure before deep-diving into files. Zero dependencies, runs locally.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory to scan (default: current dir)"}, "mode": {"type": "string", "enum": ["all", "deps", "calls", "api", "models"], "description": "all=everything, deps=import graph, calls=definitions, api=endpoints, models=data schemas"}}, "required": ["path"]}}},
     ]
-    PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] not in ("write_file", "clone_repo")]
+    PLAN_TOOLS = [t for t in TOOLS if t["function"]["name"] not in ("write_file", "edit_file", "clone_repo")]
     
     # Plan mode is enforced by a read-only ALLOWLIST, not a blocklist: only
     # the programs below may run, and commands are executed WITHOUT a shell
@@ -1323,6 +1325,8 @@ class Tools:
         "web_search": "Search the web, return top results (titles, URLs, snippets). For up-to-date facts/news/weather.",
         "weather": "Current conditions + 2-day forecast for a city (no API key). Use for weather questions.",
         "clone_repo": "Clone a public git repo to a temp dir. depth=0 for full history.",
+        "edit_file": "Surgical substring edit (find->replace). find must match once, or replace_all.",
+        "git": "Repo ops: status/diff/log/show (read-only) + stage/commit/unstage/checkout_file (Build).",
         "graphify": "Code graph (deps, defs, API, models). Call first to map a codebase.",
         # run_command keeps its full description: the Plan-mode allowlist it
         # carries is security-relevant and must reach the model verbatim.
@@ -1947,6 +1951,82 @@ class Tools:
                     return f"Appended {len(content)} chars to {p}"
                 Path(p).write_text(content)
                 return f"Written to {p}"
+            elif name == "edit_file":
+                if not build_mode: raise ToolError("Error: Write access is disabled in Plan mode.")
+                p = os.path.expanduser(args.get("path", ""))
+                find = args.get("find", "")
+                repl = args.get("replace", "")
+                replace_all = bool(args.get("replace_all", False))
+                if not p: raise ToolError("Error: Path is missing.")
+                if not find: raise ToolError("Error: `find` is empty — provide the exact text to replace.")
+                cwd = os.getcwd()
+                try:
+                    inside = os.path.commonpath([os.path.realpath(p), os.path.realpath(cwd)]) == os.path.realpath(cwd)
+                except ValueError:
+                    inside = False
+                if not inside:
+                    raise ToolError(f"Error: Cannot edit files outside current working directory ({cwd}).")
+                try:
+                    body = open(p, encoding="utf-8", errors="replace").read()
+                except FileNotFoundError:
+                    raise ToolError(f"Error: Not found: {p}")
+                n = body.count(find)
+                if n == 0:
+                    # Help the model self-correct: nearest line preview
+                    raise ToolError("Error: `find` text not found in " + p +
+                                    ". Re-read the file (read_file with start/end around the target) "
+                                    "and copy the text EXACTLY, including whitespace.")
+                if n > 1 and not replace_all:
+                    raise ToolError(f"Error: `find` matches {n} places in {p}. Add surrounding lines to make it "
+                                    "unique, or set replace_all=true to replace every occurrence.")
+                new_body = body.replace(find, repl) if replace_all else body.replace(find, repl, 1)
+                Path(p).write_text(new_body)
+                # Report the edited line range (first occurrence)
+                lo = body[:body.index(find)].count("\n") + 1
+                hi = lo + find.count("\n")
+                return f"Edited {p}: lines {lo}-{hi}{' (+all occurrences)' if replace_all and n > 1 else ''}"
+            elif name == "git":
+                action = (args.get("action") or "").strip()
+                read_only = {"status", "diff", "log", "show"}
+                if not action:
+                    raise ToolError("Error: git action is missing.")
+                def _git(argv, timeout=20):
+                    r = subprocess.run(["git"] + argv, capture_output=True, text=True,
+                                       timeout=timeout, cwd=os.getcwd())
+                    out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr.strip() else "")
+                    return r.returncode, out.strip()
+                try:
+                    if action == "status":
+                        rc, out = _git(["status", "--short", "-b"])
+                    elif action == "diff":
+                        rc, out = _git(["diff"] + (["--", args["path"]] if args.get("path") else []))
+                    elif action == "log":
+                        rc, out = _git(["log", "--oneline", "-n", str(min(int(args.get("n") or 10), 50))])
+                    elif action == "show":
+                        rc, out = _git(["show", "--stat"] + ([args["path"]] if args.get("path") else ["HEAD"]))
+                    elif not build_mode:
+                        raise ToolError("Error: git mutations need Build mode (/tools on). Read-only: status/diff/log/show.")
+                    elif action == "stage":
+                        if not args.get("path"): raise ToolError("Error: stage needs `path` (or '.' for all).")
+                        rc, out = _git(["add", "--", args["path"]])
+                    elif action == "commit":
+                        msg = (args.get("message") or "").strip()
+                        if not msg: raise ToolError("Error: commit needs a `message`.")
+                        rc, out = _git(["commit", "-m", msg])
+                    elif action == "unstage":
+                        rc, out = _git(["reset", "HEAD", "--", args.get("path") or "."])
+                    elif action == "checkout_file":
+                        if not args.get("path"): raise ToolError("Error: checkout_file needs `path`.")
+                        rc, out = _git(["checkout", "--", args["path"]])
+                    else:
+                        raise ToolError(f"Error: unknown git action '{action}'.")
+                except FileNotFoundError:
+                    raise ToolError("Error: git is not installed.")
+                except subprocess.TimeoutExpired:
+                    raise ToolError("Error: git timed out.")
+                if rc != 0:
+                    raise ToolError("Error: git " + action + ": " + (out[:300] or f"exit {rc}"))
+                return out or f"git {action}: ok (no output)"
             elif name == "list_files":
                 p = os.path.expanduser(args.get("path", "."))
                 if not args.get("recursive", False):
@@ -2531,7 +2611,6 @@ class Backend:
 
     # Read-only, independent tools safe to run concurrently in a batch.
     SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
-
     def _run_batch(self, items, build_mode, max_res, done_calls, coverage):
         """Execute a batch of [(name, args)] tool calls, preserving the ORIGINAL
         order in the returned [(name, result, was_new)] list. Read-only tools run
@@ -4116,7 +4195,15 @@ class App:
         return f"\n\n--- Directory: {path} ({n} file(s)) ---\n" + "\n".join(chunks) + "--- End Directory ---\n"
 
     def _confirm_batch(self, calls):
-        if all(c["name"] in Tools.SAFE_TOOLS for c in calls):
+        # git read-only views are auto-approved; its mutations (stage/commit/
+        # unstage/checkout_file) go through the normal approval like write_file.
+        def _safe(c):
+            if c["name"] in Tools.SAFE_TOOLS:
+                if c["name"] == "git":
+                    return c.get("args", {}).get("action") in ("status", "diff", "log", "show")
+                return True
+            return False
+        if all(_safe(c) for c in calls):
             return True
 
         if self.quiet:
