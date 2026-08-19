@@ -12,7 +12,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.2.9"
+__version__ = "7.3.0"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -619,6 +619,7 @@ class Database:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT, pinned INTEGER DEFAULT 0,
+                cwd TEXT, tools_mode INTEGER, skills_json TEXT, slug TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
@@ -672,6 +673,10 @@ class Database:
                 if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if "pinned" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER DEFAULT 0")
+                if "cwd" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT")
+                if "tools_mode" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN tools_mode INTEGER")
+                if "skills_json" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN skills_json TEXT")
+                if "slug" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN slug TEXT")
 
             msg_cols = self._table_cols("messages")
             if msg_cols:
@@ -687,10 +692,33 @@ class Database:
             self.conn.execute("ROLLBACK")
             raise e
 
-    def new_conv(self, title="New Chat", model="", backend=""):
-        cur = self.conn.execute("INSERT INTO conversations (title, model, backend) VALUES (?,?,?)", (title, model, backend))
+    def new_conv(self, title="New Chat", model="", backend="", cwd="", tools_mode=None, skills=None):
+        import json as _json
+        cur = self.conn.execute(
+            "INSERT INTO conversations (title, model, backend, cwd, tools_mode, skills_json) VALUES (?,?,?,?,?,?)",
+            (title, model, backend, cwd,
+             1 if tools_mode else (0 if tools_mode is not None else None),
+             _json.dumps(skills) if skills else None))
         self.conn.commit()
         return cur.lastrowid
+
+    def set_conv_slug(self, cid, slug):
+        self.conn.execute("UPDATE conversations SET slug = ? WHERE id = ?", ((slug or "").strip() or None, cid))
+        self.conn.commit()
+
+    def get_conv_by_slug(self, slug):
+        """Most recent conversation with this slug (exact, case-insensitive)."""
+        row = self.conn.execute(
+            "SELECT * FROM conversations WHERE slug = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1",
+            ((slug or "").strip(),)).fetchone()
+        return row
+
+    def last_conv_in_cwd(self, cwd, limit=50):
+        """Most recently updated conversation started in this cwd (NULL cwd
+        rows are legacy and ignored -- they have no project anchor)."""
+        row = self.conn.execute(
+            "SELECT * FROM conversations WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1", (cwd,)).fetchone()
+        return row
 
     def save_msg(self, cid, role, content, model="", tokens=0):
         self.conn.execute("INSERT INTO messages (conversation_id, role, content, model, tokens) VALUES (?,?,?,?,?)", (cid, role, content, model, tokens))
@@ -3757,7 +3785,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -4024,7 +4052,7 @@ class App:
         
         cats = {
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
-            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
+            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
@@ -4324,11 +4352,45 @@ class App:
         if d < 86400: return f"{int(d // 3600)}h ago"
         return f"{int(d // 86400)}d ago"
 
+    def _restore_session_context(self, conv):
+        """Restore a resumed session's working set: Build/Plan mode + active
+        skills are re-applied so the session continues with the tools it started
+        with (config is NOT persisted -- current-session only). A cwd mismatch
+        warns with the fix instead of silently answering in the wrong tree."""
+        if not conv:
+            return
+        keys = conv.keys() if hasattr(conv, "keys") else []
+        if "tools_mode" in keys and conv["tools_mode"] is not None:
+            want = bool(conv["tools_mode"])
+            if want != bool(self.cfg.get("tools_enabled", False)):
+                self.cfg.set("tools_enabled", want, save=False)
+                mode = "Build" if want else "Plan"
+                if not self.quiet:
+                    print(f"{C.DIM}[Session tools mode restored: {mode}]{C.RESET}")
+        if "skills_json" in keys and conv["skills_json"]:
+            try:
+                names = json.loads(conv["skills_json"]) or []
+            except Exception:
+                names = []
+            restored = []
+            for n in names:
+                _meta, body = self.skills.load(n)
+                if body:
+                    self.active_session_skills.append((n, body))
+                    restored.append(n)
+            if restored and not self.quiet:
+                print(f"{C.DIM}[Session skills restored: {', '.join(restored)}]{C.RESET}")
+        if "cwd" in keys and conv["cwd"] and conv["cwd"] != os.getcwd() and not self.quiet:
+            print(f"{C.YELLOW}[!] Session was started in {conv['cwd']}{C.RESET}")
+            print(f"    {C.DIM}You're in {os.getcwd()}. Run `cd {conv['cwd']}` for its files, "
+                  f"or continue here (paths in history refer to the old dir).{C.RESET}")
+
     def _activate(self, cid, banner=False):
         self.cid = cid
         self._persist_session()
+        conv = self.db.get_conv(cid) or {}
+        self._restore_session_context(conv)
         if banner and not self.quiet:
-            conv = self.db.get_conv(cid)
             if conv:
                 n = len(self.db.get_msgs(cid))
                 ago = self._ago(conv["updated_at"])
@@ -4340,7 +4402,9 @@ class App:
                     tail = f" \u2014 was {prev}"
                 else:
                     tail = ""
-                print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
+                slug = (conv["slug"] or "") if "slug" in conv.keys() else ""
+                name = f"{slug or conv['title']}"
+                print(f"{C.DIM}[Resumed: \"{name}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
             ck = self.db.get_resume_state(cid)
             if ck:
                 steps = self._count_tool_steps(ck)
@@ -4359,9 +4423,35 @@ class App:
             return
         if mode == "new":
             self.cid = None; self._clear_last_cid(); return
+        if mode == "session":
+            # create-or-resume by NAME (ai -S webproject): exact slug match ->
+            # resume it (restoring its tools/skills context); no match -> start
+            # a fresh session tagged with the slug so the next -S finds it.
+            nm = (self._resume_arg or "").strip()
+            conv = self.db.get_conv_by_slug(nm) if nm else None
+            if conv:
+                self._activate(conv["id"], banner=True)
+                self.db.set_conv_slug(conv["id"], nm)   # refresh casing if changed
+            else:
+                cid = self.db.new_conv(nm or "New Chat",
+                                       self.backend.profile.get("model", "") if self.backend else "",
+                                       self.cfg.get("backend", ""),
+                                       cwd=os.getcwd(),
+                                       tools_mode=bool(self.cfg.get("tools_enabled", False)),
+                                       skills=[n for n, _ in self.active_session_skills] or None)
+                self.db.set_conv_slug(cid, nm)
+                self._activate(cid, banner=False)
+                if not self.quiet:
+                    print(f"{C.DIM}[New named session: {nm}]{C.RESET}")
+            return
         resume = (mode == "continue") or (mode == "auto" and self.cfg.get("auto_resume", True))
         if not resume: return
-        cid = self._get_last_cid()
+        # Project-scoped: prefer the last session started in THIS cwd, then the
+        # global last. Sessions behave per-project (resume in repo A won't grab
+        # repo B's chat) without any new commands.
+        here = os.getcwd()
+        cand = self.db.last_conv_in_cwd(here)
+        cid = cand["id"] if cand else self._get_last_cid()
         if cid and self.db.get_conv(cid):
             self._activate(cid, banner=True)
         elif cid:
@@ -4565,7 +4655,14 @@ class App:
         title_src = title or user_input
         user_input = self._attach_files(user_input)
         if not self.cid:
-            self.cid = self.db.new_conv("New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""))
+            # Capture the session's working set ONCE at creation: project dir,
+            # Build/Plan mode, active skills. Resume restores them so a session
+            # continues with the tools it started with.
+            self.cid = self.db.new_conv(
+                "New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""),
+                cwd=os.getcwd(),
+                tools_mode=bool(self.cfg.get("tools_enabled", False)),
+                skills=[n for n, _ in self.active_session_skills] or None)
             first_line = title_src.strip().splitlines()[0] if title_src.strip() else "New Chat"
             self.db.rename_conv(self.cid, first_line[:30] + ("..." if len(first_line) > 30 else ""))
 
@@ -4825,7 +4922,7 @@ class App:
 
     _CMD_DISPATCH = {
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
-        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
+        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/session": "_cmd_session", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model", "/models": "_cmd_models",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
@@ -5158,20 +5255,52 @@ class App:
         self.db.set_pinned(self.cid, 0)
         self.success("Removed session bookmark (chat kept).")
 
+    def _cmd_session(self, args):
+        """/session <name>   — name/tag the current session (resumable via ai -S <name>)
+        /session off      — clear the current session's tag
+        /session          — show the current session's tag and cwd"""
+        if not self.cid:
+            self.warn("No active session yet — send a message first."); return
+        conv = self.db.get_conv(self.cid)
+        if not args:
+            slug = (conv["slug"] or "(none)") if "slug" in conv.keys() else "(none)"
+            cwd = (conv["cwd"] or "(unknown)") if "cwd" in conv.keys() else "(unknown)"
+            self.info(f"Session {self.cid}: tag={slug} | project={cwd} | {len(self.db.get_msgs(self.cid))} messages")
+            return
+        sub = args[0].lower()
+        if sub == "off":
+            self.db.set_conv_slug(self.cid, "")
+            self.success("Session tag cleared."); return
+        nm = args[0]
+        other = self.db.get_conv_by_slug(nm)
+        if other and other["id"] != self.cid:
+            self.warn(f"Tag '{nm}' already used by session {other['id']} ({other['title']}).")
+            self.info("  /session <different-name>, or load that one with /load {}".format(other["id"]))
+            return
+        self.db.set_conv_slug(self.cid, nm)
+        self.success(f"Tagged this session as '{nm}'. Resume later with: ai -S {nm}")
+
     def _cmd_sessions(self, args):
         rows = self.db.list_sessions(limit=50)
         if not rows:
             self.info("No sessions yet. Send a message to start one.")
             return
-        print(f"{C.BOLD}Saved & recent sessions (● = pinned):{C.RESET}")
+        print(f"{C.BOLD}Saved & recent sessions (● = pinned, #name = resumable via ai -S name):{C.RESET}")
         for r in rows:
             pin = f"{C.GREEN}●{C.RESET}" if r["pinned"] else " "
             title = (r["title"] or "(untitled)").strip()
-            if len(title) > 42: title = title[:39] + "..."
+            if len(title) > 34: title = title[:31] + "..."
             model = (r["model"] or "").strip()
             model_s = f" [{model}]" if model else ""
             ago = self._ago(r["updated_at"])
-            print(f" {pin} {C.BOLD}{r['id']}{C.RESET}. {title} {C.DIM}({r['msg_count']} msg, last {ago}{model_s}){C.RESET}")
+            extras = []
+            keys = r.keys() if hasattr(r, "keys") else []
+            if "slug" in keys and r["slug"]:
+                extras.append(f"{C.CYAN}#{r['slug']}{C.RESET}")
+            if "cwd" in keys and r["cwd"]:
+                extras.append(f"{C.DIM}{os.path.basename(r['cwd'].rstrip('/')) or r['cwd']}{C.RESET}")
+            tail = (" " + " ".join(extras)) if extras else ""
+            print(f" {pin} {C.BOLD}{r['id']}{C.RESET}. {title}{tail} {C.DIM}({r['msg_count']} msg, last {ago}{model_s}){C.RESET}")
 
     def _cmd_continue(self, args):
         cid = self._get_last_cid()
@@ -5189,14 +5318,16 @@ class App:
             conv = self.db.get_conv(cid)
             if not conv: self.err("Chat not found."); return
         else:
-            results = self.db.search_convs(arg)
-            if not results:
-                self.err(f"No session matching \"{arg}\"."); return
-            cid = results[0]["id"]
-            conv = self.db.get_conv(cid)
-        self.cid = cid
-        self._persist_session()
-        self.success(f"Loaded chat: {conv['title']}")
+            conv = self.db.get_conv_by_slug(arg)          # exact tag match first
+            if conv:
+                cid = conv["id"]
+            else:
+                results = self.db.search_convs(arg)
+                if not results:
+                    self.err(f"No session matching \"{arg}\"."); return
+                cid = results[0]["id"]
+                conv = self.db.get_conv(cid)
+        self._activate(cid, banner=True)
 
     def _cmd_delete(self, args):
         if not args: self.warn("Usage: /delete <id>"); return
@@ -5679,8 +5810,10 @@ def main():
                         help="generate a shell command for TASK (confirm & run in a TTY; print only when piped)")
     parser.add_argument("-j", "--json", action="store_true",
                         help="ask the model to answer with JSON only")
-    parser.add_argument("--continue", dest="resume_continue", action="store_true",
-                        help="resume the last session before the REPL")
+    parser.add_argument("-C", "--continue", dest="resume_continue", action="store_true",
+                        help="resume this project's last session before the REPL")
+    parser.add_argument("-S", "--session", dest="session_name", default=None, metavar="NAME",
+                        help="create-or-resume a named session (e.g. ai -S webproject)")
     parser.add_argument("--new", dest="resume_new", action="store_true",
                         help="start a fresh session (do not resume)")
     parser.add_argument("-l", "--load", dest="load_cid", default=None, metavar="ID",
@@ -5705,6 +5838,8 @@ def main():
             sys.exit(0)
     if args.load_cid:
         app._resume_mode = "load"; app._resume_arg = args.load_cid
+    elif args.session_name:
+        app._resume_mode = "session"; app._resume_arg = args.session_name
     elif args.resume_new: app._resume_mode = "new"
     elif args.resume_continue: app._resume_mode = "continue"
 

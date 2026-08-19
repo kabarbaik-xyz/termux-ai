@@ -13,6 +13,7 @@ class Database:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT, pinned INTEGER DEFAULT 0,
+                cwd TEXT, tools_mode INTEGER, skills_json TEXT, slug TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
@@ -66,6 +67,10 @@ class Database:
                 if "created_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if "updated_at" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 if "pinned" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER DEFAULT 0")
+                if "cwd" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN cwd TEXT")
+                if "tools_mode" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN tools_mode INTEGER")
+                if "skills_json" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN skills_json TEXT")
+                if "slug" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN slug TEXT")
 
             msg_cols = self._table_cols("messages")
             if msg_cols:
@@ -81,10 +86,33 @@ class Database:
             self.conn.execute("ROLLBACK")
             raise e
 
-    def new_conv(self, title="New Chat", model="", backend=""):
-        cur = self.conn.execute("INSERT INTO conversations (title, model, backend) VALUES (?,?,?)", (title, model, backend))
+    def new_conv(self, title="New Chat", model="", backend="", cwd="", tools_mode=None, skills=None):
+        import json as _json
+        cur = self.conn.execute(
+            "INSERT INTO conversations (title, model, backend, cwd, tools_mode, skills_json) VALUES (?,?,?,?,?,?)",
+            (title, model, backend, cwd,
+             1 if tools_mode else (0 if tools_mode is not None else None),
+             _json.dumps(skills) if skills else None))
         self.conn.commit()
         return cur.lastrowid
+
+    def set_conv_slug(self, cid, slug):
+        self.conn.execute("UPDATE conversations SET slug = ? WHERE id = ?", ((slug or "").strip() or None, cid))
+        self.conn.commit()
+
+    def get_conv_by_slug(self, slug):
+        """Most recent conversation with this slug (exact, case-insensitive)."""
+        row = self.conn.execute(
+            "SELECT * FROM conversations WHERE slug = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1",
+            ((slug or "").strip(),)).fetchone()
+        return row
+
+    def last_conv_in_cwd(self, cwd, limit=50):
+        """Most recently updated conversation started in this cwd (NULL cwd
+        rows are legacy and ignored -- they have no project anchor)."""
+        row = self.conn.execute(
+            "SELECT * FROM conversations WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1", (cwd,)).fetchone()
+        return row
 
     def save_msg(self, cid, role, content, model="", tokens=0):
         self.conn.execute("INSERT INTO messages (conversation_id, role, content, model, tokens) VALUES (?,?,?,?,?)", (cid, role, content, model, tokens))

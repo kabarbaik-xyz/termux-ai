@@ -238,20 +238,52 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.db.set_pinned(self.cid, 0)
         self.success("Removed session bookmark (chat kept).")
 
+    def _cmd_session(self, args):
+        """/session <name>   — name/tag the current session (resumable via ai -S <name>)
+        /session off      — clear the current session's tag
+        /session          — show the current session's tag and cwd"""
+        if not self.cid:
+            self.warn("No active session yet — send a message first."); return
+        conv = self.db.get_conv(self.cid)
+        if not args:
+            slug = (conv["slug"] or "(none)") if "slug" in conv.keys() else "(none)"
+            cwd = (conv["cwd"] or "(unknown)") if "cwd" in conv.keys() else "(unknown)"
+            self.info(f"Session {self.cid}: tag={slug} | project={cwd} | {len(self.db.get_msgs(self.cid))} messages")
+            return
+        sub = args[0].lower()
+        if sub == "off":
+            self.db.set_conv_slug(self.cid, "")
+            self.success("Session tag cleared."); return
+        nm = args[0]
+        other = self.db.get_conv_by_slug(nm)
+        if other and other["id"] != self.cid:
+            self.warn(f"Tag '{nm}' already used by session {other['id']} ({other['title']}).")
+            self.info("  /session <different-name>, or load that one with /load {}".format(other["id"]))
+            return
+        self.db.set_conv_slug(self.cid, nm)
+        self.success(f"Tagged this session as '{nm}'. Resume later with: ai -S {nm}")
+
     def _cmd_sessions(self, args):
         rows = self.db.list_sessions(limit=50)
         if not rows:
             self.info("No sessions yet. Send a message to start one.")
             return
-        print(f"{C.BOLD}Saved & recent sessions (● = pinned):{C.RESET}")
+        print(f"{C.BOLD}Saved & recent sessions (● = pinned, #name = resumable via ai -S name):{C.RESET}")
         for r in rows:
             pin = f"{C.GREEN}●{C.RESET}" if r["pinned"] else " "
             title = (r["title"] or "(untitled)").strip()
-            if len(title) > 42: title = title[:39] + "..."
+            if len(title) > 34: title = title[:31] + "..."
             model = (r["model"] or "").strip()
             model_s = f" [{model}]" if model else ""
             ago = self._ago(r["updated_at"])
-            print(f" {pin} {C.BOLD}{r['id']}{C.RESET}. {title} {C.DIM}({r['msg_count']} msg, last {ago}{model_s}){C.RESET}")
+            extras = []
+            keys = r.keys() if hasattr(r, "keys") else []
+            if "slug" in keys and r["slug"]:
+                extras.append(f"{C.CYAN}#{r['slug']}{C.RESET}")
+            if "cwd" in keys and r["cwd"]:
+                extras.append(f"{C.DIM}{os.path.basename(r['cwd'].rstrip('/')) or r['cwd']}{C.RESET}")
+            tail = (" " + " ".join(extras)) if extras else ""
+            print(f" {pin} {C.BOLD}{r['id']}{C.RESET}. {title}{tail} {C.DIM}({r['msg_count']} msg, last {ago}{model_s}){C.RESET}")
 
     def _cmd_continue(self, args):
         cid = self._get_last_cid()
@@ -269,14 +301,16 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             conv = self.db.get_conv(cid)
             if not conv: self.err("Chat not found."); return
         else:
-            results = self.db.search_convs(arg)
-            if not results:
-                self.err(f"No session matching \"{arg}\"."); return
-            cid = results[0]["id"]
-            conv = self.db.get_conv(cid)
-        self.cid = cid
-        self._persist_session()
-        self.success(f"Loaded chat: {conv['title']}")
+            conv = self.db.get_conv_by_slug(arg)          # exact tag match first
+            if conv:
+                cid = conv["id"]
+            else:
+                results = self.db.search_convs(arg)
+                if not results:
+                    self.err(f"No session matching \"{arg}\"."); return
+                cid = results[0]["id"]
+                conv = self.db.get_conv(cid)
+        self._activate(cid, banner=True)
 
     def _cmd_delete(self, args):
         if not args: self.warn("Usage: /delete <id>"); return

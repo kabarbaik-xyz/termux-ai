@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -275,7 +275,7 @@ class App:
         
         cats = {
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
-            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
+            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
@@ -575,11 +575,45 @@ class App:
         if d < 86400: return f"{int(d // 3600)}h ago"
         return f"{int(d // 86400)}d ago"
 
+    def _restore_session_context(self, conv):
+        """Restore a resumed session's working set: Build/Plan mode + active
+        skills are re-applied so the session continues with the tools it started
+        with (config is NOT persisted -- current-session only). A cwd mismatch
+        warns with the fix instead of silently answering in the wrong tree."""
+        if not conv:
+            return
+        keys = conv.keys() if hasattr(conv, "keys") else []
+        if "tools_mode" in keys and conv["tools_mode"] is not None:
+            want = bool(conv["tools_mode"])
+            if want != bool(self.cfg.get("tools_enabled", False)):
+                self.cfg.set("tools_enabled", want, save=False)
+                mode = "Build" if want else "Plan"
+                if not self.quiet:
+                    print(f"{C.DIM}[Session tools mode restored: {mode}]{C.RESET}")
+        if "skills_json" in keys and conv["skills_json"]:
+            try:
+                names = json.loads(conv["skills_json"]) or []
+            except Exception:
+                names = []
+            restored = []
+            for n in names:
+                _meta, body = self.skills.load(n)
+                if body:
+                    self.active_session_skills.append((n, body))
+                    restored.append(n)
+            if restored and not self.quiet:
+                print(f"{C.DIM}[Session skills restored: {', '.join(restored)}]{C.RESET}")
+        if "cwd" in keys and conv["cwd"] and conv["cwd"] != os.getcwd() and not self.quiet:
+            print(f"{C.YELLOW}[!] Session was started in {conv['cwd']}{C.RESET}")
+            print(f"    {C.DIM}You're in {os.getcwd()}. Run `cd {conv['cwd']}` for its files, "
+                  f"or continue here (paths in history refer to the old dir).{C.RESET}")
+
     def _activate(self, cid, banner=False):
         self.cid = cid
         self._persist_session()
+        conv = self.db.get_conv(cid) or {}
+        self._restore_session_context(conv)
         if banner and not self.quiet:
-            conv = self.db.get_conv(cid)
             if conv:
                 n = len(self.db.get_msgs(cid))
                 ago = self._ago(conv["updated_at"])
@@ -591,7 +625,9 @@ class App:
                     tail = f" \u2014 was {prev}"
                 else:
                     tail = ""
-                print(f"{C.DIM}[Resumed: \"{conv['title']}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
+                slug = (conv["slug"] or "") if "slug" in conv.keys() else ""
+                name = f"{slug or conv['title']}"
+                print(f"{C.DIM}[Resumed: \"{name}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
             ck = self.db.get_resume_state(cid)
             if ck:
                 steps = self._count_tool_steps(ck)
@@ -610,9 +646,35 @@ class App:
             return
         if mode == "new":
             self.cid = None; self._clear_last_cid(); return
+        if mode == "session":
+            # create-or-resume by NAME (ai -S webproject): exact slug match ->
+            # resume it (restoring its tools/skills context); no match -> start
+            # a fresh session tagged with the slug so the next -S finds it.
+            nm = (self._resume_arg or "").strip()
+            conv = self.db.get_conv_by_slug(nm) if nm else None
+            if conv:
+                self._activate(conv["id"], banner=True)
+                self.db.set_conv_slug(conv["id"], nm)   # refresh casing if changed
+            else:
+                cid = self.db.new_conv(nm or "New Chat",
+                                       self.backend.profile.get("model", "") if self.backend else "",
+                                       self.cfg.get("backend", ""),
+                                       cwd=os.getcwd(),
+                                       tools_mode=bool(self.cfg.get("tools_enabled", False)),
+                                       skills=[n for n, _ in self.active_session_skills] or None)
+                self.db.set_conv_slug(cid, nm)
+                self._activate(cid, banner=False)
+                if not self.quiet:
+                    print(f"{C.DIM}[New named session: {nm}]{C.RESET}")
+            return
         resume = (mode == "continue") or (mode == "auto" and self.cfg.get("auto_resume", True))
         if not resume: return
-        cid = self._get_last_cid()
+        # Project-scoped: prefer the last session started in THIS cwd, then the
+        # global last. Sessions behave per-project (resume in repo A won't grab
+        # repo B's chat) without any new commands.
+        here = os.getcwd()
+        cand = self.db.last_conv_in_cwd(here)
+        cid = cand["id"] if cand else self._get_last_cid()
         if cid and self.db.get_conv(cid):
             self._activate(cid, banner=True)
         elif cid:
@@ -816,7 +878,14 @@ class App:
         title_src = title or user_input
         user_input = self._attach_files(user_input)
         if not self.cid:
-            self.cid = self.db.new_conv("New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""))
+            # Capture the session's working set ONCE at creation: project dir,
+            # Build/Plan mode, active skills. Resume restores them so a session
+            # continues with the tools it started with.
+            self.cid = self.db.new_conv(
+                "New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""),
+                cwd=os.getcwd(),
+                tools_mode=bool(self.cfg.get("tools_enabled", False)),
+                skills=[n for n, _ in self.active_session_skills] or None)
             first_line = title_src.strip().splitlines()[0] if title_src.strip() else "New Chat"
             self.db.rename_conv(self.cid, first_line[:30] + ("..." if len(first_line) > 30 else ""))
 
@@ -1076,7 +1145,7 @@ class App:
 
     _CMD_DISPATCH = {
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
-        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
+        "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/session": "_cmd_session", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
         "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model", "/models": "_cmd_models",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",

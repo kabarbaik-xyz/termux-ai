@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.2.9-green)
+![version](https://img.shields.io/badge/version-7.3.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -344,7 +344,10 @@ history earlier. The resume banner also flags a model change:
 - `/history` — list all chats
 - `/prune [days]` — delete old unpinned chats (or set `prune_days` in config to auto-prune on startup; 0 = off)
 - `/import <file>` — restore a session from an `/export` backup
-- `ai --continue` / `ai --new` / `ai -l <id>` — same, at launch
+- `ai -C` / `ai --continue` / `ai --new` / `ai -l <id>` — same, at launch (`-C` short alias)
+- **Named sessions** — `ai -S <name>` creates-or-resumes a tagged session (e.g. `ai -S webproject`): first run starts a new session tagged `webproject`, the next `ai -S webproject` resumes exactly it. Tag the current session with `/session <name>` (or `/session off` to clear); `/sessions` shows `#tags`. `/load <tag>` loads by tag first.
+- **Project-scoped resume** — `--continue`/auto-resume prefers the last session **started in the current directory**, so resuming in repo A never grabs repo B's chat.
+- **Session working set** — each session remembers the directory it started in, the Build/Plan mode, and the active skills; resuming re-applies them (`[Session tools mode restored: Build]`, `[Session skills restored: …]`). If you resume from a different directory, you get a one-line `cd <path>` hint instead of wrong-tree answers.
 - `ai <prompt>` one-shot calls are unaffected (never auto-resume)
 
 ### Resilience & context

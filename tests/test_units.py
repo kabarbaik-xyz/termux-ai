@@ -517,6 +517,99 @@ class TestProjectContext(_TmpHome):
         self.assertIn("Project context", captured["sysp"])
 
 
+class TestProjectSessions(_TmpHome):
+    """Sessions remember where they lived: cwd + tools_mode + skills captured at
+    creation, restored on resume; project-scoped auto-resume prefers this cwd;
+    named sessions via ai -S / /session."""
+
+    def test_capture_and_restore_working_set(self):
+        app = m.App(); app.quiet = True
+        app.cfg.set("tools_enabled", True, save=False)
+        app.active_session_skills.append(("python", "skill body"))
+        def fake_cwt(msgs, confirm_batch_fn=None, continue_fn=None):
+            yield {"type": "text", "content": "ok"}
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake_cwt):
+            app._chat("build me a thing")          # creates the session
+        conv = app.db.get_conv(app.cid)
+        self.assertEqual(conv["cwd"], os.getcwd())
+        self.assertEqual(conv["tools_mode"], 1)
+        self.assertEqual(json.loads(conv["skills_json"]), ["python"])
+        # resume into a FRESH app with different config -> working set restored
+        app2 = m.App(); app2.quiet = True
+        app2.cfg.set("tools_enabled", False, save=False)
+        self.assertFalse(app2.cfg.get("tools_enabled"))
+        app2._activate(app.cid, banner=False)
+        self.assertTrue(app2.cfg.get("tools_enabled"))            # Build restored
+        self.assertIn("python", {n for n, _ in app2.active_session_skills})
+
+    def test_cwd_mismatch_warns(self):
+        app = m.App(); app.quiet = True
+        def fake_cwt(msgs, confirm_batch_fn=None, continue_fn=None):
+            yield {"type": "text", "content": "ok"}
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake_cwt):
+            app._chat("hello")
+        conv = app.db.get_conv(app.cid)
+        # fake a different origin dir
+        app.db.conn.execute("UPDATE conversations SET cwd = ? WHERE id = ?", ("/somewhere/else", app.cid))
+        app.db.conn.commit()
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app2 = m.App(); app2.quiet = False
+            app2._activate(app.cid, banner=False)   # quiet=False but mismatch warns
+        finally:
+            sys.stdout = old
+        self.assertIn("cd /somewhere/else", buf.getvalue())
+
+    def test_project_scoped_auto_resume(self):
+        app = m.App(); app.quiet = True
+        def fake_cwt(msgs, confirm_batch_fn=None, continue_fn=None):
+            yield {"type": "text", "content": "ok"}
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake_cwt):
+            app._chat("session in cwd X")
+        cid_here = app.cid
+        # another session anchored to a DIFFERENT cwd, more recent
+        other = app.db.new_conv("other project", "m", "b", cwd="/other/project")
+        app.db.save_msg(other, "user", "hi", "m", 1)   # bumps updated_at
+        app.db.set_last(other) if hasattr(app.db, "set_last") else None
+        # auto-resume HERE must pick the session whose cwd matches, not global-last
+        app2 = m.App(); app2.quiet = True
+        app2._maybe_resume()
+        self.assertEqual(app2.cid, cid_here)
+
+    def test_named_session_create_or_resume(self):
+        app = m.App(); app.quiet = True
+        app._resume_mode = "session"; app._resume_arg = "webproject"
+        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        try:
+            app._maybe_resume()          # no slug yet -> creates + tags
+        finally:
+            sys.stdout = old
+        cid = app.cid
+        self.assertIsNotNone(cid)
+        self.assertEqual(app.db.get_conv(cid)["slug"], "webproject")
+        # second launch with the same name -> RESUMES it
+        app2 = m.App(); app2.quiet = True
+        app2._resume_mode = "session"; app2._resume_arg = "WEBPROJECT"   # case-insensitive
+        app2._maybe_resume()
+        self.assertEqual(app2.cid, cid)
+        # /session tag management
+        app3 = m.App(); app3.quiet = True
+        app3._activate(cid, banner=False)
+        app3._execute_command("/session api-refactor")
+        self.assertEqual(app3.db.get_conv(cid)["slug"], "api-refactor")
+
+    def test_load_by_slug(self):
+        app = m.App(); app.quiet = True
+        def fake_cwt(msgs, confirm_batch_fn=None, continue_fn=None):
+            yield {"type": "text", "content": "ok"}
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake_cwt):
+            app._chat("tag me")
+        app.db.set_conv_slug(app.cid, "deepwork")
+        app2 = m.App(); app2.quiet = True
+        app2._execute_command("/load deepwork")   # slug exact match, no FTS ambiguity
+        self.assertEqual(app2.cid, app.cid)
+
+
 class TestSkillSuggest(_TmpHome):
     """One-line skill hints: fires on distinctive trigger words, silent for
     generic chat, never when a session skill is active, and configurable off."""
