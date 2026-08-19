@@ -508,8 +508,17 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
 
     def _cmd_paste(self, args):
         text = TermuxAPI.paste()
-        if text: self._chat(text)
-        else: self.warn("Clipboard empty.")
+        if not text:
+            self.warn("Clipboard empty."); return
+        raw = "--raw" in args or "raw" in (a.lower() for a in args)
+        if getattr(self, "quiet", False) or raw or not (IS_TTY and sys.stdin.isatty()):
+            self._chat(text)   # piped / explicit raw: send verbatim, no preview
+            return
+        out = self._cmd_paste_preview(text)
+        if out:
+            self._chat(out)
+        else:
+            self.info("Paste cancelled.")
 
     def _cmd_speak(self, args):
         if self.last_reply: TermuxAPI.speak(self.last_reply)

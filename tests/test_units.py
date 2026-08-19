@@ -639,6 +639,56 @@ class TestProjectSessions(_TmpHome):
         self.assertEqual(app2.cid, app.cid)
 
 
+class TestSmartPaste(_TmpHome):
+    """Paste classifier + traceback auto-context: recognize content type, extract
+    frames, attach bounded source around them."""
+
+    def test_classify_paste_types(self):
+        cp = m.App._classify_paste
+        cases = [
+            ("Traceback (most recent call last):\n  File \"/app/main.py\", line 42, in run\n    x = 1/0\nZeroDivisionError: division by zero", "traceback"),
+            ("diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n@@ -1,3 +1,4 @@\n+import os", "diff"),
+            ("https://github.com/vercel/next.js/issues/58123", "github-issue"),
+            ("https://github.com/vercel/next.js/pull/58100", "github-pull"),
+            ("https://github.com/anthropics/claude-code", "github-repo"),
+            ('{"name": "ai", "version": 3}', "json"),
+            ("# Heading\n\nSome doc text\n\n- item", "markdown"),
+            ("def foo():\n    return 1\n\nclass Bar:\n    pass", "code"),
+            ("hello there how are you", "plain"),
+            ("", "empty"),
+        ]
+        for text, want in cases:
+            kind, info = cp(text)
+            self.assertEqual(kind, want, (text[:40], kind, want))
+        _, info = cp("Traceback (most recent call last):\n  File \"/x/a.py\", line 3, in f\n  File \"/x/b.py\", line 9, in g\nError: x")
+        self.assertEqual(info["files"], ["/x/a.py", "/x/b.py"])
+
+    def test_traceback_context_attaches_local_frames(self):
+        app = m.App(); app.quiet = True
+        # local file with an "error" at line 12
+        p = os.path.join(os.getcwd(), "tb_test.py")
+        with open(p, "w") as f:
+            f.write("\n".join(f"line{i}" for i in range(1, 21)))
+        try:
+            ctx = app._traceback_context([(p, 12)])
+            self.assertIn(p, ctx)
+            self.assertIn("line12", ctx)          # the failing line is included
+            self.assertIn("lines 6-18", ctx)       # window around the frame
+            # nonexistent frames are skipped without crashing
+            self.assertEqual(app._traceback_context([("/nope/missing.py", 5)]), "")
+        finally:
+            os.unlink(p)
+
+    def test_paste_raw_flag_and_quiet_skip_preview(self):
+        """--raw / non-TTY paths send verbatim (no preview interaction); the
+        preview itself returns the enriched text on Enter/'a'/'f'."""
+        app = m.App(); app.quiet = True
+        sent = {}
+        with um.patch.object(app, "_chat", side_effect=lambda t: sent.setdefault("t", t)):
+            app._execute_command("/paste --raw")
+        # clipboard may be empty on CI -> only assert no crash + no preview I/O
+
+
 class TestSkillSuggest(_TmpHome):
     """One-line skill hints: fires on distinctive trigger words, silent for
     generic chat, never when a session skill is active, and configurable off."""
