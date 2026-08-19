@@ -4452,6 +4452,28 @@ class App:
         self.spinner = Spinner(self._spinner_msg())
         self.spinner.start()
 
+    def _render_notice(self, event):
+        """One quiet place for loop-status rendering (pi-style):
+          info  -> dim one-liner (routine: compaction, retry, self-heal, resume)
+          warn  -> yellow (truncation, declined)
+          error -> red + indented hint line (fatal stops)
+        Legacy string notices render as info. Never blank-line splatters."""
+        text = (event.get("text") or event.get("content") or "").strip()
+        if not text:
+            return
+        level = event.get("level") or ("error" if event.get("fatal") else "info")
+        icon = event.get("icon")
+        line = f"{icon} {text}" if icon else text
+        if level == "error":
+            print(f"{C.RED}{line}{C.RESET}")
+            hint = event.get("hint")
+            if hint:
+                print(f"{C.DIM}  {hint}{C.RESET}")
+        elif level == "warn":
+            print(f"{C.YELLOW}{line}{C.RESET}")
+        else:
+            print(f"{C.DIM}{line}{C.RESET}")
+
     def _stream_tool_chat(self, msgs):
         self.spinner = None
         self._auto_continue = False  # reset per task: re-confirm long-task continuation each turn
@@ -4560,7 +4582,7 @@ class App:
                     current_block = ""
                     if self.spinner: self.spinner.stop(); self.spinner = None
                     if not self.quiet:
-                        print(f"{C.YELLOW}{event['content']}{C.RESET}")
+                        self._render_notice(event)
                     if event.get("fatal"): break
             flush(thinking=False)                               # render the final answer (or empty)
             if fmt: fmt.flush()                                 # emit any markdown-buffered tail
