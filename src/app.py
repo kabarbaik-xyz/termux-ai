@@ -729,7 +729,7 @@ class App:
         notice + short window first so the user can Ctrl+C to abort."""
         n = self._count_tool_steps(pending)
         if not self.quiet:
-            print(f"{C.YELLOW}[\u26a0 Interrupted after {n} tool step{'s' if n != 1 else ''} (connection dropped). Auto-resuming in 2s \u2014 press Ctrl+C to skip...]{C.RESET}")
+            print(f"{C.DIM}\u21bb connection dropped after {n} tool step{'s' if n != 1 else ''} \u00b7 resuming in 2s (Ctrl+C to skip){C.RESET}")
             try:
                 time.sleep(2.0)
             except KeyboardInterrupt:

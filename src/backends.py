@@ -196,9 +196,9 @@ class LoopGuard:
         iteration ceiling is hit, else None."""
         self.iterations += 1
         if self.iterations > self.iteration_cap:
-            return ("[Stopped: reached the iteration limit (%d). In a live session, approve the 'continue?' "
-                    "prompt to keep a long task going; /config set max_iterations N raises the unattended ceiling.]"
-                    % self.iteration_cap)
+            return {"level": "error", "icon": "\u2716",
+                    "text": f"iteration limit reached ({self.iteration_cap})",
+                    "hint": "/retry to continue \u00b7 /config set max_iterations N to raise the ceiling"}
         return None
 
     def note_calls(self, n):
@@ -213,14 +213,15 @@ class LoopGuard:
         else:
             self.stuck_streak += 1
             if self.stuck_streak >= self.STUCK_LIMIT:
-                return ("[Stopped: the last %d rounds were all repeats of work already done \u2014 no new progress. "
-                        "/retry or rephrase the task.]" % self.STUCK_LIMIT), None
+                return {"level": "error", "icon": "\u2716",
+                        "text": f"{self.STUCK_LIMIT} rounds with no new progress (repeated work)",
+                        "hint": "/retry or rephrase the task"}, None
         if failed_names:
             self.consecutive_failures += 1
             if self.consecutive_failures >= self.MAX_FAILURES:
-                return ("[Stopped after %d consecutive failed action round(s). Last failure(s): %s. I\u2019m stuck \u2014 "
-                        "please rephrase the task, enable Build mode (/tools on), or add detail.]"
-                        % (self.consecutive_failures, ", ".join(failed_names))), None
+                return {"level": "error", "icon": "\u2716",
+                        "text": f"{self.consecutive_failures} failed rounds in a row: {', '.join(failed_names[:3])}",
+                        "hint": "rephrase the task \u00b7 /tools on enables Build mode \u00b7 add detail"}, None
             return None, ("REFLECT: your last action(s) failed \u2014 %s. Before the next step, state out loud what you "
                           "will do DIFFERENTLY. Do not retry the same approach or any blocked/interpreter/redirect command."
                           % ", ".join(failed_names))
@@ -570,8 +571,7 @@ class Backend:
                     notify(attempt, attempts, delay)
                 else:
                     reason = str(e).split(":")[0][:50].strip() or "transient error"
-                    sys.stderr.write(
-                        f"\n[retry {attempt}/{attempts} in {delay:.0f}s \u2014 {reason}]\n")
+                    sys.stderr.write(f"\u21bb retry {attempt}/{attempts} in {delay:.0f}s \u00b7 {reason}\n")
                     sys.stderr.flush()
                 time.sleep(delay)
 
@@ -1148,12 +1148,12 @@ class OpenAICompatible(Backend):
         while True:
             _stop = guard.begin_iteration()
             if _stop:
-                yield {"type": "notice", "content": _stop, "fatal": True}
+                yield {"type": "notice", **_stop, "fatal": True}
                 return
 
             compacted = self._compact_iteration_history(msgs)
             if compacted:
-                yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
+                yield {"type": "notice", "level": "info", "icon": "\u23f3", "text": f"context compacted \u00b7 {compacted} old results \u2192 summary", "fatal": False}
             # Deterministic tool-selection gate: small local chat models get NO
             # tools for casual chat (else they loop tool calls for minutes on a
             # slow phone), web-only tools for knowledge questions, and the full
@@ -1214,7 +1214,7 @@ class OpenAICompatible(Backend):
                     msgs.append({"role": "system", "content":
                                  "Correction: tools ARE available for this request. If the task "
                                  "needs files, commands, or the web, call the appropriate tool now."})
-                    yield {"type": "notice", "content": "\n[tools re-offered: the answer indicated tools were needed]", "fatal": False}
+                    yield {"type": "notice", "level": "info", "icon": "\u21bb", "text": "retrying with tools available", "fatal": False}
                     continue
                 return
 
@@ -1231,7 +1231,7 @@ class OpenAICompatible(Backend):
                         "write_file(append=true). Keep each call well under the output limit.")
                 for c in calls:
                     msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": note})
-                yield {"type": "notice", "content": "\n[Output hit the token limit mid-tool-call - asked the AI to split the write into smaller pieces (write_file + append).]", "fatal": False}
+                yield {"type": "notice", "level": "warn", "icon": "\u26a0", "text": "output hit the token limit \u00b7 asking the model to split the write", "fatal": False}
                 continue
 
             guard.note_calls(len(calls))
@@ -1247,7 +1247,7 @@ class OpenAICompatible(Backend):
                 msgs.append(self._asst_msg(content_buf, calls, reasoning_buf))
                 for c in calls:
                     msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": "Error: User declined to execute this batch."})
-                yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
+                yield {"type": "notice", "level": "warn", "icon": "\u2716", "text": "batch declined \u2014 trying a different approach", "fatal": False}
                 continue
 
             msg = self._asst_msg(content_buf, calls, reasoning_buf)
@@ -1274,7 +1274,7 @@ class OpenAICompatible(Backend):
             failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
-                yield {"type": "notice", "content": _stop, "fatal": True}
+                yield {"type": "notice", **_stop, "fatal": True}
                 return
             if _reflect:
                 msgs.append({"role": "system", "content": _reflect})
@@ -1282,13 +1282,15 @@ class OpenAICompatible(Backend):
             read_streak, phase_nudged, nudge = self._phase_nudge(
                 [n for n, _ in batch_results], read_streak, phase_nudged, GATHER_N)
             if nudge:
-                msgs.append({"role": "system", "content": nudge})
-                yield {"type": "notice", "content": "\n" + nudge, "fatal": False}
+                msgs.append({"role": "system", "content": nudge})   # full coaching -> the MODEL
+                _short = ("answer from what you have" if "still only probing the web" in nudge
+                          else "batch the reads, then act")
+                yield {"type": "notice", "level": "info", "icon": "\u21bb", "text": f"coaching: {_short}", "fatal": False}
 
             # Periodic \u201ccontinue?\u201d checkpoint (LoopGuard extends the ceiling
             # only on approval; unattended runs stay capped).
             if guard.checkpoint() == "stop":
-                yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
+                yield {"type": "notice", "level": "warn", "icon": "\u2716", "text": "stopped by user", "fatal": False}
                 return
 
 class AnthropicBackend(Backend):
@@ -1344,12 +1346,12 @@ class AnthropicBackend(Backend):
         while True:
             _stop = guard.begin_iteration()
             if _stop:
-                yield {"type": "notice", "content": _stop, "fatal": True}
+                yield {"type": "notice", **_stop, "fatal": True}
                 return
 
             compacted = self._compact_iteration_history(payload)
             if compacted:
-                yield {"type": "notice", "content": f"[context: compacted {compacted} old tool result(s) into a summary to free space]", "fatal": False}
+                yield {"type": "notice", "level": "info", "icon": "\u23f3", "text": f"context compacted \u00b7 {compacted} old results \u2192 summary", "fatal": False}
             thinking_on = bool(self._eff("extended_thinking", False))
             d = {"model": self._model(), "messages": payload, "tools": Tools.to_anthropic_schema(build_mode), "stream": True}
             if thinking_on:
@@ -1423,7 +1425,7 @@ class AnthropicBackend(Backend):
                     results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": note})
                 payload.append({"role": "assistant", "content": blocks})
                 payload.append({"role": "user", "content": results})
-                yield {"type": "notice", "content": "\n[Output hit the token limit mid-tool-call - asked the AI to split the write into smaller pieces (write_file + append).]", "fatal": False}
+                yield {"type": "notice", "level": "warn", "icon": "\u26a0", "text": "output hit the token limit \u00b7 asking the model to split the write", "fatal": False}
                 continue
 
             guard.note_calls(len(tool_uses))
@@ -1438,7 +1440,7 @@ class AnthropicBackend(Backend):
                     results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": "Error: User declined to execute this batch."})
                 payload.append({"role": "assistant", "content": blocks})
                 payload.append({"role": "user", "content": results})
-                yield {"type": "notice", "content": "\n[User declined the proposed actions. Please try a different approach.]", "fatal": False}
+                yield {"type": "notice", "level": "warn", "icon": "\u2716", "text": "batch declined \u2014 trying a different approach", "fatal": False}
                 continue
 
             payload.append({"role": "assistant", "content": blocks})
@@ -1462,7 +1464,7 @@ class AnthropicBackend(Backend):
             failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
-                yield {"type": "notice", "content": _stop, "fatal": True}
+                yield {"type": "notice", **_stop, "fatal": True}
                 return
             if _reflect:
                 sys_prompt = ((sys_prompt + "\n\n") if sys_prompt else "") + _reflect
@@ -1470,13 +1472,15 @@ class AnthropicBackend(Backend):
             read_streak, phase_nudged, nudge = self._phase_nudge(
                 [n for n, _ in batch_results], read_streak, phase_nudged, GATHER_N)
             if nudge:
-                payload.append({"role": "user", "content": nudge})
-                yield {"type": "notice", "content": "\n" + nudge, "fatal": False}
+                payload.append({"role": "user", "content": nudge})  # full coaching -> the MODEL
+                _short = ("answer from what you have" if "still only probing the web" in nudge
+                          else "batch the reads, then act")
+                yield {"type": "notice", "level": "info", "icon": "\u21bb", "text": f"coaching: {_short}", "fatal": False}
 
             # Periodic \u201ccontinue?\u201d checkpoint (LoopGuard extends the ceiling
             # only on approval; unattended runs stay capped).
             if guard.checkpoint() == "stop":
-                yield {"type": "notice", "content": "[Stopped by user.]", "fatal": False}
+                yield {"type": "notice", "level": "warn", "icon": "\u2716", "text": "stopped by user", "fatal": False}
                 return
 
 def get_backend(cfg):

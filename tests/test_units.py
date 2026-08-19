@@ -2011,7 +2011,7 @@ class TestBackendResilience(_TmpHome):
              um.patch.object(m.Tools, "run_checked", side_effect=lambda name, args, bm, mr: (True, "ok")):
             evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
         notices = [e for e in evts if e["type"] == "notice"]
-        self.assertTrue(any("Context phase" in e["content"] for e in notices))
+        self.assertTrue(any("coaching" in e.get("text", e.get("content", "")) for e in notices))
         # the nudge is visible to the model in the WRITE request (4th request)
         write_req_msgs = [mm for n, mm in seen if n == 3][0]
         self.assertTrue(any(mm.get("role") == "system" and "Context phase" in mm["content"] for mm in write_req_msgs))
@@ -2629,14 +2629,18 @@ class TestBackendResilience(_TmpHome):
         # ceiling: begin_iteration passes up to max_iterations (default 50)
         for _ in range(50):
             self.assertIsNone(g.begin_iteration())
-        self.assertIn("iteration limit", g.begin_iteration() or "")
+        _stop = g.begin_iteration()
+        self.assertEqual(_stop["level"], "error")
+        self.assertIn("iteration limit", _stop["text"])
+        self.assertIn("/retry", _stop["hint"])
         # stuck: 4 repeats tolerate, the 5th stops
         g2 = m.LoopGuard({}, None)
         for i in range(4):
             stop, reflect = g2.note_results(any_productive=False, failed_names=[])
             self.assertIsNone(stop)
         stop, reflect = g2.note_results(any_productive=False, failed_names=[])
-        self.assertIn("no new progress", stop)
+        self.assertEqual(stop["level"], "error")
+        self.assertIn("no new progress", stop["text"])
         # failure streak: 2 reflects, the 3rd stops; success resets
         g3 = m.LoopGuard({}, None)
         stop, reflect = g3.note_results(True, ["write_file"])
@@ -2644,7 +2648,9 @@ class TestBackendResilience(_TmpHome):
         stop, reflect = g3.note_results(True, ["write_file"])
         self.assertIsNone(stop)
         stop, reflect = g3.note_results(True, ["write_file"])
-        self.assertIn("consecutive failed", stop)
+        self.assertEqual(stop["level"], "error")
+        self.assertIn("failed rounds in a row", stop["text"])
+        self.assertIn("Build mode", stop["hint"])
         g4 = m.LoopGuard({}, None)
         g4.note_results(True, ["run_command"])      # one failure...
         g4.note_results(True, [])                    # ...then success resets
