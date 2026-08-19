@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/backup", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -275,7 +275,7 @@ class App:
         
         cats = {
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
-            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
+            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/backup", "Snapshot history DB"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
@@ -870,6 +870,37 @@ class App:
                 "read_file(path, start=LINE) in the same batched response.")
         return sysp
 
+    _TITLE_STRIP_RE = re.compile(
+        r"^(hey|hi|hello|halo|hai|yo|bro|bang|kak|mas|mbak|pak|bu)[,!.,\s]+"      # greetings
+        r"|^(tolong|please|coba|bisa( gak| nggak| tidak)?|bisakah|could you|can you|"
+        r"would you|i want( to)?|i need( to)?|saya mau|aku mau|bantu(in|kan)?( saya| aku)?)[\s,.]+"
+        r"|^(buatkan|buat|bikin(in|kan)?|make me|create|generate)[\s,.]+", re.IGNORECASE)
+
+    @classmethod
+    def _smart_title(cls, src):
+        """Derive a session title from the first message: strip greetings and
+        please/make-me prefixes (EN+ID), collapse whitespace, keep the first
+        task-bearing clause (split on sentence enders). Falls back to the raw
+        first line. Pure heuristic -- free, instant, no LLM call."""
+        line = (src or "").strip().splitlines()[0] if (src or "").strip() else ""
+        if not line:
+            return "New Chat"
+        t = line.strip()
+        prev = None
+        # strip repeatedly ("tolong bantu saya buatkan..." has 2-3 layers)
+        for _ in range(4):
+            if t == prev:
+                break
+            prev = t
+            t = cls._TITLE_STRIP_RE.sub("", t, count=1).strip(" ,.!:;-\t")
+        # first clause only
+        for sep in (".", "?", "!", ";", "\u2014", " | ", " -- "):
+            if sep in t:
+                t = t.split(sep, 1)[0].strip()
+                break
+        t = re.sub(r"\s+", " ", t)
+        return t or line[:40]
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -886,8 +917,8 @@ class App:
                 cwd=os.getcwd(),
                 tools_mode=bool(self.cfg.get("tools_enabled", False)),
                 skills=[n for n, _ in self.active_session_skills] or None)
-            first_line = title_src.strip().splitlines()[0] if title_src.strip() else "New Chat"
-            self.db.rename_conv(self.cid, first_line[:30] + ("..." if len(first_line) > 30 else ""))
+            first_line = self._smart_title(title_src)
+            self.db.rename_conv(self.cid, first_line[:40] + ("..." if len(first_line) > 40 else ""))
 
         model = self.backend.profile.get("model", "")
         self.db.save_msg(self.cid, "user", user_input, model, est_tok(user_input))
@@ -1146,7 +1177,7 @@ class App:
     _CMD_DISPATCH = {
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/session": "_cmd_session", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
-        "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model", "/models": "_cmd_models",
+        "/search": "_cmd_search", "/export": "_cmd_export", "/backup": "_cmd_backup", "/model": "_cmd_model", "/models": "_cmd_models",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
         "/speak": "_cmd_speak", "/share": "_cmd_share", "/expand": "_cmd_expand", "/last": "_cmd_expand", "/fold": "_cmd_fold", "/graphify": "_cmd_graphify", "/process": "_cmd_process", "/clear": "_cmd_clear",

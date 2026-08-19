@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.3.0-green)
+![version](https://img.shields.io/badge/version-7.3.1-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -342,6 +342,8 @@ history earlier. The resume banner also flags a model change:
 - `/save [name]` — bookmark the current session (rename with a name)
 - `/unsave` — un-bookmark the current chat
 - `/history` — list all chats
+- `/backup` — atomic snapshot of the full history DB into `~/.config/termux-ai/backup-<ts>.db` (`VACUUM INTO`; safe while running). Keeps the last 5. Restore by copying a snapshot over `ai_history.db` while `ai` is closed
+- `/rename auto` — AI-generated short title for the current session (falls back to the smart heuristic offline)
 - `/prune [days]` — delete old unpinned chats (or set `prune_days` in config to auto-prune on startup; 0 = off)
 - `/import <file>` — restore a session from an `/export` backup
 - `ai -C` / `ai --continue` / `ai --new` / `ai -l <id>` — same, at launch (`-C` short alias)

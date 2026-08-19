@@ -329,6 +329,29 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         for r in results:
             print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
 
+    def _cmd_backup(self, args):
+        """/backup — atomic snapshot of the FULL history DB into the config dir
+        via VACUUM INTO (one statement, safe while the app is running under WAL).
+        Keeps the last 5; older ones roll off. Restorable by copying the file
+        over ai_history.db while the app is closed."""
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        out = CONFIG_DIR / f"backup-{ts}.db"
+        try:
+            self.db.conn.execute("VACUUM INTO ?", (str(out),))
+        except Exception as e:
+            self.err(f"Backup failed: {e}"); return
+        backups = sorted(CONFIG_DIR.glob("backup-*.db"))
+        dropped = 0
+        for old in backups[:-5]:
+            try: old.unlink(); dropped += 1
+            except OSError: pass
+        kept = len(backups) - dropped
+        self.success(f"Backup written: {out.name} ({out.stat().st_size // 1024} KB)")
+        if dropped:
+            self.info(f"Removed {dropped} old backup(s); {kept} kept in {CONFIG_DIR}")
+        else:
+            self.info(f"{kept} backup(s) in {CONFIG_DIR}. Restore: copy one over ai_history.db while ai is closed.")
+
     def _cmd_export(self, args):
         if not self.cid: self.warn("No active chat to export."); return
         conv = self.db.get_conv(self.cid)
@@ -725,7 +748,31 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
 
     def _cmd_rename(self, args):
         if not self.cid: self.warn("No active chat."); return
-        if not args: self.info(f"Current title: {self.db.get_conv(self.cid)['title']}"); return
+        if not args:
+            self.info(f"Current title: {self.db.get_conv(self.cid)['title']}")
+            self.info("  /rename <title> | /rename auto  (AI-generated short title)")
+            return
+        if args[0].lower() == "auto":
+            msgs = self.db.get_msgs(self.cid, limit=6)
+            convo = " ".join((mm.get("content") or "")[:200] for mm in msgs[:6])
+            if not convo.strip():
+                self.warn("Nothing to summarize yet."); return
+            try:
+                sp = None
+                title = "".join(self._ask(
+                    "Summarize this conversation in a 2-5 word title. Reply with the title ONLY, "
+                    "no quotes, no punctuation at the end, match the conversation's language.\n\n" + convo[:1500],
+                    show=False)).strip()
+                title = title.strip('\"\'').splitlines()[0].strip()[:48] if title else ""
+            except Exception:
+                title = ""
+            if not title:
+                first_user = next((mm.get("content") or "" for mm in msgs if mm.get("role") == "user"), "")
+                title = self._smart_title(first_user) or "Chat"
+                self.info("AI title unavailable; using the smart heuristic.")
+            self.db.rename_conv(self.cid, title)
+            self.success(f"Renamed to: {title}")
+            return
         title = " ".join(args)
         self.db.rename_conv(self.cid, title)
         self.success(f"Renamed to: {title}")

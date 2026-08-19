@@ -12,7 +12,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.3.0"
+__version__ = "7.3.1"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -3785,7 +3785,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/backup", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -4052,7 +4052,7 @@ class App:
         
         cats = {
             "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
-            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
+            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/backup", "Snapshot history DB"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
             "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
             "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
             "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
@@ -4647,6 +4647,37 @@ class App:
                 "read_file(path, start=LINE) in the same batched response.")
         return sysp
 
+    _TITLE_STRIP_RE = re.compile(
+        r"^(hey|hi|hello|halo|hai|yo|bro|bang|kak|mas|mbak|pak|bu)[,!.,\s]+"      # greetings
+        r"|^(tolong|please|coba|bisa( gak| nggak| tidak)?|bisakah|could you|can you|"
+        r"would you|i want( to)?|i need( to)?|saya mau|aku mau|bantu(in|kan)?( saya| aku)?)[\s,.]+"
+        r"|^(buatkan|buat|bikin(in|kan)?|make me|create|generate)[\s,.]+", re.IGNORECASE)
+
+    @classmethod
+    def _smart_title(cls, src):
+        """Derive a session title from the first message: strip greetings and
+        please/make-me prefixes (EN+ID), collapse whitespace, keep the first
+        task-bearing clause (split on sentence enders). Falls back to the raw
+        first line. Pure heuristic -- free, instant, no LLM call."""
+        line = (src or "").strip().splitlines()[0] if (src or "").strip() else ""
+        if not line:
+            return "New Chat"
+        t = line.strip()
+        prev = None
+        # strip repeatedly ("tolong bantu saya buatkan..." has 2-3 layers)
+        for _ in range(4):
+            if t == prev:
+                break
+            prev = t
+            t = cls._TITLE_STRIP_RE.sub("", t, count=1).strip(" ,.!:;-\t")
+        # first clause only
+        for sep in (".", "?", "!", ";", "\u2014", " | ", " -- "):
+            if sep in t:
+                t = t.split(sep, 1)[0].strip()
+                break
+        t = re.sub(r"\s+", " ", t)
+        return t or line[:40]
+
     def _chat(self, user_input, title=None):
         if not self.backend:
             self.err("No backend configured. Run /setup")
@@ -4663,8 +4694,8 @@ class App:
                 cwd=os.getcwd(),
                 tools_mode=bool(self.cfg.get("tools_enabled", False)),
                 skills=[n for n, _ in self.active_session_skills] or None)
-            first_line = title_src.strip().splitlines()[0] if title_src.strip() else "New Chat"
-            self.db.rename_conv(self.cid, first_line[:30] + ("..." if len(first_line) > 30 else ""))
+            first_line = self._smart_title(title_src)
+            self.db.rename_conv(self.cid, first_line[:40] + ("..." if len(first_line) > 40 else ""))
 
         model = self.backend.profile.get("model", "")
         self.db.save_msg(self.cid, "user", user_input, model, est_tok(user_input))
@@ -4923,7 +4954,7 @@ class App:
     _CMD_DISPATCH = {
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/session": "_cmd_session", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
-        "/search": "_cmd_search", "/export": "_cmd_export", "/model": "_cmd_model", "/models": "_cmd_models",
+        "/search": "_cmd_search", "/export": "_cmd_export", "/backup": "_cmd_backup", "/model": "_cmd_model", "/models": "_cmd_models",
         "/backends": "_cmd_backends", "/backend": "_cmd_backend", "/profile": "_cmd_profile",
         "/status": "_cmd_status", "/copy": "_cmd_copy", "/paste": "_cmd_paste",
         "/speak": "_cmd_speak", "/share": "_cmd_share", "/expand": "_cmd_expand", "/last": "_cmd_expand", "/fold": "_cmd_fold", "/graphify": "_cmd_graphify", "/process": "_cmd_process", "/clear": "_cmd_clear",
@@ -5346,6 +5377,29 @@ class App:
         for r in results:
             print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
 
+    def _cmd_backup(self, args):
+        """/backup — atomic snapshot of the FULL history DB into the config dir
+        via VACUUM INTO (one statement, safe while the app is running under WAL).
+        Keeps the last 5; older ones roll off. Restorable by copying the file
+        over ai_history.db while the app is closed."""
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        out = CONFIG_DIR / f"backup-{ts}.db"
+        try:
+            self.db.conn.execute("VACUUM INTO ?", (str(out),))
+        except Exception as e:
+            self.err(f"Backup failed: {e}"); return
+        backups = sorted(CONFIG_DIR.glob("backup-*.db"))
+        dropped = 0
+        for old in backups[:-5]:
+            try: old.unlink(); dropped += 1
+            except OSError: pass
+        kept = len(backups) - dropped
+        self.success(f"Backup written: {out.name} ({out.stat().st_size // 1024} KB)")
+        if dropped:
+            self.info(f"Removed {dropped} old backup(s); {kept} kept in {CONFIG_DIR}")
+        else:
+            self.info(f"{kept} backup(s) in {CONFIG_DIR}. Restore: copy one over ai_history.db while ai is closed.")
+
     def _cmd_export(self, args):
         if not self.cid: self.warn("No active chat to export."); return
         conv = self.db.get_conv(self.cid)
@@ -5742,7 +5796,31 @@ class App:
 
     def _cmd_rename(self, args):
         if not self.cid: self.warn("No active chat."); return
-        if not args: self.info(f"Current title: {self.db.get_conv(self.cid)['title']}"); return
+        if not args:
+            self.info(f"Current title: {self.db.get_conv(self.cid)['title']}")
+            self.info("  /rename <title> | /rename auto  (AI-generated short title)")
+            return
+        if args[0].lower() == "auto":
+            msgs = self.db.get_msgs(self.cid, limit=6)
+            convo = " ".join((mm.get("content") or "")[:200] for mm in msgs[:6])
+            if not convo.strip():
+                self.warn("Nothing to summarize yet."); return
+            try:
+                sp = None
+                title = "".join(self._ask(
+                    "Summarize this conversation in a 2-5 word title. Reply with the title ONLY, "
+                    "no quotes, no punctuation at the end, match the conversation's language.\n\n" + convo[:1500],
+                    show=False)).strip()
+                title = title.strip('\"\'').splitlines()[0].strip()[:48] if title else ""
+            except Exception:
+                title = ""
+            if not title:
+                first_user = next((mm.get("content") or "" for mm in msgs if mm.get("role") == "user"), "")
+                title = self._smart_title(first_user) or "Chat"
+                self.info("AI title unavailable; using the smart heuristic.")
+            self.db.rename_conv(self.cid, title)
+            self.success(f"Renamed to: {title}")
+            return
         title = " ".join(args)
         self.db.rename_conv(self.cid, title)
         self.success(f"Renamed to: {title}")

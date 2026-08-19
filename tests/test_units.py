@@ -576,6 +576,35 @@ class TestProjectSessions(_TmpHome):
         app2._maybe_resume()
         self.assertEqual(app2.cid, cid_here)
 
+    def test_smart_titles(self):
+        """Session titles strip EN+ID pleasantries (multi-layer), take the first
+        clause, and never return empty."""
+        st = m.App._smart_title
+        self.assertIn("website", st("tolong buatkan simple website untuk toko kue").lower())
+        self.assertIn("login bug", st("hey, can you help me fix the login bug in auth.py?").lower())
+        self.assertIn("deploy", st("Halo! saya mau tanya soal deploy docker").lower())
+        self.assertEqual(st(""), "New Chat")
+        self.assertTrue(st("plain message").startswith("plain"))
+        # multi-clause: only the first clause is kept
+        t = st("buat dashboard. include charts. and filters")
+        self.assertNotIn("charts", t)
+
+    def test_backup_creates_valid_db_snapshot(self):
+        """/backup snapshots the whole history DB atomically (VACUUM INTO) into
+        the config dir, keeps the last 5, and the copy is a valid sqlite DB
+        containing the messages."""
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("backup test", "m", "b")
+        app.db.save_msg(cid, "user", "findable-needle-42", "m", 3)
+        app._execute_command("/backup")
+        files = sorted(m.CONFIG_DIR.glob("backup-*.db"))
+        self.assertTrue(files, "no backup file created")
+        import sqlite3 as _sq
+        c = _sq.connect(str(files[-1]))
+        n = c.execute("SELECT COUNT(*) FROM messages WHERE content LIKE '%findable-needle-42%'").fetchone()[0]
+        c.close()
+        self.assertGreaterEqual(n, 1)   # snapshot has the data
+
     def test_named_session_create_or_resume(self):
         app = m.App(); app.quiet = True
         app._resume_mode = "session"; app._resume_arg = "webproject"
