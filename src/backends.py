@@ -424,7 +424,7 @@ class Backend:
             raise BackendError("Request timed out.", transient=True)
 
     # Read-only, independent tools safe to run concurrently in a batch.
-    SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify"}
+    SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify", "project_info"}  # not test/git-mutations: side effects
     def _run_batch(self, items, build_mode, max_res, done_calls, coverage):
         """Execute a batch of [(name, args)] tool calls, preserving the ORIGINAL
         order in the returned [(name, result, was_new)] list. Read-only tools run

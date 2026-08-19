@@ -749,6 +749,83 @@ class TestEditFileAndGitTools(_TmpHome):
         self.assertFalse(app._confirm_batch([{"name": "git", "args": {"action": "commit", "message": "x"}}]))
         self.assertFalse(app._confirm_batch([{"name": "write_file", "args": {"path": "x", "content": "y"}}]))
 
+    def test_search_files_v2_grouping_and_filters(self):
+        d = tempfile.mkdtemp(prefix="aisrch_")
+        try:
+            open(os.path.join(d, "a.py"), "w").write("x = 1\nneedle here\nx = 2\nneedle again\n")
+            open(os.path.join(d, "b.py"), "w").write("NEEDLE upper\n")
+            open(os.path.join(d, "c.txt"), "w").write("needle in txt\n")
+            # default (case-sensitive): a.py + c.txt only; b.py is NEEDLE-upper
+            r = m.Tools.run("search_files", {"query": "needle", "path": d})
+            self.assertIn("a.py (2 matches)", r)
+            self.assertNotIn("b.py", r)
+            self.assertIn("c.txt (1 match)", r)
+            self.assertIn("[3 of 3 matches shown]", r)
+            # ignore_case picks up the upper-case one too
+            ri = m.Tools.run("search_files", {"query": "needle", "path": d, "ignore_case": True})
+            self.assertIn("b.py (1 match)", ri)
+            self.assertIn("[4 of 4 matches shown]", ri)
+            # ignore_case + max_results
+            r2 = m.Tools.run("search_files", {"query": "needle", "path": d, "max_results": 1})
+            self.assertIn("[1 of 3 matches shown]", r2)
+            # glob filter excludes txt
+            r3 = m.Tools.run("search_files", {"query": "needle", "path": d, "glob": "*.py"})
+            self.assertNotIn("c.txt", r3)
+            # regex mode
+            r4 = m.Tools.run("search_files", {"query": "needle\s+here", "path": d, "regex": True})
+            self.assertIn("a.py", r4)
+            self.assertNotIn("b.py", r4)
+            # no match message
+            self.assertEqual(m.Tools.run("search_files", {"query": "zzznope", "path": d}), "No matches")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_tool_runs_real_pytest_with_summary(self):
+        """The `test` tool detects pytest, runs it, and returns parsed counts +
+        failing test names."""
+        import importlib.util as _ilu
+        if _ilu.find_spec("pytest") is None:
+            self.skipTest("pytest not installed in this environment")
+        d = tempfile.mkdtemp(prefix="aitest_")
+        try:
+            open(os.path.join(d, "pyproject.toml"), "w").write("[tool.pytest.ini_options]\n")
+            open(os.path.join(d, "t_ok.py"), "w").write("def test_ok():\n    assert 1 == 1\n")
+            open(os.path.join(d, "t_bad.py"), "w").write("def test_broken():\n    assert 1 == 2\n")
+            old = os.getcwd(); os.chdir(d)
+            try:
+                ok, out = m.Tools.run_checked("test", {})
+            finally:
+                os.chdir(old)
+            self.assertTrue(ok)                     # a FAILING SUITE is not a tool error
+            self.assertIn("total=2 passed=1 failed=1", out)
+            self.assertIn("test_broken", out)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_tool_no_manifest_errors_cleanly(self):
+        d = tempfile.mkdtemp(prefix="ainotest_")
+        try:
+            old = os.getcwd(); os.chdir(d)
+            ok, out = m.Tools.run_checked("test", {})
+        finally:
+            os.chdir(old); shutil.rmtree(d, ignore_errors=True)
+        self.assertFalse(ok)
+        self.assertIn("no recognized test manifest", out)
+
+    def test_project_info_snapshot(self):
+        d = tempfile.mkdtemp(prefix="aipinfo_")
+        try:
+            open(os.path.join(d, "pyproject.toml"), "w").write("[project]\nname='x'\n")
+            open(os.path.join(d, "main.py"), "w").write("print('hi')\n")
+            open(os.path.join(d, "util.py"), "w").write("x=1\n")
+            r = m.Tools.run("project_info", {"path": d})
+            self.assertIn(".py (2)", r)
+            self.assertIn("pytest", r)                 # runner detected from pyproject
+            self.assertIn("main.py", r)                 # entry point found
+            self.assertIn("Files:", r)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_paste_raw_flag_and_quiet_skip_preview(self):
         """--raw / non-TTY paths send verbatim (no preview interaction); the
         preview itself returns the enriched text on Enter/'a'/'f'."""

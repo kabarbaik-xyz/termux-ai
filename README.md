@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.3.1-green)
+![version](https://img.shields.io/badge/version-7.4.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -466,7 +466,10 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 - **Web research** — `fetch_url` does an HTTP GET and returns the page as readable text (HTML stripped). The AI uses it to read/research websites directly. It refuses private/local addresses (127.0.0.1, localhost, 10.x …) as an SSRF guard unless `AI_FETCH_ALLOW_PRIVATE=1` is set; ~500 KB cap, 10s timeout. Web tools (`fetch_url`, `web_search`, `weather`) share a short-TTL cache (`AI_WEB_CACHE_TTL` seconds, default 60, `0` disables) so repeated lookups in a turn don't re-fetch.
 - **Web search** — keyless, three-source chain: Bing HTML → DuckDuckGo HTML → Wikipedia API. Each parser is pinned by frozen fixtures in CI, so a provider markup change fails loudly instead of silently degrading. `weather` is Open-Meteo (no key).
 - **GitHub repos** — for `api.github.com` calls, `fetch_url` auto-attaches `GITHUB_TOKEN`/`GH_TOKEN` (lifts the rate limit from 60→5000/hr). To **analyze a repo locally**, the AI uses `clone_repo <https-url>` (Build mode): it shallow-clones (`--depth 1`) into an isolated temp dir and returns the path, after which `read_file`/`search_files`/`list_files` work on it. HTTPS-only (blocks ssh/git@/file). Great for "summarize this repo", "find the bug in …", or "clone it and run the tests". Best with a capable model (`qwen2.5:3b`+ or cloud); a 0.5b can't manage multi-step repo tasks.
-- **CWD sandbox** — `write_file` is restricted to the current working directory for safety
+- **Structured search (`search_files`)** — regex mode, `ignore_case`, `context` lines, `glob` file filter (`*.py`), `max_results` cap; results grouped per file with match counts and a shown/total tally
+- **`test` tool** — runs the project's suite with the runner auto-detected from its manifest (pytest / npm test / cargo / go / make / composer); returns `total/passed/failed` counts plus the failing test names and first error lines, so "run tests → fix failures" loops are one call per round
+- **`project_info` tool** — one-shot project snapshot: languages, test runner, lint/format config, entry points, file counts, recent commits. The model calls it first in an unfamiliar directory instead of probing file by file
+- **CWD sandbox** — `write_file` and `edit_file` are restricted to the current working directory for safety
 - **Surgical edits (`edit_file`)** — replace an exact substring instead of rewriting whole files: far cheaper (no 300-line regen on local models) and safer. `find` must match exactly once (or `replace_all`); a miss returns a helpful "re-read and copy exactly" error, ambiguity reports the match count. Build mode only, cwd-sandboxed like `write_file`
 - **Git tool** — `git` with actions: `status` / `diff` / `log` / `show` run read-only in ANY mode (auto-approved, no shell overhead); `stage` / `commit` / `unstage` / `checkout_file` require Build mode + the normal approval prompt. Makes edit→verify→commit loops natural instead of shell round-trips
 - **Chunked writes** — `write_file` supports `append=true` so large files (e.g. a full HTML dashboard) can be built in sections. If a tool-call response is **truncated by the output token limit** (OpenAI `finish_reason=length` / Anthropic `stop_reason=max_tokens`), the AI is told it was cut off and to split the work with `write_file` + `append` — instead of failing silently with empty arguments

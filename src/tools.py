@@ -8,7 +8,7 @@ class ToolError(Exception):
         super().__init__(message)
 
 class Tools:
-    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify", "git"}  # git here = read-only views only (mutations raise in Plan; confirm-gated in Build)
+    SAFE_TOOLS = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify", "git", "test", "project_info"}  # git here = read-only views only (mutations raise in Plan; confirm-gated in Build)
     # Dirs ignored by recursive list_files and by search_files, so dependency/VCS/
     # build noise (node_modules, .git, __pycache__, dist, ...) doesn't flood the
     # AI's context when it scans a local codebase. (AI can still read_file a
@@ -23,12 +23,14 @@ class Tools:
         {"type": "function", "function": {"name": "write_file", "description": "Write content to a file. Set append=true to ADD to an existing file instead of overwriting - use this to build LARGE files in sections so no single call exceeds the output token limit.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean", "default": False}}, "required": ["path", "content"]}}},
         {"type": "function", "function": {"name": "list_files", "description": "List files in a directory. Set recursive=true to map the whole tree (auto-skips dependency/VCS/build dirs like node_modules, .git, __pycache__, dist).", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "recursive": {"type": "boolean", "default": False}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "run_command", "description": "Run a shell command and return stdout/stderr. (The exact Plan-mode allowlist is provided at call time.)", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer", "description": "Seconds to wait before killing the command (default 30, max 600). Set HIGHER for slow commands (npm install, builds, test suites) so they finish in ONE call instead of polling with sleep — each call is one agentic iteration, and polling wastes your step budget."}}, "required": ["command"]}}},
-        {"type": "function", "function": {"name": "search_files", "description": "Search text in files (uses grep)", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}}, "required": ["query"]}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search text in files (grep). regex=true treats the query as a regex; ignore_case; context=N shows N surrounding lines; glob filters files (e.g. '*.py'); max_results caps output (default 20 matches). Results are grouped per file with counts.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}, "regex": {"type": "boolean", "default": False}, "ignore_case": {"type": "boolean", "default": False}, "context": {"type": "integer", "default": 0}, "glob": {"type": "string", "description": "Only search files matching this glob, e.g. '*.ts'"}, "max_results": {"type": "integer", "default": 20}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Fetch a web page via HTTP GET and return its text content (HTML is stripped to readable text; ~500 KB cap). Use this to READ or RESEARCH a website/URL -- prefer it over curl or run_command for any http(s) URL.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "web_search", "description": "Search the web for up-to-date information (current events, weather, people, places, definitions, recent facts) and return the top results with titles, URLs, and snippets. Use this INSTEAD of guessing a URL for fetch_url when you don't know the exact page. Results come from Bing; Wikipedia is used as a fallback when Bing is unreachable.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "weather", "description": "Get current conditions and a 2-day forecast for a city or place (Open-Meteo, no API key). Use this for ANY weather question instead of searching the web or guessing URLs. Returns temperature, condition, humidity, wind, and daily high/low with rain chance.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
         {"type": "function", "function": {"name": "clone_repo", "description": "Clone a public git repo (HTTPS only) into an isolated temp dir and return the local path, so you can read/list/search/edit its files locally. BUILD MODE only. depth defaults to 1 (shallow, fast); set 0 for full history.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "depth": {"type": "integer", "default": 1}}, "required": ["url"]}}},
         {"type": "function", "function": {"name": "edit_file", "description": "Edit a file by replacing an EXACT substring with new text (surgical edits — much cheaper and safer than rewriting a whole file with write_file). `find` must match EXACTLY ONCE in the file unless replace_all=true. Returns the edited line range. For whole-file creation or large rewrites use write_file.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "find": {"type": "string", "description": "Exact text to find (include surrounding lines to make it unique)"}, "replace": {"type": "string", "description": "Replacement text"}, "replace_all": {"type": "boolean", "default": False, "description": "Replace every occurrence instead of requiring exactly one"}}, "required": ["path", "find", "replace"]}}},
+        {"type": "function", "function": {"name": "test", "description": "Run the project's test suite — auto-detects the runner from its manifest (pytest/package.json/Cargo.toml/go.mod/Makefile/composer.json). Returns a structured summary: total / passed / failed, and the failing test names + first error line each (so you can fix them one by one). Optional filter runs a subset (passed to the runner when supported).", "parameters": {"type": "object", "properties": {"filter": {"type": "string", "description": "Test name/path substring to run a subset"}}, "required": []}}},
+        {"type": "function", "function": {"name": "project_info", "description": "One-shot project snapshot: detected language(s)/framework, test runner + command, lint/format command if configured, entry points, dependency count, and repo stats. Call this FIRST when starting work in an unfamiliar directory instead of listing/probing files one by one.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "default": "."}}, "required": []}}},
         {"type": "function", "function": {"name": "git", "description": "Git repository operations without shell overhead: status (working tree state), diff (uncommitted changes), log (recent commits), show (a commit/file), stage (add files), commit (message required), unstage, checkout_file (discard changes to ONE file -- destructive). Read-only views run everywhere; mutations need Build mode and are confirmed like write_file.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["status", "diff", "log", "show", "stage", "commit", "unstage", "checkout_file"]}, "path": {"type": "string", "description": "File path for stage/unstage/checkout_file/show"}, "message": {"type": "string", "description": "Commit message (action=commit)"}, "n": {"type": "integer", "default": 10, "description": "Limit for log"}}, "required": ["action"]}}},
         {"type": "function", "function": {"name": "graphify", "description": "Scan a codebase directory and return a structured code graph: dependency graph (Mermaid), all function/class definitions, API endpoints, and data models. Call this FIRST to map the codebase structure before deep-diving into files. Zero dependencies, runs locally.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "Directory to scan (default: current dir)"}, "mode": {"type": "string", "enum": ["all", "deps", "calls", "api", "models"], "description": "all=everything, deps=import graph, calls=definitions, api=endpoints, models=data schemas"}}, "required": ["path"]}}},
     ]
@@ -274,6 +276,8 @@ class Tools:
         "clone_repo": "Clone a public git repo to a temp dir. depth=0 for full history.",
         "edit_file": "Surgical substring edit (find->replace). find must match once, or replace_all.",
         "git": "Repo ops: status/diff/log/show (read-only) + stage/commit/unstage/checkout_file (Build).",
+        "test": "Run the detected test suite; returns pass/fail counts + failing test names.",
+        "project_info": "Project snapshot: languages, runner, lint, entry points. Call first in a new dir.",
         "graphify": "Code graph (deps, defs, API, models). Call first to map a codebase.",
         # run_command keeps its full description: the Plan-mode allowlist it
         # carries is security-relevant and must reach the model verbatim.
@@ -861,6 +865,160 @@ class Tools:
         return out
 
     @staticmethod
+    def _detect_runner(path="."):
+        """(command_argv, label) for the project's test runner, or (None, reason).
+        Manifest-driven; filter support marked per runner."""
+        p = os.path.expanduser(path or ".")
+        def has(f): return os.path.isfile(os.path.join(p, f))
+        if has("pyproject.toml") or has("pytest.ini") or has("setup.py"):
+            return ["python3", "-m", "pytest", "-q"], "pytest"
+        if has("package.json"):
+            try:
+                pkg = json.loads(open(os.path.join(p, "package.json")).read())
+                scripts = (pkg.get("scripts") or {})
+                if "test" in scripts:
+                    return ["npm", "test", "--silent"], "npm test"
+            except Exception:
+                pass
+            return None, "package.json has no test script"
+        if has("Cargo.toml"):
+            return ["cargo", "test", "-q"], "cargo test"
+        if has("go.mod"):
+            return ["go", "test", "./..."], "go test"
+        if has("Makefile"):
+            return ["make", "test"], "make test"
+        if has("composer.json"):
+            return ["composer", "test"], "composer test"
+        return None, "no recognized test manifest (pyproject/package.json/Cargo.toml/go.mod/Makefile)"
+
+    @staticmethod
+    def _run_tests(filter_str="", timeout=300):
+        """Run the detected test suite and return a structured summary: counts
+        + per-failure (test name, first error line). Falls back to raw tail
+        when parsing fails."""
+        argv, label = Tools._detect_runner(".")
+        if argv is None:
+            raise ToolError(f"Error: {label}.")
+        if filter_str:
+            if label == "pytest":
+                argv = argv + ["-k", filter_str]
+            elif label in ("cargo test", "go test"):
+                argv = argv + [filter_str] if label == "go test" else argv + [filter_str]
+            elif label == "npm test":
+                argv = argv + ["--", filter_str]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True,
+                               timeout=timeout, cwd=os.getcwd())
+        except FileNotFoundError:
+            raise ToolError(f"Error: runner binary not found for {label}.")
+        except subprocess.TimeoutExpired:
+            raise ToolError(f"Error: {label} timed out after {timeout}s.")
+        out = (r.stdout or "") + ("\n" + r.stderr if (r.stderr or "").strip() else "")
+        # Parse per-runner summaries
+        import re as _re
+        total = passed = failed = None
+        fails = []
+        if label == "pytest":
+            m = _re.search(r"(\d+) passed", out)
+            f = _re.search(r"(\d+) failed", out)
+            e = _re.search(r"(\d+) error", out)
+            if m or f or e:
+                passed = int(m.group(1)) if m else 0
+                failed = (int(f.group(1)) if f else 0) + (int(e.group(1)) if e else 0)
+                total = passed + failed
+            for fm in _re.finditer(r"FAILED\s+(\S+)(?:\[[^\]]*\])?", out):
+                fails.append(fm.group(1))
+        elif label in ("cargo test", "go test"):
+            m = _re.search(r"(\d+) passed;?\s+(\d+) failed", out)
+            if m:
+                passed, failed = int(m.group(1)), int(m.group(2))
+                total = passed + failed
+            if failed:
+                for fm in _re.finditer(r"^\s*(?:test\s+)?([\w./:]+\s+---\s+FAIL|FAIL:\s+\S+)", out, _re.MULTILINE):
+                    fails.append(fm.group(1))
+        elif label == "npm test":
+            m = _re.search(r"Tests:\s*(\d+)\s+failed,?\s*(\d+)\s+passed,?\s*(\d+)\s+total", out)
+            if not m:
+                m = _re.search(r"(\d+) passing", out)
+                if m:
+                    passed = int(m.group(1))
+                    f2 = _re.search(r"(\d+) failing", out)
+                    failed = int(f2.group(1)) if f2 else 0
+                    total = passed + failed
+            else:
+                failed, passed, total = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            for fm in _re.finditer(r"(?:✕|×|FAIL)\s+(\S+)", out):
+                fails.append(fm.group(1))
+        head = f"[{label}] exit={r.returncode}"
+        if total is not None:
+            head += f" | total={total} passed={passed} failed={failed}"
+        if not fails:
+            return head + "\n" + "\n".join(out.splitlines()[-15:])
+        seen, uniq = set(), []
+        for f in fails:
+            if f not in seen:
+                seen.add(f); uniq.append(f)
+        lines = [head, "failing tests:"] + [f"  - {f}" for f in uniq[:15]]
+        # attach the first error line under each failure when present
+        tail = [ln for ln in out.splitlines() if _re.search(r"Error|assert|panic|expected", ln, _re.IGNORECASE)][:8]
+        if tail:
+            lines.append("first errors:")
+            lines += ["  " + t.strip()[:160] for t in tail]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _project_info(path="."):
+        """One-shot project snapshot: languages, runner, lint, entry points,
+        deps, stats. Cheap (manifests + file walk only)."""
+        p = os.path.expanduser(path or ".")
+        if not os.path.isdir(p):
+            raise ToolError(f"Error: '{p}' is not a directory.")
+        langs, files, total_files = {}, 0, 0
+        entry = []
+        for root, dirs, fnames in os.walk(p):
+            dirs[:] = [d for d in dirs if d not in Tools.IGNORE_DIRS and not d.startswith(".")]
+            for fn in fnames:
+                total_files += 1
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".php", ".kt", ".c", ".cpp", ".sh"):
+                    langs[ext] = langs.get(ext, 0) + 1
+                if fn in ("main.py", "app.py", "index.js", "index.ts", "main.go", "main.rs", "main.java", "server.py", "cli.py"):
+                    entry.append(os.path.relpath(os.path.join(root, fn), p))
+        def head(f, n=40):
+            try: return open(os.path.join(p, f), encoding="utf-8", errors="replace").read(n * 200)[:4000]
+            except OSError: return ""
+        lines = [f"Project: {os.path.abspath(p)}", f"Files: {total_files} (source: {sum(langs.values())}"]
+        top = sorted(langs.items(), key=lambda kv: -kv[1])[:6]
+        lines.append("Languages: " + (", ".join(f"{k} ({v})" for k, v in top) if top else "(none detected)"))
+        argv, label = Tools._detect_runner(p)
+        lines.append(f"Tests: {label if argv else label}")
+        lint = []
+        pj = head("package.json")
+        if '"eslint"' in pj or '"eslintConfig"' in pj: lint.append("eslint")
+        if '"prettier"' in pj: lint.append("prettier")
+        py = head("pyproject.toml")
+        if "ruff" in py: lint.append("ruff")
+        if "black" in py: lint.append("black")
+        if "mypy" in py: lint.append("mypy")
+        lines.append("Lint/format: " + (", ".join(lint) if lint else "(none configured)"))
+        if os.path.isdir(os.path.join(p, ".git")):
+            try:
+                r = subprocess.run(["git", "log", "--oneline", "-n", "3"], capture_output=True,
+                                   text=True, timeout=5, cwd=p)
+                if r.returncode == 0 and r.stdout.strip():
+                    lines.append("Recent commits:\n" + "\n".join("  " + l for l in r.stdout.strip().splitlines()[:3]))
+            except Exception:
+                pass
+        if entry:
+            lines.append("Entry points: " + ", ".join(entry[:6]))
+        for mf, dep_key in (("package.json", "dependencies"), ("pyproject.toml", "dependencies"), ("Cargo.toml", "[dependencies]"), ("go.mod", "require")):
+            t = head(mf)
+            if dep_key in t:
+                lines.append(f"Manifest: {mf} present")
+                break
+        return "\n".join(lines)
+
+    @staticmethod
     def _run_impl(name, args, build_mode=False):
         try:
             if name == "read_file":
@@ -1029,11 +1187,46 @@ class Tools:
             elif name == "search_files":
                 path = args.get("path", ".")
                 cmd = ["grep", "-rn"]
+                if args.get("regex"): cmd.append("-E")
+                if args.get("ignore_case"): cmd.append("-i")
+                ctx = int(args.get("context") or 0)
+                if ctx > 0: cmd += ["-C", str(min(ctx, 5))]
+                if args.get("glob"): cmd += ["--include", args["glob"]]
                 for d in Tools.IGNORE_DIRS:
                     cmd += ["--exclude-dir", d]
                 cmd += ["--", args.get("query", ""), path]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-                return "\n".join(r.stdout.splitlines()[:20]) or "No matches"
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                except subprocess.TimeoutExpired:
+                    raise ToolError("Error: search timed out — narrow the path or use a glob filter.")
+                # group by file, cap total matches, keep per-file counts
+                maxr = max(1, int(args.get("max_results") or 20))
+                lines = r.stdout.splitlines()
+                if not lines:
+                    return "No matches"
+                by_file, order, total = {}, [], 0
+                for ln in lines:
+                    fpath, _, rest = ln.partition(":")
+                    if fpath not in by_file:
+                        by_file[fpath] = []
+                        order.append(fpath)
+                    if total < maxr:
+                        by_file[fpath].append(rest)
+                        total += 1
+                out = []
+                for f in order:
+                    if not by_file[f]:
+                        continue
+                    n_all = sum(1 for ln in lines if ln.partition(":")[0] == f)
+                    more = f" (+{n_all - len(by_file[f])} more)" if n_all > len(by_file[f]) else ""
+                    out.append(f"{f} ({n_all} match{'es' if n_all != 1 else ''}{more}):")
+                    out.extend("  " + x for x in by_file[f])
+                out.append(f"[{total} of {len(lines)} matches shown]")
+                return "\n".join(out)
+            elif name == "test":
+                return Tools._run_tests(args.get("filter") or "")
+            elif name == "project_info":
+                return Tools._project_info(args.get("path", "."))
             elif name == "fetch_url":
                 return Tools._cached_web(name, args.get("url", ""), lambda: Tools._fetch_url(args.get("url", "")))
             elif name == "web_search":
