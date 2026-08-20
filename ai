@@ -619,7 +619,7 @@ class Database:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT, pinned INTEGER DEFAULT 0,
-                cwd TEXT, tools_mode INTEGER, skills_json TEXT, slug TEXT,
+                cwd TEXT, tools_mode INTEGER, skills_json TEXT, slug TEXT, workspace TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
@@ -677,6 +677,7 @@ class Database:
                 if "tools_mode" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN tools_mode INTEGER")
                 if "skills_json" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN skills_json TEXT")
                 if "slug" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN slug TEXT")
+                if "workspace" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT")
 
             msg_cols = self._table_cols("messages")
             if msg_cols:
@@ -692,13 +693,13 @@ class Database:
             self.conn.execute("ROLLBACK")
             raise e
 
-    def new_conv(self, title="New Chat", model="", backend="", cwd="", tools_mode=None, skills=None):
+    def new_conv(self, title="New Chat", model="", backend="", cwd="", tools_mode=None, skills=None, workspace=None):
         import json as _json
         cur = self.conn.execute(
-            "INSERT INTO conversations (title, model, backend, cwd, tools_mode, skills_json) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO conversations (title, model, backend, cwd, tools_mode, skills_json, workspace) VALUES (?,?,?,?,?,?,?)",
             (title, model, backend, cwd,
              1 if tools_mode else (0 if tools_mode is not None else None),
-             _json.dumps(skills) if skills else None))
+             _json.dumps(skills) if skills else None, workspace))
         self.conn.commit()
         return cur.lastrowid
 
@@ -706,12 +707,48 @@ class Database:
         self.conn.execute("UPDATE conversations SET slug = ? WHERE id = ?", ((slug or "").strip() or None, cid))
         self.conn.commit()
 
-    def get_conv_by_slug(self, slug):
-        """Most recent conversation with this slug (exact, case-insensitive)."""
+    def get_conv_by_slug(self, slug, workspace=None):
+        """Most recent conversation with this slug (exact, case-insensitive).
+        When a workspace is given, the slug only resolves WITHIN it."""
+        if workspace:
+            row = self.conn.execute(
+                "SELECT * FROM conversations WHERE slug = ? COLLATE NOCASE AND workspace = ? "
+                "ORDER BY updated_at DESC LIMIT 1", ((slug or "").strip(), workspace)).fetchone()
+            return row      # workspace-scoped miss is a MISS (no global fallback)
         row = self.conn.execute(
             "SELECT * FROM conversations WHERE slug = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1",
             ((slug or "").strip(),)).fetchone()
         return row
+
+    def backfill_workspaces(self, root_of):
+        """One-time: legacy rows have NULL workspace. Derive root-of-cwd per row
+        (root_of is a callable dir->root; falls back to the cwd itself when the
+        dir is gone). Idempotent."""
+        rows = self.conn.execute("SELECT id, cwd FROM conversations WHERE workspace IS NULL AND cwd IS NOT NULL").fetchall()
+        for r in rows:
+            try:
+                ws = root_of(r["cwd"]) or r["cwd"]
+            except Exception:
+                ws = r["cwd"]
+            self.conn.execute("UPDATE conversations SET workspace = ? WHERE id = ?", (ws, r["id"]))
+        if rows:
+            self.conn.commit()
+        return len(rows)
+
+    def last_conv_in_workspace(self, workspace, limit=50):
+        """Most recently updated conversation anchored to this workspace root."""
+        return self.conn.execute(
+            "SELECT * FROM conversations WHERE workspace = ? ORDER BY updated_at DESC LIMIT 1",
+            (workspace,)).fetchone()
+
+    def list_convs(self, limit=20, workspace=None):
+        if workspace:
+            return self.conn.execute(
+                "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations WHERE workspace = ? ORDER BY updated_at DESC LIMIT ?",
+                (workspace, limit)).fetchall()
+        return self.conn.execute(
+            "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?",
+            (limit,)).fetchall()
 
     def last_conv_in_cwd(self, cwd, limit=50):
         """Most recently updated conversation started in this cwd (NULL cwd
@@ -733,11 +770,6 @@ class Database:
         row = self.conn.execute(
             "SELECT model FROM messages WHERE conversation_id = ? AND model != '' ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
         return row["model"] if row else ""
-
-    def list_convs(self, limit=20):
-        return self.conn.execute(
-            "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
-        ).fetchall()
 
     def list_sessions(self, limit=50):
         """Saved sessions: pinned first, then most recently active, with message counts."""
@@ -4229,6 +4261,7 @@ class App:
         self.last_process = []           # step-by-step log of the last turn (for /process)
         self._step_count = 0             # tool steps in the current turn
         self._ctx_cache = None           # ((path, mtime), body) for CONTEXT.md project memory
+        self._ws_backfilled = False     # one-time legacy workspace backfill
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
         # Pre-load the local model in the background at startup so the first
@@ -4951,7 +4984,8 @@ class App:
                                        self.cfg.get("backend", ""),
                                        cwd=os.getcwd(),
                                        tools_mode=bool(self.cfg.get("tools_enabled", False)),
-                                       skills=[n for n, _ in self.active_session_skills] or None)
+                                       skills=[n for n, _ in self.active_session_skills] or None,
+                                       workspace=self._current_workspace())
                 self.db.set_conv_slug(cid, nm)
                 self._activate(cid, banner=False)
                 if not self.quiet:
@@ -5063,6 +5097,52 @@ class App:
             return True
         self.warn("Could not complete the interrupted turn yet. Checkpoint kept.")
         return False
+
+    _WS_MARKERS = (".git", "package.json", "pyproject.toml", "go.mod", "Cargo.toml",
+                   "composer.json", "pom.xml", "Gemfile", "mix.exs", "deno.json",
+                   "CONTEXT.md", ".ai")
+
+    @classmethod
+    def _workspace_root(cls, start=None):
+        """The project/workspace root for a directory: nearest ancestor (incl.
+        itself) carrying a workspace marker (.git first, then manifests, then
+        CONTEXT.md/.ai). Returns None outside any workspace (home/tmp). Nested
+        repos resolve to the NEAREST marker. Per-dir cached."""
+        try:
+            d = os.path.realpath(start or os.getcwd())
+        except OSError:
+            return None
+        cache = cls._ws_cache
+        if d in cache:
+            return cache[d]
+        root = None
+        cur = d
+        while True:
+            for marker in cls._WS_MARKERS:
+                if os.path.exists(os.path.join(cur, marker)):
+                    root = cur
+                    break
+            if root is not None:
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        cache[d] = root
+        return root
+
+    _ws_cache = {}
+
+    def _current_workspace(self):
+        """Workspace root of the CWD (cached per dir); runs the one-time
+        legacy backfill on first use so old sessions get anchored too."""
+        if not self._ws_backfilled:
+            self._ws_backfilled = True
+            try:
+                self.db.backfill_workspaces(self._workspace_root)
+            except Exception:
+                pass
+        return self._workspace_root()
 
     def _project_context(self):
         """Read ./CONTEXT.md (or .ai/context.md) — per-session cached, refreshed
@@ -5337,7 +5417,8 @@ class App:
                 "New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""),
                 cwd=os.getcwd(),
                 tools_mode=bool(self.cfg.get("tools_enabled", False)),
-                skills=[n for n, _ in self.active_session_skills] or None)
+                skills=[n for n, _ in self.active_session_skills] or None,
+                workspace=self._current_workspace())
             first_line = self._smart_title(title_src)
             self.db.rename_conv(self.cid, first_line[:40] + ("..." if len(first_line) > 40 else ""))
 

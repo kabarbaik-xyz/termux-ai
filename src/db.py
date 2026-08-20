@@ -13,7 +13,7 @@ class Database:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, model TEXT, backend TEXT, pinned INTEGER DEFAULT 0,
-                cwd TEXT, tools_mode INTEGER, skills_json TEXT, slug TEXT,
+                cwd TEXT, tools_mode INTEGER, skills_json TEXT, slug TEXT, workspace TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER, role TEXT,
@@ -71,6 +71,7 @@ class Database:
                 if "tools_mode" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN tools_mode INTEGER")
                 if "skills_json" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN skills_json TEXT")
                 if "slug" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN slug TEXT")
+                if "workspace" not in conv_cols: self.conn.execute("ALTER TABLE conversations ADD COLUMN workspace TEXT")
 
             msg_cols = self._table_cols("messages")
             if msg_cols:
@@ -86,13 +87,13 @@ class Database:
             self.conn.execute("ROLLBACK")
             raise e
 
-    def new_conv(self, title="New Chat", model="", backend="", cwd="", tools_mode=None, skills=None):
+    def new_conv(self, title="New Chat", model="", backend="", cwd="", tools_mode=None, skills=None, workspace=None):
         import json as _json
         cur = self.conn.execute(
-            "INSERT INTO conversations (title, model, backend, cwd, tools_mode, skills_json) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO conversations (title, model, backend, cwd, tools_mode, skills_json, workspace) VALUES (?,?,?,?,?,?,?)",
             (title, model, backend, cwd,
              1 if tools_mode else (0 if tools_mode is not None else None),
-             _json.dumps(skills) if skills else None))
+             _json.dumps(skills) if skills else None, workspace))
         self.conn.commit()
         return cur.lastrowid
 
@@ -100,12 +101,48 @@ class Database:
         self.conn.execute("UPDATE conversations SET slug = ? WHERE id = ?", ((slug or "").strip() or None, cid))
         self.conn.commit()
 
-    def get_conv_by_slug(self, slug):
-        """Most recent conversation with this slug (exact, case-insensitive)."""
+    def get_conv_by_slug(self, slug, workspace=None):
+        """Most recent conversation with this slug (exact, case-insensitive).
+        When a workspace is given, the slug only resolves WITHIN it."""
+        if workspace:
+            row = self.conn.execute(
+                "SELECT * FROM conversations WHERE slug = ? COLLATE NOCASE AND workspace = ? "
+                "ORDER BY updated_at DESC LIMIT 1", ((slug or "").strip(), workspace)).fetchone()
+            return row      # workspace-scoped miss is a MISS (no global fallback)
         row = self.conn.execute(
             "SELECT * FROM conversations WHERE slug = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1",
             ((slug or "").strip(),)).fetchone()
         return row
+
+    def backfill_workspaces(self, root_of):
+        """One-time: legacy rows have NULL workspace. Derive root-of-cwd per row
+        (root_of is a callable dir->root; falls back to the cwd itself when the
+        dir is gone). Idempotent."""
+        rows = self.conn.execute("SELECT id, cwd FROM conversations WHERE workspace IS NULL AND cwd IS NOT NULL").fetchall()
+        for r in rows:
+            try:
+                ws = root_of(r["cwd"]) or r["cwd"]
+            except Exception:
+                ws = r["cwd"]
+            self.conn.execute("UPDATE conversations SET workspace = ? WHERE id = ?", (ws, r["id"]))
+        if rows:
+            self.conn.commit()
+        return len(rows)
+
+    def last_conv_in_workspace(self, workspace, limit=50):
+        """Most recently updated conversation anchored to this workspace root."""
+        return self.conn.execute(
+            "SELECT * FROM conversations WHERE workspace = ? ORDER BY updated_at DESC LIMIT 1",
+            (workspace,)).fetchone()
+
+    def list_convs(self, limit=20, workspace=None):
+        if workspace:
+            return self.conn.execute(
+                "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations WHERE workspace = ? ORDER BY updated_at DESC LIMIT ?",
+                (workspace, limit)).fetchall()
+        return self.conn.execute(
+            "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?",
+            (limit,)).fetchall()
 
     def last_conv_in_cwd(self, cwd, limit=50):
         """Most recently updated conversation started in this cwd (NULL cwd
@@ -127,11 +164,6 @@ class Database:
         row = self.conn.execute(
             "SELECT model FROM messages WHERE conversation_id = ? AND model != '' ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
         return row["model"] if row else ""
-
-    def list_convs(self, limit=20):
-        return self.conn.execute(
-            "SELECT id, title, model, updated_at, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY updated_at DESC LIMIT ?", (limit,)
-        ).fetchall()
 
     def list_sessions(self, limit=50):
         """Saved sessions: pinned first, then most recently active, with message counts."""

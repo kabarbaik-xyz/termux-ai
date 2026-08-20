@@ -38,6 +38,7 @@ class App:
         self.last_process = []           # step-by-step log of the last turn (for /process)
         self._step_count = 0             # tool steps in the current turn
         self._ctx_cache = None           # ((path, mtime), body) for CONTEXT.md project memory
+        self._ws_backfilled = False     # one-time legacy workspace backfill
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
         # Pre-load the local model in the background at startup so the first
@@ -760,7 +761,8 @@ class App:
                                        self.cfg.get("backend", ""),
                                        cwd=os.getcwd(),
                                        tools_mode=bool(self.cfg.get("tools_enabled", False)),
-                                       skills=[n for n, _ in self.active_session_skills] or None)
+                                       skills=[n for n, _ in self.active_session_skills] or None,
+                                       workspace=self._current_workspace())
                 self.db.set_conv_slug(cid, nm)
                 self._activate(cid, banner=False)
                 if not self.quiet:
@@ -872,6 +874,52 @@ class App:
             return True
         self.warn("Could not complete the interrupted turn yet. Checkpoint kept.")
         return False
+
+    _WS_MARKERS = (".git", "package.json", "pyproject.toml", "go.mod", "Cargo.toml",
+                   "composer.json", "pom.xml", "Gemfile", "mix.exs", "deno.json",
+                   "CONTEXT.md", ".ai")
+
+    @classmethod
+    def _workspace_root(cls, start=None):
+        """The project/workspace root for a directory: nearest ancestor (incl.
+        itself) carrying a workspace marker (.git first, then manifests, then
+        CONTEXT.md/.ai). Returns None outside any workspace (home/tmp). Nested
+        repos resolve to the NEAREST marker. Per-dir cached."""
+        try:
+            d = os.path.realpath(start or os.getcwd())
+        except OSError:
+            return None
+        cache = cls._ws_cache
+        if d in cache:
+            return cache[d]
+        root = None
+        cur = d
+        while True:
+            for marker in cls._WS_MARKERS:
+                if os.path.exists(os.path.join(cur, marker)):
+                    root = cur
+                    break
+            if root is not None:
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        cache[d] = root
+        return root
+
+    _ws_cache = {}
+
+    def _current_workspace(self):
+        """Workspace root of the CWD (cached per dir); runs the one-time
+        legacy backfill on first use so old sessions get anchored too."""
+        if not self._ws_backfilled:
+            self._ws_backfilled = True
+            try:
+                self.db.backfill_workspaces(self._workspace_root)
+            except Exception:
+                pass
+        return self._workspace_root()
 
     def _project_context(self):
         """Read ./CONTEXT.md (or .ai/context.md) — per-session cached, refreshed
@@ -1146,7 +1194,8 @@ class App:
                 "New Chat", self.backend.profile.get("model", ""), self.cfg.get("backend", ""),
                 cwd=os.getcwd(),
                 tools_mode=bool(self.cfg.get("tools_enabled", False)),
-                skills=[n for n, _ in self.active_session_skills] or None)
+                skills=[n for n, _ in self.active_session_skills] or None,
+                workspace=self._current_workspace())
             first_line = self._smart_title(title_src)
             self.db.rename_conv(self.cid, first_line[:40] + ("..." if len(first_line) > 40 else ""))
 
