@@ -5592,7 +5592,13 @@ class App:
                     b_name, b_model = "none", "N/A"
                 
                 tok_count = self.db.get_conv_tokens(self.cid) if self.cid else 0
-                info_str = f"{C.DIM}[{b_name}:{b_model} | {tok_count}t]{C.RESET}"
+                # Mode is always visible (green BUILD = writes allowed, dim PLAN =
+                # read-only) so you never act in the wrong mode by accident.
+                if self.cfg.get("tools_enabled", False):
+                    mode_s = f"{C.GREEN}BUILD{C.RESET}"
+                else:
+                    mode_s = "plan"
+                info_str = f"{C.DIM}[{b_name}:{b_model} | {mode_s} | {tok_count}t]{C.RESET}"
                 
                 if self.multi_line:
                     prefix = f"{C.GREEN}┌─ {info_str}\n{C.GREEN}└─▸{C.RESET} "
