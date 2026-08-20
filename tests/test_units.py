@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for non-security internals: Database, file attachment,
 compaction, and small helpers. Run:  python3 tests/test_units.py"""
-import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile, unittest
+import importlib.machinery, importlib.util, os, shutil, subprocess, sys, tempfile, time, unittest
 import io
 import json
 import hashlib
@@ -521,6 +521,104 @@ class TestProjectSessions(_TmpHome):
     """Sessions remember where they lived: cwd + tools_mode + skills captured at
     creation, restored on resume; project-scoped auto-resume prefers this cwd;
     named sessions via ai -S / /session."""
+
+class TestWorkspaceIsolation(_TmpHome):
+    """Sessions are isolated per WORKSPACE (nearest .git/manifest/CONTEXT.md
+    root), not per exact launch dir. Resume never grabs another project's
+    session; slugs are workspace-scoped; history/search views filter."""
+
+    def _mkws(self, name):
+        d = tempfile.mkdtemp(prefix=f"ws_{name}_")
+        os.makedirs(os.path.join(d, ".git"))
+        os.makedirs(os.path.join(d, "src", "deep"), exist_ok=True)
+        return d
+
+    def test_workspace_root_detection_matrix(self):
+        wr = m.App._workspace_root
+        wa = self._mkws("a")
+        self.assertEqual(wr(os.path.join(wa, "src", "deep")), wa)   # deep subdir -> root
+        # manifest root
+        d2 = tempfile.mkdtemp(); os.makedirs(os.path.join(d2, "sub"))
+        open(os.path.join(d2, "package.json"), "w").write("{}")
+        self.assertEqual(wr(os.path.join(d2, "sub")), d2)
+        # nested repos -> NEAREST marker
+        d3 = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d3, ".git")); os.makedirs(os.path.join(d3, "inner", ".git"))
+        self.assertEqual(wr(os.path.join(d3, "inner")), os.path.join(d3, "inner"))
+        # outside any workspace -> None
+        d4 = tempfile.mkdtemp()
+        self.assertIsNone(wr(d4))
+
+    def test_resume_isolated_by_workspace(self):
+        wa, wb = self._mkws("a"), self._mkws("b")
+        app = m.App(); app.quiet = True
+        a1 = app.db.new_conv("A", "m", "b", cwd=wa, workspace=wa)
+        app.db.save_msg(a1, "user", "a", "m", 1)
+        time.sleep(1.1)                       # distinct updated_at
+        b1 = app.db.new_conv("B", "m", "b", cwd=wb, workspace=wb)
+        app.db.save_msg(b1, "user", "b", "m", 1)
+        # resume from a DEEP SUBDIR of A gets A's session (never B's, no global fallback)
+        old = os.getcwd(); os.chdir(os.path.join(wa, "src", "deep"))
+        try:
+            app2 = m.App(); app2.quiet = True
+            app2._resume_mode = "continue"; app2._maybe_resume()
+            self.assertEqual(app2.cid, a1)
+        finally:
+            os.chdir(old)
+        # a NEW workspace with no sessions starts fresh (not another project's)
+        wc = self._mkws("c")
+        old = os.getcwd(); os.chdir(wc)
+        try:
+            app3 = m.App(); app3.quiet = True
+            app3._resume_mode = "continue"; app3._maybe_resume()
+            self.assertIsNone(app3.cid)
+        finally:
+            os.chdir(old)
+
+    def test_slugs_scoped_per_workspace(self):
+        wa, wb = self._mkws("a"), self._mkws("b")
+        app = m.App(); app.quiet = True
+        a1 = app.db.new_conv("A", "m", "b", cwd=wa, workspace=wa)
+        b1 = app.db.new_conv("B", "m", "b", cwd=wb, workspace=wb)
+        app.db.set_conv_slug(a1, "refactor")
+        app.db.set_conv_slug(b1, "refactor")
+        # same slug, two workspaces: each resolves to its own
+        self.assertEqual(app.db.get_conv_by_slug("refactor", workspace=wa)["id"], a1)
+        self.assertEqual(app.db.get_conv_by_slug("refactor", workspace=wb)["id"], b1)
+        # scoped miss is a MISS (no global fallback)
+        self.assertIsNone(app.db.get_conv_by_slug("other", workspace=wa))
+        # unscoped lookup still works (global escape hatch)
+        self.assertIsNotNone(app.db.get_conv_by_slug("refactor"))
+
+    def test_backfill_anchors_legacy_rows(self):
+        wa = self._mkws("back")
+        app = m.App(); app.quiet = True
+        # legacy row with cwd INSIDE a workspace but NULL workspace
+        cid = app.db.new_conv("legacy", "m", "b", cwd=os.path.join(wa, "src"))
+        n = app.db.backfill_workspaces(m.App._workspace_root)
+        conv = app.db.get_conv(cid)
+        self.assertEqual(conv["workspace"], wa)
+        n2 = app.db.backfill_workspaces(m.App._workspace_root)
+        self.assertEqual(n2, 0)             # idempotent
+
+    def test_scoped_history_and_search(self):
+        wa, wb = self._mkws("a"), self._mkws("b")
+        app = m.App(); app.quiet = True
+        a1 = app.db.new_conv("fix auth", "m", "b", cwd=wa, workspace=wa)
+        b1 = app.db.new_conv("docker setup", "m", "b", cwd=wb, workspace=wb)
+        app.db.save_msg(a1, "user", "auth token expired", "m", 1)
+        app.db.save_msg(b1, "user", "nginx config", "m", 1)
+        # scoped search misses across workspaces; hits within; global finds all
+        self.assertEqual([r["id"] for r in app.db.search_convs("nginx", workspace=wa)], [])
+        self.assertEqual([r["id"] for r in app.db.search_convs("nginx", workspace=wb)], [b1])
+        self.assertEqual([r["id"] for r in app.db.search_convs("nginx")], [b1])
+        # LIKE fallback path equally scoped
+        app.db._fts_ok = False
+        self.assertEqual([r["id"] for r in app.db.search_convs("nginx", workspace=wa)], [])
+        self.assertEqual([r["id"] for r in app.db.search_convs("nginx", workspace=wb)], [b1])
+        # scoped history listing
+        h = [r["id"] for r in app.db.list_convs(workspace=wa)]
+        self.assertEqual(h, [a1])
 
     def test_capture_and_restore_working_set(self):
         app = m.App(); app.quiet = True
