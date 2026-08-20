@@ -537,6 +537,8 @@ class App:
                             shown = ", ".join(os.path.basename(f) for f in files[:5])
                             more = f" +{len(files) - 5}" if len(files) > 5 else ""
                             print(f"{C.GREEN}\u270f\ufe0f  changed: {shown}{more}{C.RESET}", flush=True)
+                        elif event.get("claimed_done"):
+                            print(f"{C.YELLOW}\u26a0 no files were actually changed this turn{C.RESET}", flush=True)
                 elif et == "notice":
                     if fmt: fmt.flush()
                     flush(thinking=True)

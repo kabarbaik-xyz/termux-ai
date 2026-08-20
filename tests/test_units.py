@@ -841,6 +841,52 @@ class TestMutationLedger(_TmpHome):
     writes/edits/mutating commands into MutationLedger; turn_end carries it;
     the footer lists real files, never the model's narration."""
 
+    def test_done_claim_guard_matrix(self):
+        """'Sudah diperbaiki!' with ZERO mutations -> ONE corrective retry; the
+        model then writing the file -> clean turn_end (no warning). A second
+        empty claim passes through with claimed_done=True (footer warns).
+        Real mutations never trigger the guard. Pure Q&A (no claim words)
+        never triggers it either."""
+        b = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://localhost", "model": "x"})
+        n = {"n": 0}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            n["n"] += 1
+            if n["n"] == 1:
+                yield {"choices": [{"delta": {"content": "Bug sudah diperbaiki di app.py!"}}]}
+            elif n["n"] == 2:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                    "function": {"name": "write_file", "arguments": '{"path":"app2.py","content":"x"}'}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {"content": "Selesai, file dibuat."}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fs):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "fix the bug"}], confirm_batch_fn=lambda c: True))
+        warn_notices = [e for e in evts if e["type"] == "notice" and "nothing was executed" in e.get("text", "")]
+        self.assertEqual(len(warn_notices), 1)              # guard fired once
+        te = [e for e in evts if e["type"] == "turn_end"]
+        self.assertEqual(len(te), 1)
+        self.assertFalse(te[0].get("claimed_done") and te[0]["ledger"].empty())  # wrote a file -> clean
+
+        # double empty claim: passes through with claimed_done (footer warns)
+        b2 = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://localhost", "model": "x"})
+        n2 = {"n": 0}
+        def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+            n2["n"] += 1
+            yield {"choices": [{"delta": {"content": "Sudah diperbaiki semuanya, trust me."}}]}
+        with um.patch.object(b2, "_stream_req", side_effect=fs2):
+            evts2 = list(b2.chat_with_tools([{"role": "user", "content": "fix it"}], confirm_batch_fn=lambda c: True))
+        te2 = [e for e in evts2 if e["type"] == "turn_end"]
+        self.assertEqual(len(te2), 1)
+        self.assertTrue(te2[0].get("claimed_done"))        # honest warning flag
+        self.assertTrue(te2[0]["ledger"].empty())
+
+        # no claim words -> guard silent
+        b3 = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://localhost", "model": "x"})
+        def fs3(url, data, headers, notify=None, mapper=None, ndjson=False):
+            yield {"choices": [{"delta": {"content": "The bug is in line 4 of app.py; here is my analysis."}}]}
+        with um.patch.object(b3, "_stream_req", side_effect=fs3):
+            evts3 = list(b3.chat_with_tools([{"role": "user", "content": "analyze"}], confirm_batch_fn=lambda c: True))
+        self.assertFalse(any(e["type"] == "notice" and "nothing was executed" in e.get("text", "") for e in evts3))
+
     def test_ledger_records_only_real_mutations(self):
         led = m.MutationLedger()
         led.record("write_file", "a.py", True)

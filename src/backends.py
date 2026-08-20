@@ -252,6 +252,16 @@ class LoopGuard:
         return "stop"
 
 
+# Done-claim guard: the model's final text CLAIMS the work is complete (EN+ID)
+# while the ledger shows zero successful mutations this turn. One corrective
+# retry; a second claim passes through with an honest warning to the user.
+_DONE_CLAIM_RE = re.compile(
+    r"\b(fixed|done|created|written|updated|added|implemented|applied|patched|"
+    r"selesai|diperbaiki|dibuat|dibuatkan|ditulis|diupdate|ditambahkan|diterapkan|"
+    r"berhasil\s+(memperbaiki|membuat|menulis|menambahkan|mengubah)|sudah\s+(diperbaiki|dibuat|ditulis|diubah|selesai))\b",
+    re.IGNORECASE)
+
+
 class MutationLedger:
     """Ground truth for what a turn ACTUALLY changed on disk (write_file /
     edit_file / mutating commands), recorded by the executor — never taken
@@ -1182,6 +1192,7 @@ class OpenAICompatible(Backend):
         # guards) so the OpenAI and Anthropic loops can never drift.
         guard = LoopGuard(self.c, continue_fn)
         ledger = MutationLedger()   # ground truth: what actually changed on disk
+        claim_corrected = False     # done-claim guard fires at most once per turn
         self_heal = False   # one-shot: re-offer tools when a no-tools answer wanted them
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
@@ -1262,7 +1273,23 @@ class OpenAICompatible(Backend):
                                  "needs files, commands, or the web, call the appropriate tool now."})
                     yield {"type": "notice", "level": "info", "icon": "\u21bb", "text": "retrying with tools available", "fatal": False}
                     continue
-                yield {"type": "turn_end", "ledger": ledger, "text": content_buf}
+                # Done-claim guard: the answer claims completion (EN+ID) but the
+                # ledger shows zero successful mutations. One corrective retry;
+                # a second claim passes with an honest no-changes warning.
+                if (build_mode and not claim_corrected and ledger.empty()
+                        and len(content_buf or "") > 20
+                        and _DONE_CLAIM_RE.search(content_buf)):
+                    claim_corrected = True
+                    msgs.append({"role": "system", "content":
+                                 "CORRECTION: you described changes as complete, but NO file was actually "
+                                 "written or edited this turn (execution log is empty). Execute the changes "
+                                 "now with write_file/edit_file, or state clearly that you could not and why."})
+                    yield {"type": "notice", "level": "warn", "icon": "\u26a0",
+                           "text": "answer claimed changes but nothing was executed \u00b7 asking the model to actually do it",
+                           "fatal": False}
+                    continue
+                yield {"type": "turn_end", "ledger": ledger, "text": content_buf,
+                       "claimed_done": bool(_DONE_CLAIM_RE.search(content_buf or ""))}
                 return
 
             if finish_reason == "length" and calls:
@@ -1385,6 +1412,7 @@ class AnthropicBackend(Backend):
         # guards) so the OpenAI and Anthropic loops can never drift.
         guard = LoopGuard(self.c, continue_fn)
         ledger = MutationLedger()   # ground truth: what actually changed on disk
+        claim_corrected = False     # done-claim guard fires at most once per turn
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -1458,7 +1486,20 @@ class AnthropicBackend(Backend):
                 yield {"type": "text", "content": text_block}
 
             if not tool_uses:
-                yield {"type": "turn_end", "ledger": ledger, "text": text_block}
+                if (build_mode and not claim_corrected and ledger.empty()
+                        and len(text_block or "") > 20
+                        and _DONE_CLAIM_RE.search(text_block)):
+                    claim_corrected = True
+                    payload.append({"role": "user", "content":
+                                 "CORRECTION: you described changes as complete, but NO file was actually "
+                                 "written or edited this turn (execution log is empty). Execute the changes "
+                                 "now with write_file/edit_file, or state clearly that you could not and why."})
+                    yield {"type": "notice", "level": "warn", "icon": "\u26a0",
+                           "text": "answer claimed changes but nothing was executed \u00b7 asking the model to actually do it",
+                           "fatal": False}
+                    continue
+                yield {"type": "turn_end", "ledger": ledger, "text": text_block,
+                       "claimed_done": bool(_DONE_CLAIM_RE.search(text_block or ""))}
                 return
 
             if stop_reason == "max_tokens" and tool_uses:
