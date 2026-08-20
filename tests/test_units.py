@@ -836,6 +836,46 @@ class TestEditFileAndGitTools(_TmpHome):
         # clipboard may be empty on CI -> only assert no crash + no preview I/O
 
 
+class TestMutationLedger(_TmpHome):
+    """Ground truth for what a turn actually changed: the executor records
+    writes/edits/mutating commands into MutationLedger; turn_end carries it;
+    the footer lists real files, never the model's narration."""
+
+    def test_ledger_records_only_real_mutations(self):
+        led = m.MutationLedger()
+        led.record("write_file", "a.py", True)
+        led.record("edit_file", "a.py", True)
+        led.record("edit_file", "b.py", False, "not found")
+        self.assertEqual(led.files_changed(), ["a.py"])   # unique, only successful
+        self.assertEqual(led.failed_paths(), ["b.py"])
+        self.assertTrue(led.empty() is False)
+        led2 = m.MutationLedger()
+        self.assertTrue(led2.empty())
+        self.assertEqual(led2.files_changed(), [])
+
+    def test_turn_end_carries_ledger_and_footer_is_real(self):
+        d = tempfile.mkdtemp(prefix="ailedg_"); old = os.getcwd(); os.chdir(d)
+        try:
+            b = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://localhost", "model": "x"})
+            n = {"n": 0}
+            def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n["n"] += 1
+                if n["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "write_file", "arguments": '{"path":"app.py","content":"x=1"}'}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"content": "Fixed! app.py updated."}}]}
+            with um.patch.object(b, "_stream_req", side_effect=fs):
+                evts = list(b.chat_with_tools([{"role": "user", "content": "fix app.py"}], confirm_batch_fn=lambda c: True))
+            tes = [e for e in evts if e["type"] == "turn_end"]
+            self.assertEqual(len(tes), 1)
+            led = tes[0]["ledger"]
+            self.assertEqual([os.path.basename(f) for f in led.files_changed()], ["app.py"])
+            self.assertTrue(os.path.exists("app.py"))   # really on disk
+        finally:
+            os.chdir(old); shutil.rmtree(d, ignore_errors=True)
+
+
 class TestSkillSuggest(_TmpHome):
     """One-line skill hints: fires on distinctive trigger words, silent for
     generic chat, never when a session skill is active, and configurable off."""

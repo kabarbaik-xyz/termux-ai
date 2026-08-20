@@ -527,6 +527,16 @@ class App:
                         # (now history-laden) prompt — show its wait instead of
                         # a silent freeze. The final answer's first text stops it.
                         self._start_spinner()
+                elif et == "turn_end":
+                    # Verified-changes footer: from the LEDGER (ground truth of
+                    # what actually changed on disk), never from the model's words.
+                    if not self.quiet:
+                        led = event.get("ledger")
+                        files = led.files_changed() if led else []
+                        if files:
+                            shown = ", ".join(os.path.basename(f) for f in files[:5])
+                            more = f" +{len(files) - 5}" if len(files) > 5 else ""
+                            print(f"{C.GREEN}\u270f\ufe0f  changed: {shown}{more}{C.RESET}", flush=True)
                 elif et == "notice":
                     if fmt: fmt.flush()
                     flush(thinking=True)

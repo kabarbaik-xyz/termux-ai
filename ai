@@ -2633,6 +2633,36 @@ class LoopGuard:
         return "stop"
 
 
+class MutationLedger:
+    """Ground truth for what a turn ACTUALLY changed on disk (write_file /
+    edit_file / mutating commands), recorded by the executor — never taken
+    from the model's narration. Drives the verified-changes footer and the
+    done-claim guard: 'said fixed' can no longer diverge from 'did fix'."""
+
+    def __init__(self):
+        self.entries = []          # {tool, path, ok, detail}
+
+    def record(self, tool, path, ok, detail=""):
+        self.entries.append({"tool": tool, "path": path, "ok": bool(ok), "detail": detail})
+
+    def successful(self):
+        return [e for e in self.entries if e["ok"]]
+
+    def files_changed(self):
+        """Unique paths with at least one successful write/edit."""
+        seen = []
+        for e in self.successful():
+            if e.get("path") and e["path"] not in seen:
+                seen.append(e["path"])
+        return seen
+
+    def failed_paths(self):
+        return sorted({e["path"] for e in self.entries if not e["ok"] and e.get("path")})
+
+    def empty(self):
+        return not self.successful()
+
+
 class OpenAIDeltaAccumulator:
     """Merges streamed OpenAI-compat deltas (content, reasoning_content,
     tool_calls fragments) into complete buffers. Extracted from the tool loop
@@ -2814,7 +2844,7 @@ class Backend:
 
     # Read-only, independent tools safe to run concurrently in a batch.
     SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify", "project_info"}  # not test/git-mutations: side effects
-    def _run_batch(self, items, build_mode, max_res, done_calls, coverage):
+    def _run_batch(self, items, build_mode, max_res, done_calls, coverage, ledger=None):
         """Execute a batch of [(name, args)] tool calls, preserving the ORIGINAL
         order in the returned [(name, result, was_new)] list. Read-only tools run
         in a small thread pool (config parallel_tools, default on — they're
@@ -2851,11 +2881,19 @@ class Backend:
                 outs = [_exec(n, a) for _, n, a in par]
             for (idx, name, args), (ok, r) in zip(par, outs):
                 results[idx] = (name, r, True, ok)
+                if ledger is not None and name in ("write_file", "edit_file"):
+                    ledger.record(name, args.get("path", ""), ok, r[:120])
                 if name == "read_file":
                     Backend._track_read(args, r, coverage)
         for idx, name, args in seq:
             ok, r = _exec(name, args)
             results[idx] = (name, r, True, ok)
+            if ledger is not None and name in ("write_file", "edit_file"):
+                ledger.record(name, args.get("path", ""), ok, r[:120])
+            elif ledger is not None and name == "run_command" and ok and not args.get("command", "").strip().startswith(("echo", "cat ", "ls", "grep")):
+                ledger.record("run_command", "", True, (args.get("command") or "")[:80])
+            elif ledger is not None and name == "git" and ok and (args.get("action") or "") in ("commit", "stage", "checkout_file"):
+                ledger.record("git:" + (args.get("action") or ""), args.get("path") or "", True, r[:80])
             if name == "read_file":
                 Backend._track_read(args, r, coverage)
         return results
@@ -3524,6 +3562,7 @@ class OpenAICompatible(Backend):
         # Shared loop bookkeeping (iteration ceiling + checkpoints + failure
         # guards) so the OpenAI and Anthropic loops can never drift.
         guard = LoopGuard(self.c, continue_fn)
+        ledger = MutationLedger()   # ground truth: what actually changed on disk
         self_heal = False   # one-shot: re-offer tools when a no-tools answer wanted them
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
@@ -3604,6 +3643,7 @@ class OpenAICompatible(Backend):
                                  "needs files, commands, or the web, call the appropriate tool now."})
                     yield {"type": "notice", "level": "info", "icon": "\u21bb", "text": "retrying with tools available", "fatal": False}
                     continue
+                yield {"type": "turn_end", "ledger": ledger, "text": content_buf}
                 return
 
             if finish_reason == "length" and calls:
@@ -3650,7 +3690,7 @@ class OpenAICompatible(Backend):
                 items.append((fn["name"], args))
             # Execute the batch (read-only calls in parallel, mutators sequential
             # after the reads; original order preserved for the API contract).
-            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
+            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage, ledger)
             batch_results = []
             any_productive = any(w for _, _, w, _ok in outcomes)
             for i, (c, (name, result, _, _ok)) in enumerate(zip(calls, outcomes)):
@@ -3725,6 +3765,7 @@ class AnthropicBackend(Backend):
         # Shared loop bookkeeping (iteration ceiling + checkpoints + failure
         # guards) so the OpenAI and Anthropic loops can never drift.
         guard = LoopGuard(self.c, continue_fn)
+        ledger = MutationLedger()   # ground truth: what actually changed on disk
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -3798,6 +3839,7 @@ class AnthropicBackend(Backend):
                 yield {"type": "text", "content": text_block}
 
             if not tool_uses:
+                yield {"type": "turn_end", "ledger": ledger, "text": text_block}
                 return
 
             if stop_reason == "max_tokens" and tool_uses:
@@ -3838,7 +3880,7 @@ class AnthropicBackend(Backend):
             items = [(tu["name"], (tu.get("input") or {})) for tu in tool_uses]
             # Execute the batch (read-only calls in parallel, mutators sequential
             # after the reads; original order preserved for the API contract).
-            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage)
+            outcomes = self._run_batch(items, build_mode, max_res, done_calls, coverage, ledger)
             batch_results = []
             any_productive = any(w for _, _, w, _ok in outcomes)
             for i, (tu, (name, result, _, _ok)) in enumerate(zip(tool_uses, outcomes)):
@@ -4589,6 +4631,16 @@ class App:
                         # (now history-laden) prompt — show its wait instead of
                         # a silent freeze. The final answer's first text stops it.
                         self._start_spinner()
+                elif et == "turn_end":
+                    # Verified-changes footer: from the LEDGER (ground truth of
+                    # what actually changed on disk), never from the model's words.
+                    if not self.quiet:
+                        led = event.get("ledger")
+                        files = led.files_changed() if led else []
+                        if files:
+                            shown = ", ".join(os.path.basename(f) for f in files[:5])
+                            more = f" +{len(files) - 5}" if len(files) > 5 else ""
+                            print(f"{C.GREEN}\u270f\ufe0f  changed: {shown}{more}{C.RESET}", flush=True)
                 elif et == "notice":
                     if fmt: fmt.flush()
                     flush(thinking=True)
