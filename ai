@@ -5554,11 +5554,31 @@ class App:
         "/context": "_cmd_context",
     }
 
+    # Toggle commands that accept a unified boolean: bare = flip,
+    # explicit on|off|true|false = set. (cmd, config_key)
+    TOGGLES = {
+        "/tools": "tools_enabled", "/strategy": "strategy_first",
+        "/think": "extended_thinking", "/multi": "multi_line",
+        "/fold": "fold_long_blocks",
+    }
+
     def _execute_command(self, cmd_str):
         parts = shlex.split(cmd_str)
         if not parts: return
         cmd = parts[0].lower().rstrip(".,;:!?")
         args = parts[1:]
+        # Unified boolean grammar: '/<toggle> on|off|true|false' sets,
+        # bare '/<toggle>' flips. Commands with their own richer args
+        # (/process on|off|auto) are untouched.
+        if cmd in self.TOGGLES and len(args) == 1 and args[0].lower() in ("on", "off", "true", "false"):
+            key = self.TOGGLES[cmd]
+            val = args[0].lower() in ("on", "true")
+            if key == "multi_line":
+                self.multi_line = val
+            self.cfg.set(key, val)
+            label = cmd.lstrip("/")
+            self.success(f"{label}: {'ON' if val else 'OFF'}")
+            return
         mname = self._CMD_DISPATCH.get(cmd)
         if mname:
             getattr(self, mname)(args)
