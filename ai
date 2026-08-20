@@ -4411,6 +4411,31 @@ class App:
         except Exception as e:
             self.err(f"Update failed: {e}")
 
+    def _completion_vocab(self, cmd):
+        """Second-level completion vocabulary for a command's argument."""
+        if cmd in self.TOGGLES or cmd in ("/process",):
+            if cmd == "/process":
+                return ["on", "off", "auto"]
+            return ["on", "off"]
+        if cmd in ("/skill", "/context"):
+            try:
+                return [n for n, _ in self.skills.list()][:30]
+            except Exception:
+                return []
+        if cmd == "/model":
+            models = self._get_ollama_models()
+            return models[:20] if models else []
+        if cmd in ("/backend", "/backends"):
+            return list((self.cfg.get("backends") or {}).keys())
+        if cmd == "/load":
+            try:
+                return [str(r["id"]) for r in self.db.list_convs(limit=15)]
+            except Exception:
+                return []
+        if cmd == "/session":
+            return ["off"]
+        return []
+
     def setup_rl(self):
         if HAVE_READLINE:
             try:
@@ -4419,6 +4444,20 @@ class App:
                 readline.set_history_length(1000)
                 
                 def completer(text, state):
+                    line = readline.get_line_buffer()
+                    stripped = line.lstrip()
+                    # Second-level completion: after a command word, complete
+                    # its argument vocabulary instead of more commands.
+                    if stripped.startswith("/") and " " in stripped:
+                        cmd, _, arg = stripped.partition(" ")
+                        cmd = cmd.lower().rstrip(".,;:!?")
+                        vocab = self._completion_vocab(cmd)
+                        if vocab:
+                            cands = [c for c in vocab if c.startswith(arg)]
+                            cands = [c + " " for c in cands]
+                            if state < len(cands):
+                                return cands[state]
+                            return None
                     cmds = [c for c in self.COMMANDS if c.startswith(text)]
                     if state < len(cmds):
                         return cmds[state]
