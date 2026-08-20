@@ -2559,6 +2559,74 @@ class TestBackendResilience(_TmpHome):
             outcomes = b._run_batch([("write_file", {"path": "w", "content": ""})], True, 10000, set(), {})
         self.assertEqual(outcomes[0][3], False)   # ok flag rides the tuple
 
+    def test_notice_renderer_levels_and_hints(self):
+        """_render_notice: info -> dim, warn -> yellow, error -> red + indented
+        hint; icons prefixed; legacy string notices degrade to info; empty
+        notices print nothing."""
+        app = m.App(); app.quiet = False
+        def render(evt):
+            buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+            try: app._render_notice(evt)
+            finally: sys.stdout = old
+            return buf.getvalue()
+        # NOTE: colors are empty strings when not a TTY, so assert STRUCTURE.
+        out_info = render({"type": "notice", "level": "info", "icon": "\u23f3", "text": "context compacted \u00b7 12 old results"})
+        self.assertIn("\u23f3 context compacted", out_info)   # icon + text, one line
+        self.assertEqual(out_info.count("\n"), 1)
+        out_warn = render({"type": "notice", "level": "warn", "icon": "\u26a0", "text": "output hit the token limit"})
+        self.assertIn("\u26a0 output hit the token limit", out_warn)
+        out_err = render({"type": "notice", "level": "error", "icon": "\u2716", "text": "iteration limit reached (50)",
+                          "hint": "/retry to continue \u00b7 /config set max_iterations N"})
+        self.assertIn("\u2716 iteration limit reached", out_err)
+        self.assertIn("  /retry", out_err)               # hint indented on its own line
+        self.assertEqual(out_err.count("\n"), 2)        # 2 lines max for a fatal
+        # legacy string notice -> info, no crash
+        out_legacy = render({"type": "notice", "content": "[old style]"})
+        self.assertIn("[old style]", out_legacy)
+        # empty -> nothing
+        self.assertEqual(render({"type": "notice", "content": "   "}), "")
+
+    def test_fatal_stops_are_two_line_state_plus_options(self):
+        """Every LoopGuard fatal: state on line 1, actionable hint on line 2 —
+        no walls of text, no 'I'm stuck', always a next action."""
+        g = m.LoopGuard({"max_iterations": 3}, None)
+        for _ in range(3):
+            self.assertIsNone(g.begin_iteration())
+        stop = g.begin_iteration()
+        self.assertEqual(set(stop), {"level", "icon", "text", "hint"})
+        self.assertLessEqual(len(stop["text"]), 60)
+        self.assertIn("retry", stop["hint"])
+        g2 = m.LoopGuard({}, None)
+        stop2 = None
+        for _ in range(5):
+            stop2, _ = g2.note_results(any_productive=False, failed_names=[])
+        self.assertIn("/retry or rephrase", stop2["hint"])
+        self.assertNotIn("stuck", stop2["text"].lower())
+
+    def test_nudge_model_text_full_user_line_short(self):
+        """Phase nudges: the MODEL message keeps the full coaching text; the
+        user-visible notice is ONE dim info line, not a warning paragraph."""
+        b = m.OpenAICompatible({"gather_threshold": 2}, "t", {"base_url": "http://localhost", "model": "x"})
+        calls = {"n": 0}; notices = []
+        def fake_stream(url, data, headers, notify=None, mapper=None, ndjson=False):
+            n = calls["n"]; calls["n"] += 1
+            if n < 3:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": f"t{n}", "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path":"f%d"}' % n}}]}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {"content": "done"}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fake_stream), \
+             um.patch.object(m.Tools, "run_checked", side_effect=lambda name, args, bm, mr: (True, "ok")):
+            for e in b.chat_with_tools([{"role": "user", "content": "read them"}], confirm_batch_fn=lambda c: True):
+                if e["type"] == "notice":
+                    notices.append(e)
+        nudges = [nv for nv in notices if "coaching" in nv.get("text", "")]
+        self.assertTrue(nudges)
+        for nv in nudges:
+            self.assertLessEqual(len(nv["text"]), 48)     # one short line
+            self.assertEqual(nv["level"], "info")          # dim, not a warning
+            self.assertNotIn("Stop reading one file", nv["text"])   # no paragraph leak
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API
