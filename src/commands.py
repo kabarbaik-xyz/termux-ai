@@ -220,8 +220,15 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.success(f"Multi-line input {'enabled' if v else 'disabled'}.")
 
     def _cmd_history(self, args):
-        convs = self.db.list_convs()
-        if not convs: self.info("No history."); return
+        # Workspace-scoped by default; 'all' shows every project's sessions.
+        scope_all = bool(args) and args[0].lower() in ("all", "-a")
+        ws = None if scope_all else self._current_workspace()
+        convs = self.db.list_convs(workspace=ws)
+        if not convs:
+            self.info("No history" + (" in this workspace. /history all for every project." if ws else "."))
+            return
+        if ws:
+            self.info(f"Workspace: {os.path.basename(ws.rstrip('/'))}  (/history all for every project)")
         for c in convs:
             print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
 
@@ -322,10 +329,14 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.success("Chat deleted.")
 
     def _cmd_search(self, args):
-        if not args: self.warn("Usage: /search <query>"); return
-        query = " ".join(args)
-        results = self.db.search_convs(query)
-        if not results: self.info("No matches found.")
+        if not args: self.warn("Usage: /search <query> | /search all <query>"); return
+        scope_all = args[0].lower() in ("all", "-a")
+        query = " ".join(args[1:] if scope_all else args)
+        if not query: self.warn("Usage: /search <query> | /search all <query>"); return
+        ws = None if scope_all else self._current_workspace()
+        results = self.db.search_convs(query, workspace=ws)
+        if not results:
+            self.info("No matches" + (" in this workspace. Try: /search all <query>" if ws else " found."))
         for r in results:
             print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
 
@@ -501,6 +512,10 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         ctx = self._project_context()
         if ctx:
             print(f"{C.BOLD}Context:{C.RESET} CONTEXT.md attached ({len(ctx)} chars)")
+        ws = self._current_workspace()
+        if ws:
+            n_ws = len(self.db.list_convs(workspace=ws))
+            print(f"{C.BOLD}Workspace:{C.RESET} {ws} ({n_ws} session{'s' if n_ws != 1 else ''})")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

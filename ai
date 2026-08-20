@@ -777,7 +777,7 @@ class Database:
             "SELECT id, title, model, updated_at, pinned, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY pinned DESC, updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
-    def search_convs(self, query):
+    def search_convs(self, query, workspace=None):
         q = (query or "").strip()
         # Fast path: FTS5 MATCH (instant, ranked by the index). The user term is
         # quoted so raw punctuation can't break FTS syntax; any failure falls
@@ -785,19 +785,26 @@ class Database:
         if q and getattr(self, "_fts_ok", False):
             try:
                 match = '"%s"' % q.replace('"', '""')
-                return self.conn.execute(
-                    "SELECT DISTINCT c.id, c.title, c.model FROM conversations c "
-                    "JOIN messages m ON m.conversation_id = c.id "
-                    "WHERE m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?) "
-                    "OR c.title LIKE ? "
-                    "ORDER BY c.updated_at DESC LIMIT 200",
-                    (match, f"%{q}%")).fetchall()
+                sql = ("SELECT DISTINCT c.id, c.title, c.model FROM conversations c "
+                       "JOIN messages m ON m.conversation_id = c.id "
+                       "WHERE (m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?) "
+                       "OR c.title LIKE ?) ")
+                params = [match, f"%{q}%"]
+                if workspace:
+                    sql += "AND c.workspace = ? "
+                    params.append(workspace)
+                sql += "ORDER BY c.updated_at DESC LIMIT 200"
+                return self.conn.execute(sql, params).fetchall()
             except Exception:
                 pass
-        return self.conn.execute(
-            "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
-            (f"%{q}%", f"%{q}%")
-        ).fetchall()
+        sql = ("SELECT id, title, model FROM conversations WHERE (title LIKE ? OR id IN "
+               "(SELECT conversation_id FROM messages WHERE content LIKE ?)) ")
+        params = [f"%{q}%", f"%{q}%"]
+        if workspace:
+            sql += "AND workspace = ? "
+            params.append(workspace)
+        sql += "ORDER BY updated_at DESC"
+        return self.conn.execute(sql, params).fetchall()
 
     def del_conv(self, cid):
         self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
@@ -4958,7 +4965,9 @@ class App:
                     tail = ""
                 slug = (conv["slug"] or "") if "slug" in conv.keys() else ""
                 name = f"{slug or conv['title']}"
-                print(f"{C.DIM}[Resumed: \"{name}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
+                ws = (conv["workspace"] or "") if "workspace" in conv.keys() else ""
+                ws_s = f" @ {os.path.basename(ws.rstrip('/'))}" if ws else ""
+                print(f"{C.DIM}[Resumed: \"{name}\"{ws_s} \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
             ck = self.db.get_resume_state(cid)
             if ck:
                 steps = self._count_tool_steps(ck)
@@ -6041,8 +6050,15 @@ class App:
         self.success(f"Multi-line input {'enabled' if v else 'disabled'}.")
 
     def _cmd_history(self, args):
-        convs = self.db.list_convs()
-        if not convs: self.info("No history."); return
+        # Workspace-scoped by default; 'all' shows every project's sessions.
+        scope_all = bool(args) and args[0].lower() in ("all", "-a")
+        ws = None if scope_all else self._current_workspace()
+        convs = self.db.list_convs(workspace=ws)
+        if not convs:
+            self.info("No history" + (" in this workspace. /history all for every project." if ws else "."))
+            return
+        if ws:
+            self.info(f"Workspace: {os.path.basename(ws.rstrip('/'))}  (/history all for every project)")
         for c in convs:
             print(f"{C.BOLD}{c['id']}{C.RESET}. [{c['msg_count']}] {c['title']} {C.DIM}({fmt_time(c['updated_at'])}){C.RESET}")
 
@@ -6143,10 +6159,14 @@ class App:
         self.success("Chat deleted.")
 
     def _cmd_search(self, args):
-        if not args: self.warn("Usage: /search <query>"); return
-        query = " ".join(args)
-        results = self.db.search_convs(query)
-        if not results: self.info("No matches found.")
+        if not args: self.warn("Usage: /search <query> | /search all <query>"); return
+        scope_all = args[0].lower() in ("all", "-a")
+        query = " ".join(args[1:] if scope_all else args)
+        if not query: self.warn("Usage: /search <query> | /search all <query>"); return
+        ws = None if scope_all else self._current_workspace()
+        results = self.db.search_convs(query, workspace=ws)
+        if not results:
+            self.info("No matches" + (" in this workspace. Try: /search all <query>" if ws else " found."))
         for r in results:
             print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
 
@@ -6322,6 +6342,10 @@ class App:
         ctx = self._project_context()
         if ctx:
             print(f"{C.BOLD}Context:{C.RESET} CONTEXT.md attached ({len(ctx)} chars)")
+        ws = self._current_workspace()
+        if ws:
+            n_ws = len(self.db.list_convs(workspace=ws))
+            print(f"{C.BOLD}Workspace:{C.RESET} {ws} ({n_ws} session{'s' if n_ws != 1 else ''})")
 
     def _cmd_copy(self, args):
         if self.last_reply: TermuxAPI.copy(self.last_reply); self.success("Copied to clipboard.")

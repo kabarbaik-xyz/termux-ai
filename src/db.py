@@ -171,7 +171,7 @@ class Database:
             "SELECT id, title, model, updated_at, pinned, (SELECT COUNT(*) FROM messages WHERE conversation_id = conversations.id) as msg_count FROM conversations ORDER BY pinned DESC, updated_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
-    def search_convs(self, query):
+    def search_convs(self, query, workspace=None):
         q = (query or "").strip()
         # Fast path: FTS5 MATCH (instant, ranked by the index). The user term is
         # quoted so raw punctuation can't break FTS syntax; any failure falls
@@ -179,19 +179,26 @@ class Database:
         if q and getattr(self, "_fts_ok", False):
             try:
                 match = '"%s"' % q.replace('"', '""')
-                return self.conn.execute(
-                    "SELECT DISTINCT c.id, c.title, c.model FROM conversations c "
-                    "JOIN messages m ON m.conversation_id = c.id "
-                    "WHERE m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?) "
-                    "OR c.title LIKE ? "
-                    "ORDER BY c.updated_at DESC LIMIT 200",
-                    (match, f"%{q}%")).fetchall()
+                sql = ("SELECT DISTINCT c.id, c.title, c.model FROM conversations c "
+                       "JOIN messages m ON m.conversation_id = c.id "
+                       "WHERE (m.id IN (SELECT rowid FROM msg_fts WHERE msg_fts MATCH ?) "
+                       "OR c.title LIKE ?) ")
+                params = [match, f"%{q}%"]
+                if workspace:
+                    sql += "AND c.workspace = ? "
+                    params.append(workspace)
+                sql += "ORDER BY c.updated_at DESC LIMIT 200"
+                return self.conn.execute(sql, params).fetchall()
             except Exception:
                 pass
-        return self.conn.execute(
-            "SELECT id, title, model FROM conversations WHERE title LIKE ? OR id IN (SELECT conversation_id FROM messages WHERE content LIKE ?) ORDER BY updated_at DESC",
-            (f"%{q}%", f"%{q}%")
-        ).fetchall()
+        sql = ("SELECT id, title, model FROM conversations WHERE (title LIKE ? OR id IN "
+               "(SELECT conversation_id FROM messages WHERE content LIKE ?)) ")
+        params = [f"%{q}%", f"%{q}%"]
+        if workspace:
+            sql += "AND workspace = ? "
+            params.append(workspace)
+        sql += "ORDER BY updated_at DESC"
+        return self.conn.execute(sql, params).fetchall()
 
     def del_conv(self, cid):
         self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))

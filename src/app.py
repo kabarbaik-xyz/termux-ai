@@ -735,7 +735,9 @@ class App:
                     tail = ""
                 slug = (conv["slug"] or "") if "slug" in conv.keys() else ""
                 name = f"{slug or conv['title']}"
-                print(f"{C.DIM}[Resumed: \"{name}\" \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
+                ws = (conv["workspace"] or "") if "workspace" in conv.keys() else ""
+                ws_s = f" @ {os.path.basename(ws.rstrip('/'))}" if ws else ""
+                print(f"{C.DIM}[Resumed: \"{name}\"{ws_s} \u2014 {n} message{'' if n == 1 else 's'}, last active {ago}{tail}]{C.RESET}")
             ck = self.db.get_resume_state(cid)
             if ck:
                 steps = self._count_tool_steps(ck)
