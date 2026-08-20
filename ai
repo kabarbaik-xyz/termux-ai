@@ -4927,7 +4927,15 @@ class App:
             if restored and not self.quiet:
                 print(f"{C.DIM}[Session skills restored: {', '.join(restored)}]{C.RESET}")
         if "cwd" in keys and conv["cwd"] and conv["cwd"] != os.getcwd() and not self.quiet:
-            print(f"{C.YELLOW}[!] Session was started in {conv['cwd']}{C.RESET}")
+            # compare WORKSPACE roots: launching from a subdir of the same repo
+            # is not a mismatch
+            cur_ws = self._current_workspace()
+            try:
+                same_ws = bool(cur_ws) and os.path.realpath(conv["cwd"]).startswith(os.path.realpath(cur_ws).rstrip("/") + os.sep) if cur_ws else False
+            except OSError:
+                same_ws = False
+            if not same_ws:
+                print(f"{C.YELLOW}[!] Session was started in {conv['cwd']}{C.RESET}")
             print(f"    {C.DIM}You're in {os.getcwd()}. Run `cd {conv['cwd']}` for its files, "
                   f"or continue here (paths in history refer to the old dir).{C.RESET}")
 
@@ -4974,7 +4982,7 @@ class App:
             # resume it (restoring its tools/skills context); no match -> start
             # a fresh session tagged with the slug so the next -S finds it.
             nm = (self._resume_arg or "").strip()
-            conv = self.db.get_conv_by_slug(nm) if nm else None
+            conv = self.db.get_conv_by_slug(nm, workspace=self._current_workspace()) if nm else None
             if conv:
                 self._activate(conv["id"], banner=True)
                 self.db.set_conv_slug(conv["id"], nm)   # refresh casing if changed
@@ -4993,9 +5001,16 @@ class App:
             return
         resume = (mode == "continue") or (mode == "auto" and self.cfg.get("auto_resume", True))
         if not resume: return
-        # Project-scoped: prefer the last session started in THIS cwd, then the
-        # global last. Sessions behave per-project (resume in repo A won't grab
-        # repo B's chat) without any new commands.
+        # WORKSPACE isolation: inside a detected workspace, resume only that
+        # workspace's last session — never another project's, never a global
+        # fallback (fresh start instead). Outside workspaces (home/tmp), keep
+        # the global last-cid behavior: that's personal-chat territory.
+        ws = self._current_workspace()
+        if ws:
+            cand = self.db.last_conv_in_workspace(ws)
+            if cand:
+                self._activate(cand["id"], banner=True)
+            return
         here = os.getcwd()
         cand = self.db.last_conv_in_cwd(here)
         cid = cand["id"] if cand else self._get_last_cid()
