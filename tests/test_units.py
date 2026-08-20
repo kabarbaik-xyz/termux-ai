@@ -841,6 +841,87 @@ class TestMutationLedger(_TmpHome):
     writes/edits/mutating commands into MutationLedger; turn_end carries it;
     the footer lists real files, never the model's narration."""
 
+    def test_empty_write_guard(self):
+        """An empty write over a non-empty file is refused (arguments were
+        probably truncated); allow_empty=true really blanks; empty writes to
+        NEW files are fine; append never blocked."""
+        d = tempfile.mkdtemp(prefix="aiblank_"); old = os.getcwd(); os.chdir(d)
+        try:
+            open("f.py", "w").write("real content\n")
+            ok, out = m.Tools.run_checked("write_file", {"path": "f.py", "content": ""}, build_mode=True)
+            self.assertFalse(ok)
+            self.assertIn("refusing to overwrite", out)
+            self.assertIn("allow_empty", out)
+            self.assertEqual(open("f.py").read(), "real content\n")   # untouched
+            # allow_empty really blanks
+            r = m.Tools.run("write_file", {"path": "f.py", "content": "", "allow_empty": True}, build_mode=True)
+            self.assertEqual(open("f.py").read(), "")
+            # new file with empty content is allowed
+            r2 = m.Tools.run("write_file", {"path": "new.py", "content": ""}, build_mode=True)
+            self.assertTrue(os.path.exists("new.py"))
+        finally:
+            os.chdir(old); shutil.rmtree(d, ignore_errors=True)
+
+    def test_auto_verify_runs_tests_after_mutations(self):
+        """After a successful write in Build mode (auto_verify on), the suite's
+        test tool runs ONCE and its result is injected into the next request;
+        it does not run when no mutations happened, when the model already ran
+        tests itself, when disabled, or a second time in the same turn."""
+        d = tempfile.mkdtemp(prefix="aiverify_"); old = os.getcwd(); os.chdir(d)
+        try:
+            b = m.OpenAICompatible({"tools_enabled": True, "auto_verify": True}, "t",
+                                   {"base_url": "http://localhost", "model": "x"})
+            n = {"n": 0}; sent = []; tests_run = []
+            def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n["n"] += 1; sent.append(data)
+                if n["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "write_file", "arguments": '{"path":"a.py","content":"x=1"}'}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"content": "done"}}]}
+            def fake_test(name, args, bm, mr):
+                tests_run.append(1)
+                return (True, "[pytest] exit=0 | total=3 passed=3 failed=0")
+            orig = m.Tools.run_checked
+            def routed(name, args, bm=False, mr=10000):
+                if name == "test": return fake_test(name, args, bm, mr)
+                return orig(name, args, bm, mr)
+            with um.patch.object(b, "_stream_req", side_effect=fs), \
+                 um.patch.object(m.Tools, "run_checked", side_effect=routed):
+                evts = list(b.chat_with_tools([{"role": "user", "content": "write it"}], confirm_batch_fn=lambda c: True))
+            self.assertEqual(len(tests_run), 1)                     # ran exactly once
+            self.assertTrue(any("AUTO-VERIFY" in (mm.get("content") or "")
+                                for mm in sent[-1]["messages"] if mm.get("role") == "system"))
+            self.assertTrue(any(e["type"] == "notice" and "auto-verify" in e.get("text", "") for e in evts))
+            # no mutations -> never runs
+            b2 = m.OpenAICompatible({"tools_enabled": True, "auto_verify": True}, "t",
+                                    {"base_url": "http://localhost", "model": "x"})
+            def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+                yield {"choices": [{"delta": {"content": "analysis only, no changes needed"}}]}
+            with um.patch.object(b2, "_stream_req", side_effect=fs2):
+                list(b2.chat_with_tools([{"role": "user", "content": "analyze"}], confirm_batch_fn=lambda c: True))
+            # disabled -> never runs even with mutations
+            b3 = m.OpenAICompatible({"tools_enabled": True, "auto_verify": False}, "t",
+                                    {"base_url": "http://localhost", "model": "x"})
+            n3 = {"n": 0}
+            def fs3(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n3["n"] += 1
+                if n3["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "write_file", "arguments": '{"path":"b.py","content":"x"}'}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"content": "done"}}]}
+            ran3 = []
+            def routed3(name, args, bm=False, mr=10000):
+                if name == "test": ran3.append(1); return (True, "ok")
+                return orig(name, args, bm, mr)
+            with um.patch.object(b3, "_stream_req", side_effect=fs3), \
+                 um.patch.object(m.Tools, "run_checked", side_effect=routed3):
+                list(b3.chat_with_tools([{"role": "user", "content": "write it"}], confirm_batch_fn=lambda c: True))
+            self.assertEqual(len(ran3), 0)                          # config off -> skipped
+        finally:
+            os.chdir(old); shutil.rmtree(d, ignore_errors=True)
+
     def test_done_claim_guard_matrix(self):
         """'Sudah diperbaiki!' with ZERO mutations -> ONE corrective retry; the
         model then writing the file -> clean turn_end (no warning). A second

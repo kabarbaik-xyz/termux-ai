@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.4.1-green)
+![version](https://img.shields.io/badge/version-7.5.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -459,6 +459,7 @@ In PLAN mode, the following command patterns are **automatically blocked** to pr
 The AI can also **write files** and **run any shell command**. Key behaviors:
 
 - **Batch confirmation** — all tool calls in one response are shown together; you approve or decline the entire batch with a single y/N
+- **Verified execution** — the loop keeps a **mutation ledger** (ground truth of what actually changed on disk, from the executor — never the model's narration). After each Build turn you get a green `✏️  changed: app.py, tests/x.py` footer listing the real files. A **done-claim guard** catches the "said fixed, but wasn't": an answer claiming completion (EN+ID) with zero successful mutations triggers ONE corrective retry, and a repeated empty claim prints `⚠ no files were actually changed this turn`. **Auto-verify** (config `auto_verify`, default on) runs the project's tests once after edits and shows the model the result before it can claim done. A **blank-out guard** refuses empty writes over non-empty files unless `allow_empty=true`
 - **Smart paste (`/paste`)** — recognizes what you pasted before sending: stack traces (shows referenced files + `[a]`ttaches bounded source around the failing frames), diffs/patches, GitHub issue/PR/repo links (`[f]`etches the page into the message), JSON, YAML, markdown, or code — with a line/token count header, first-lines preview, `e` to edit in $EDITOR first, Esc to cancel, Enter to send raw. `/paste --raw` skips the preview and sends verbatim (non-interactive runs always do)
 - **Auto-run for safe tools** — read-only tools (`read_file`, `list_files`, `search_files`, `fetch_url`) execute automatically without prompting
 - **Parallel batch execution** — batched read-only calls (read/list/search/fetch/search-web/weather/graphify) run **concurrently** in a small thread pool (`parallel_tools`, default on; `parallel_workers`, default 4), so a batch of reads takes as long as the slowest call instead of their sum. Mutating calls (`write_file`, `run_command`, `clone_repo`) stay sequential and run **after** the reads, preserving the old ordered semantics; results are always returned to the model in the original call order

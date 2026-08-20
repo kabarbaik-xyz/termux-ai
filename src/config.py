@@ -78,6 +78,7 @@ class Config:
         "max_iterations": 100,
         "continue_every": 10,
         "continue_mode": "auto",   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
+        "auto_verify": True,   # after edits in Build mode, run the project's tests once and show the model the result before it can claim done   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,

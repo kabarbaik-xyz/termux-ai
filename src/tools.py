@@ -1040,6 +1040,15 @@ class Tools:
                 if not p: raise ToolError("Error: Path is missing.")
                 content = args.get("content", "")
                 append = bool(args.get("append", False))
+                # Blank-out guard: an EMPTY write over an existing non-empty
+                # file is almost always a failed-arguments bug -- the model
+                # narrates success while the file is now blank. Require an
+                # explicit allow_empty to proceed.
+                if (not append and content == "" and os.path.isfile(p)
+                        and os.path.getsize(p) > 0 and not args.get("allow_empty")):
+                    raise ToolError("Error: refusing to overwrite a non-empty file with EMPTY content "
+                                    "(arguments may have been truncated). Pass allow_empty=true to "
+                                    "really blank it, or resend with the full content.")
 
                 cwd = os.getcwd()
                 # Resolve symlinks so a link inside cwd cannot escape it.

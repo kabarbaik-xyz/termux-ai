@@ -1193,6 +1193,7 @@ class OpenAICompatible(Backend):
         guard = LoopGuard(self.c, continue_fn)
         ledger = MutationLedger()   # ground truth: what actually changed on disk
         claim_corrected = False     # done-claim guard fires at most once per turn
+        auto_verified = False       # auto-verify runs at most once per turn
         self_heal = False   # one-shot: re-offer tools when a no-tools answer wanted them
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
@@ -1345,6 +1346,23 @@ class OpenAICompatible(Backend):
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
                 batch_results.append((name, result))
 
+            # Auto-verify: mutations happened this turn and the project has a
+            # test runner -> run the suite ONCE and feed the parsed result back
+            # before the model can claim done. Skipped when already run this
+            # turn, when tests already ran in-batch, or when disabled.
+            if (build_mode and self.c.get("auto_verify", True) and not auto_verified
+                    and ledger.successful()
+                    and not any(n == "test" for n, _, _w, _ok in outcomes)):
+                auto_verified = True
+                try:
+                    summary = Tools.run("test", {})
+                    yield {"type": "notice", "level": "info", "icon": "\u23f3",
+                           "text": "auto-verify \u00b7 running the project tests", "fatal": False}
+                    msgs.append({"role": "system", "content":
+                                 "AUTO-VERIFY: the project's tests were just run after your edits. Result:\n" + summary[:3000]
+                                 + ("\nFix the failures before answering." if "failed=0" not in summary and "Error" in summary else "")})
+                except Exception:
+                    pass   # no runner / test tool unavailable: skip silently
             failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
@@ -1413,6 +1431,7 @@ class AnthropicBackend(Backend):
         guard = LoopGuard(self.c, continue_fn)
         ledger = MutationLedger()   # ground truth: what actually changed on disk
         claim_corrected = False     # done-claim guard fires at most once per turn
+        auto_verified = False       # auto-verify runs at most once per turn
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -1551,6 +1570,23 @@ class AnthropicBackend(Backend):
 
             payload.append({"role": "user", "content": results})
 
+            # Auto-verify: mutations happened this turn and the project has a
+            # test runner -> run the suite ONCE and feed the parsed result back
+            # before the model can claim done. Skipped when already run this
+            # turn, when tests already ran in-batch, or when disabled.
+            if (build_mode and self.c.get("auto_verify", True) and not auto_verified
+                    and ledger.successful()
+                    and not any(n == "test" for n, _, _w, _ok in outcomes)):
+                auto_verified = True
+                try:
+                    summary = Tools.run("test", {})
+                    yield {"type": "notice", "level": "info", "icon": "\u23f3",
+                           "text": "auto-verify \u00b7 running the project tests", "fatal": False}
+                    payload.append({"role": "user", "content":
+                                 "AUTO-VERIFY: the project's tests were just run after your edits. Result:\n" + summary[:3000]
+                                 + ("\nFix the failures before answering." if "failed=0" not in summary and "Error" in summary else "")})
+                except Exception:
+                    pass   # no runner / test tool unavailable: skip silently
             failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:

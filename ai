@@ -12,7 +12,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.4.1"
+__version__ = "7.5.0"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -937,6 +937,7 @@ class Config:
         "max_iterations": 100,
         "continue_every": 10,
         "continue_mode": "auto",   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
+        "auto_verify": True,   # after edits in Build mode, run the project's tests once and show the model the result before it can claim done   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,
@@ -2095,6 +2096,15 @@ class Tools:
                 if not p: raise ToolError("Error: Path is missing.")
                 content = args.get("content", "")
                 append = bool(args.get("append", False))
+                # Blank-out guard: an EMPTY write over an existing non-empty
+                # file is almost always a failed-arguments bug -- the model
+                # narrates success while the file is now blank. Require an
+                # explicit allow_empty to proceed.
+                if (not append and content == "" and os.path.isfile(p)
+                        and os.path.getsize(p) > 0 and not args.get("allow_empty")):
+                    raise ToolError("Error: refusing to overwrite a non-empty file with EMPTY content "
+                                    "(arguments may have been truncated). Pass allow_empty=true to "
+                                    "really blank it, or resend with the full content.")
 
                 cwd = os.getcwd()
                 # Resolve symlinks so a link inside cwd cannot escape it.
@@ -3574,6 +3584,7 @@ class OpenAICompatible(Backend):
         guard = LoopGuard(self.c, continue_fn)
         ledger = MutationLedger()   # ground truth: what actually changed on disk
         claim_corrected = False     # done-claim guard fires at most once per turn
+        auto_verified = False       # auto-verify runs at most once per turn
         self_heal = False   # one-shot: re-offer tools when a no-tools answer wanted them
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
@@ -3726,6 +3737,23 @@ class OpenAICompatible(Backend):
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
                 batch_results.append((name, result))
 
+            # Auto-verify: mutations happened this turn and the project has a
+            # test runner -> run the suite ONCE and feed the parsed result back
+            # before the model can claim done. Skipped when already run this
+            # turn, when tests already ran in-batch, or when disabled.
+            if (build_mode and self.c.get("auto_verify", True) and not auto_verified
+                    and ledger.successful()
+                    and not any(n == "test" for n, _, _w, _ok in outcomes)):
+                auto_verified = True
+                try:
+                    summary = Tools.run("test", {})
+                    yield {"type": "notice", "level": "info", "icon": "\u23f3",
+                           "text": "auto-verify \u00b7 running the project tests", "fatal": False}
+                    msgs.append({"role": "system", "content":
+                                 "AUTO-VERIFY: the project's tests were just run after your edits. Result:\n" + summary[:3000]
+                                 + ("\nFix the failures before answering." if "failed=0" not in summary and "Error" in summary else "")})
+                except Exception:
+                    pass   # no runner / test tool unavailable: skip silently
             failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
@@ -3794,6 +3822,7 @@ class AnthropicBackend(Backend):
         guard = LoopGuard(self.c, continue_fn)
         ledger = MutationLedger()   # ground truth: what actually changed on disk
         claim_corrected = False     # done-claim guard fires at most once per turn
+        auto_verified = False       # auto-verify runs at most once per turn
         GATHER_N = max(2, int(self.c.get("gather_threshold", 5)))
         read_streak = 0
         phase_nudged = False
@@ -3932,6 +3961,23 @@ class AnthropicBackend(Backend):
 
             payload.append({"role": "user", "content": results})
 
+            # Auto-verify: mutations happened this turn and the project has a
+            # test runner -> run the suite ONCE and feed the parsed result back
+            # before the model can claim done. Skipped when already run this
+            # turn, when tests already ran in-batch, or when disabled.
+            if (build_mode and self.c.get("auto_verify", True) and not auto_verified
+                    and ledger.successful()
+                    and not any(n == "test" for n, _, _w, _ok in outcomes)):
+                auto_verified = True
+                try:
+                    summary = Tools.run("test", {})
+                    yield {"type": "notice", "level": "info", "icon": "\u23f3",
+                           "text": "auto-verify \u00b7 running the project tests", "fatal": False}
+                    payload.append({"role": "user", "content":
+                                 "AUTO-VERIFY: the project's tests were just run after your edits. Result:\n" + summary[:3000]
+                                 + ("\nFix the failures before answering." if "failed=0" not in summary and "Error" in summary else "")})
+                except Exception:
+                    pass   # no runner / test tool unavailable: skip silently
             failed = [n for n, _, _w, ok in outcomes if not ok]   # structured flags (run_checked), no string sniffing
             _stop, _reflect = guard.note_results(any_productive, failed)
             if _stop:
