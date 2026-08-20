@@ -2657,11 +2657,16 @@ class TestBackendResilience(_TmpHome):
         stop, reflect = g4.note_results(True, ["run_command"])
         self.assertIsNone(stop)                      # so this is failure #1, not #3
         # checkpoint: approved extends the ceiling, declined stops, None skips
-        g5 = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, lambda i, t: True)
+        g5 = m.LoopGuard({"max_iterations": 6, "continue_every": 2, "continue_mode": "prompt"}, lambda i, t: True)
         g5.note_calls(2)
         self.assertIsNone(g5.checkpoint())
         self.assertEqual(g5.iteration_cap, 8)
-        g6 = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, lambda i, t: False)
+        # continue_mode=auto (default): pi-style keep-going, no prompt at all
+        g5b = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, lambda i, t: (_ for _ in ()).throw(AssertionError("must not prompt")))
+        g5b.note_calls(2)
+        self.assertIsNone(g5b.checkpoint())
+        self.assertEqual(g5b.iteration_cap, 8)
+        g6 = m.LoopGuard({"max_iterations": 6, "continue_every": 2, "continue_mode": "prompt"}, lambda i, t: False)
         g6.note_calls(2)
         self.assertEqual(g6.checkpoint(), "stop")
         g7 = m.LoopGuard({"max_iterations": 6, "continue_every": 2}, None)

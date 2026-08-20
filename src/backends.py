@@ -183,6 +183,7 @@ class LoopGuard:
     def __init__(self, cfg, continue_fn=None):
         self.max_iterations = max(1, int(cfg.get("max_iterations", 50)))
         self.continue_every = max(1, int(cfg.get("continue_every", 10)))
+        self.mode = (cfg.get("continue_mode") or "auto").lower()   # auto | prompt
         self.next_prompt_at = self.continue_every
         self.iteration_cap = self.max_iterations
         self.continue_fn = continue_fn
@@ -230,13 +231,19 @@ class LoopGuard:
 
     def checkpoint(self):
         """Periodic 'continue?' gate. Returns "stop" when the user declined;
-        None to keep going. The ceiling extends ONLY on an approved checkpoint
-        (unattended runs are capped by max_iterations; a declined checkpoint
-        ends the task)."""
+        None to keep going. continue_mode=auto (default, pi-style) extends the
+        ceiling itself and keeps working without a prompt -- runaway safety
+        stays with the stuck-detector / 3-failure guard / repeat limits, and
+        Ctrl+C still interrupts (checkpoint -> /retry). continue_mode=prompt
+        asks the user every continue_every calls (the pre-7.4 behavior)."""
         if self.total_calls < self.next_prompt_at:
             return None
         if self.continue_fn is None:
             self.next_prompt_at += self.continue_every   # unattended: no prompt, no extension
+            return None
+        if self.mode == "auto":
+            self.next_prompt_at += self.continue_every   # keep going; safety = the backstops
+            self.iteration_cap += self.continue_every
             return None
         if self.continue_fn(self.iterations, self.total_calls):
             self.next_prompt_at += self.continue_every   # approved -> extend the ceiling

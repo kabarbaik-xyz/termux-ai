@@ -935,6 +935,8 @@ class Config:
         "max_context_md": 12000,   # cap for the CONTEXT.md project-memory attachment
         "max_tool_result": 30000,
         "max_iterations": 100,
+        "continue_every": 10,
+        "continue_mode": "auto",   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,
@@ -2562,6 +2564,7 @@ class LoopGuard:
     def __init__(self, cfg, continue_fn=None):
         self.max_iterations = max(1, int(cfg.get("max_iterations", 50)))
         self.continue_every = max(1, int(cfg.get("continue_every", 10)))
+        self.mode = (cfg.get("continue_mode") or "auto").lower()   # auto | prompt
         self.next_prompt_at = self.continue_every
         self.iteration_cap = self.max_iterations
         self.continue_fn = continue_fn
@@ -2609,13 +2612,19 @@ class LoopGuard:
 
     def checkpoint(self):
         """Periodic 'continue?' gate. Returns "stop" when the user declined;
-        None to keep going. The ceiling extends ONLY on an approved checkpoint
-        (unattended runs are capped by max_iterations; a declined checkpoint
-        ends the task)."""
+        None to keep going. continue_mode=auto (default, pi-style) extends the
+        ceiling itself and keeps working without a prompt -- runaway safety
+        stays with the stuck-detector / 3-failure guard / repeat limits, and
+        Ctrl+C still interrupts (checkpoint -> /retry). continue_mode=prompt
+        asks the user every continue_every calls (the pre-7.4 behavior)."""
         if self.total_calls < self.next_prompt_at:
             return None
         if self.continue_fn is None:
             self.next_prompt_at += self.continue_every   # unattended: no prompt, no extension
+            return None
+        if self.mode == "auto":
+            self.next_prompt_at += self.continue_every   # keep going; safety = the backstops
+            self.iteration_cap += self.continue_every
             return None
         if self.continue_fn(self.iterations, self.total_calls):
             self.next_prompt_at += self.continue_every   # approved -> extend the ceiling
@@ -4430,8 +4439,8 @@ class App:
         if self._auto_continue:
             return True  # user already chose "don't ask again" for this task
         if self.spinner: self.spinner.stop(); self.spinner = None  # stop before prompting
-        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far.{C.RESET}")
-        print(f"{C.DIM}[y] Yes  [a] Yes, don't ask again this task  [n] No{C.RESET}")
+        print(f"\n{C.YELLOW}\u23f1 long task \u00b7 {iters} iterations, {calls} tool calls{C.RESET}")
+        print(f"{C.DIM}[y] keep going  [a] keep going, don't ask again this task  [n] stop{C.RESET}")
         try:
             choice = input("> ").strip().lower()
         except (EOFError, KeyboardInterrupt):

@@ -76,6 +76,8 @@ class Config:
         "max_context_md": 12000,   # cap for the CONTEXT.md project-memory attachment
         "max_tool_result": 30000,
         "max_iterations": 100,
+        "continue_every": 10,
+        "continue_mode": "auto",   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,

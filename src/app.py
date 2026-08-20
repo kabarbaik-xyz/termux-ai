@@ -377,8 +377,8 @@ class App:
         if self._auto_continue:
             return True  # user already chose "don't ask again" for this task
         if self.spinner: self.spinner.stop(); self.spinner = None  # stop before prompting
-        print(f"\n{C.YELLOW}Task is long: {iters} iterations, {calls} tool calls so far.{C.RESET}")
-        print(f"{C.DIM}[y] Yes  [a] Yes, don't ask again this task  [n] No{C.RESET}")
+        print(f"\n{C.YELLOW}\u23f1 long task \u00b7 {iters} iterations, {calls} tool calls{C.RESET}")
+        print(f"{C.DIM}[y] keep going  [a] keep going, don't ask again this task  [n] stop{C.RESET}")
         try:
             choice = input("> ").strip().lower()
         except (EOFError, KeyboardInterrupt):
