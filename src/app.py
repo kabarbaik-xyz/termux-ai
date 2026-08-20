@@ -274,6 +274,10 @@ class App:
                 readline.set_completer(completer)
                 readline.set_completer_delims(' \t\n')
                 readline.parse_and_bind("tab: complete")
+                # Ctrl+T flips Build/Plan instantly (VolDown+T on Termux).
+                # Default transpose-chars is dead weight in a chat prompt; the
+                # mode is visible in the prompt (Phase A) so the flip is obvious.
+                readline.parse_and_bind('"\\C-t": "\\C-a/tools\\C-m"')
             except Exception: pass
             # V-07: secure history file permissions after readline writes
             import atexit
