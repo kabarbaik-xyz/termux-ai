@@ -12,7 +12,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.5.0"
+__version__ = "7.6.0"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -4199,7 +4199,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/backup", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/last", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit", "/quit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/backup", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -4505,21 +4505,35 @@ class App:
 
     def print_help(self):
         print(f"\n{C.BOLD}{C.CYAN}Termux AI Help{C.RESET}")
-        print(f"{C.DIM}Version: {__version__}{C.RESET}\n")
-        
-        cats = {
-            "Chat": [("/new", "Start new chat"), ("/continue", "Resume last session"), ("/show", "Show messages"), ("/regen", "Regenerate last reply"), ("/retry <m>", "Retry with a model"), ("/undo", "Undo last msg pair"), ("/multi", "Toggle multi-line")],
-            "History": [("/history", "List chats"), ("/load <id|name>", "Load chat"), ("/rename <t>", "Rename chat"), ("/session [n]", "Tag session (ai -S <n>)"), ("/save [name]", "Bookmark this session"), ("/sessions", "List saved sessions"), ("/unsave", "Un-bookmark this chat"), ("/search <q>", "Search chats"), ("/export", "Export to md"), ("/backup", "Snapshot history DB"), ("/import <file>", "Restore a session"), ("/prune [days]", "Delete old unpinned chats"), ("/delete <id>", "Delete chat")],
-            "Skills": [("/skill", "List / run skills"), ("/skill new <n>", "Create a skill"), ("/skill seed", "Add example skills"), ("/skill auto", "Toggle auto-load skills")],
-            "Context": [("/tokens", "Token usage"), ("/cost", "Cost estimate"), ("/compact", "Summarize to save tokens"), ("/context", "Project memory (CONTEXT.md)"), ("/diff", "Show git changes"), ("/strategy", "Toggle strategy-before-act"), ("/think", "Toggle extended thinking (Claude)")],
-            "Config": [("/setup", "Setup wizard"), ("/backends", "List backends"), ("/backend <n>", "Switch backend"), ("/model <n>", "Set model"), ("/models", "Local models + RAM"), ("/tools", "Build/Plan mode"), ("/system [p]", "View/set prompt"), ("/config [set k v]", "View/set config"), ("/profile", "Manage profiles"), ("/update", "Self-update")],
-            "Utils": [("/status", "System & API status"), ("/graphify [path] [mode]", "Code graph: deps, defs, API, models"), ("/process [on|off|auto]", "Show/compact tool-call output"), ("/copy", "Copy reply"), ("/paste", "Paste+send"), ("/speak", "TTS reply"), ("/share", "Share reply"), ("/server", "Local server: start/stop/pull"), ("/expand", "Full last reply (less)"), ("/last", "Alias: /expand"), ("/fold", "Fold long lists/tables"), ("/clear", "Clear screen"), ("/exit", "Quit")]
-        }
-        
-        for cat, cmds in cats.items():
-            print(f"{C.BOLD}{C.MAGENTA}{cat}{C.RESET}")
-            for cmd, desc in cmds:
-                print(f"  {C.CYAN}{cmd.ljust(15)}{C.RESET} {desc}")
+        print(f"{C.DIM}Version: {__version__} · Ctrl+T flip Build/Plan · Tab complete · ↑ history{C.RESET}\n")
+
+        daily = [
+            ("/n /new", "New chat"), ("/h /history", "List chats"), ("/l /load <id|name>", "Load chat"),
+            ("/p /paste", "Smart paste+send"), ("/t /tools", "Flip Build/Plan (on|off)"),
+            ("/sk /skill", "Run a skill (Tab lists)"), ("/m /model <n>", "Switch model"),
+            ("/b /backend <n>", "Switch backend"), ("/r /retry", "Retry last answer"), ("/d /diff", "Git changes made"),
+        ]
+        manage = [
+            ("/sessions /session", "List / tag sessions (ai -S <n>)"), ("/rename <t>", "Rename (auto = AI title)"),
+            ("/search <q>", "Search chats"), ("/context", "Project memory (CONTEXT.md)"),
+            ("/status", "Engine + backend status"), ("/config", "View/set config"),
+            ("/setup /update", "Configure / self-update"), ("/models /profile", "Models & profiles"),
+        ]
+        more = [
+            ("/save /unsave /delete /prune /export /import /backup", "Session admin"),
+            ("/undo /regen /compact /tokens /cost", "Chat admin"),
+            ("/process [on|off|auto]", "Tool-step display"), ("/strategy /think /multi /fold", "Toggles (on|off)"),
+            ("/copy /speak /share", "Mobile: clipboard/TTS/share"), ("/expand", "Long replies in less"),
+            ("/graphify /server /system", "Code graph · ollama server · prompt"), ("/clear /exit", "Clear · quit"),
+        ]
+        for title, rows, hint in (("Daily (aliases included)", daily, None),
+                                  ("Manage", manage, None),
+                                  ("More", more, "every command still works; /last and /quit are undocumented aliases")):
+            print(f"{C.BOLD}{C.MAGENTA}{title}{C.RESET}")
+            for cmd, desc in rows:
+                print(f"  {C.CYAN}{cmd.ljust(38)}{C.RESET} {desc}")
+            if hint:
+                print(f"  {C.DIM}{hint}{C.RESET}")
             print()
 
     def _attach_files(self, text):
@@ -5582,6 +5596,9 @@ class App:
         return 0
 
     _CMD_DISPATCH = {
+        "/n": "_cmd_new", "/h": "_cmd_history", "/l": "_cmd_load", "/p": "_cmd_paste",
+        "/t": "_cmd_tools", "/sk": "_cmd_skill", "/m": "_cmd_model", "/b": "_cmd_backend",
+        "/r": "_cmd_regen", "/d": "_cmd_diff",
         "/new": "_cmd_new", "/continue": "_cmd_continue", "/tools": "_cmd_tools", "/strategy": "_cmd_strategy", "/think": "_cmd_think", "/skill": "_cmd_skill", "/multi": "_cmd_multi",
         "/history": "_cmd_history", "/load": "_cmd_load", "/delete": "_cmd_delete", "/save": "_cmd_save", "/sessions": "_cmd_sessions", "/session": "_cmd_session", "/unsave": "_cmd_unsave", "/import": "_cmd_import", "/prune": "_cmd_prune",
         "/search": "_cmd_search", "/export": "_cmd_export", "/backup": "_cmd_backup", "/model": "_cmd_model", "/models": "_cmd_models",

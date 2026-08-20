@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.5.0-green)
+![version](https://img.shields.io/badge/version-7.6.0-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -223,6 +223,10 @@ Get an API key from <https://openrouter.ai/keys>
 ```bash
 ai
 ```
+
+The prompt shows the active mode at all times — `[ollama:qwen3 | BUILD | 34t]` (green `BUILD` = writes allowed, dim `plan` = read-only). **Ctrl+T** flips Build/Plan instantly (VolDown+T on Termux). **Tab** completes commands *and* their arguments (`/tools <Tab>` → on/off, `/skill <Tab>` → skills, `/model <Tab>` → models). Every toggle accepts the same grammar: bare = flip, or explicit `on|off|true|false` (`/tools on`, `/think off`).
+
+Daily shortcuts: `/n` new · `/h` history · `/l` load · `/p` paste · `/t` tools · `/sk` skill · `/m` model · `/b` backend · `/r` retry · `/d` diff
 
 ### One-shot mode
 
