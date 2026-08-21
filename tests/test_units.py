@@ -1908,6 +1908,19 @@ class TestFold(_TmpHome):
         self.assertIn("FULL REPLY BODY", buf.getvalue())
 
 
+class _FakeHTTPResp:
+    """Test double: http.client response surface for pooled _req tests."""
+    def __init__(self, status=429, body=b"{}", headers=None):
+        self.status = status
+        self._body = body
+        self.will_close = status >= 400   # errors don't return to the pool
+        self._headers = headers or {}
+    def read(self, n=None):
+        return self._body
+    def getheader(self, name, default=None):
+        return self._headers.get(name, default)
+
+
 class TestBackendResilience(_TmpHome):
     def setUp(self):
         super().setUp()
@@ -1919,12 +1932,16 @@ class TestBackendResilience(_TmpHome):
         (the cause of slow, noisy cloud backends). Retry now lives in ONE place."""
         b = m.OpenAICompatible({"retries": 3}, "t", {"base_url": "https://x.test/v1", "model": "m", "api_key": "k"})
         calls = {"n": 0}
-        class E429(m.urllib.error.HTTPError):
-            def __init__(self):
-                super().__init__("https://x.test/v1/chat/completions", 429, "x", {"Retry-After": "5"}, io.BytesIO(b"{}"))
-        def boom(req, timeout=120):
-            calls["n"] += 1; raise E429()
-        with um.patch("urllib.request.urlopen", side_effect=boom):
+        class Fake429Conn:
+            def __init__(self, *a, **k): pass
+            def request(self, *a, **k):
+                calls["n"] += 1
+                self._resp = _FakeHTTPResp(status=429, body=b'{"error":"rate"}',
+                                                headers={"Retry-After": "5"})
+            def getresponse(self):
+                return self._resp
+            def close(self): pass
+        with um.patch.object(m.http.client, "HTTPSConnection", Fake429Conn):
             with self.assertRaises(m.BackendError) as cm:
                 b._req("https://x.test/v1/chat/completions", {}, {})
         self.assertEqual(calls["n"], 1)             # single attempt, no internal loop
@@ -1936,12 +1953,15 @@ class TestBackendResilience(_TmpHome):
         through _stream_req -- not retries x 3 (the old _req internal loop)."""
         b = m.OpenAICompatible({"retries": 3, "retry_delay": 1.0}, "t", {"base_url": "https://x.test/v1", "model": "m", "api_key": "k"})
         calls = {"n": 0}
-        class E503(m.urllib.error.HTTPError):
-            def __init__(self):
-                super().__init__("https://x.test/v1/chat/completions", 503, "x", {}, io.BytesIO(b"{}"))
-        def boom(req, timeout=120):
-            calls["n"] += 1; raise E503()
-        with um.patch("urllib.request.urlopen", side_effect=boom), um.patch("time.sleep"):
+        class E503Conn:
+            def __init__(self, *a, **k): pass
+            def request(self, *a, **k):
+                calls["n"] += 1
+                self._resp = _FakeHTTPResp(status=503, body=b"{}")
+            def getresponse(self):
+                return self._resp
+            def close(self): pass
+        with um.patch.object(m.http.client, "HTTPSConnection", E503Conn), um.patch("time.sleep"):
             with self.assertRaises(m.BackendError):
                 list(b._stream_req("https://x.test/v1/chat/completions", {}, {}))
         self.assertEqual(calls["n"], 3)             # 3 total, NOT 9
@@ -1950,11 +1970,15 @@ class TestBackendResilience(_TmpHome):
         """When a 429 carries Retry-After, the retry waits that long instead of
         the default exponential backoff (respects the server's rate-limit ask)."""
         b = m.OpenAICompatible({"retries": 3, "retry_delay": 1.0}, "t", {"base_url": "https://x.test/v1", "model": "m", "api_key": "k"})
-        class E429(m.urllib.error.HTTPError):
-            def __init__(self):
-                super().__init__("https://x.test/v1/chat/completions", 429, "x", {"Retry-After": "7"}, io.BytesIO(b"{}"))
+        class E429Conn:
+            def __init__(self, *a, **k): pass
+            def request(self, *a, **k):
+                self._resp = _FakeHTTPResp(status=429, body=b"{}", headers={"Retry-After": "7"})
+            def getresponse(self):
+                return self._resp
+            def close(self): pass
         delays = []
-        with um.patch("urllib.request.urlopen", side_effect=lambda *a, **k: (_ for _ in ()).throw(E429())):
+        with um.patch.object(m.http.client, "HTTPSConnection", E429Conn):
             with self.assertRaises(m.BackendError):
                 list(b._stream_req("https://x.test/v1/chat/completions", {}, {}, notify=lambda a, t, d: delays.append(d)))
         self.assertEqual(delays, [7, 7])            # Retry-After used, not 1/2

@@ -5,6 +5,7 @@ Single-file, zero-dependency (stdlib only). Talks to any OpenAI-compatible
 endpoint, or natively to Anthropic's Messages API.
 """
 import os, sys, json, sqlite3, urllib.request, urllib.error, urllib.parse, subprocess, atexit, shutil, time, threading, re, html, shlex, signal, ipaddress, calendar
+import http.client
 import select, tempfile
 import concurrent.futures
 import zipfile

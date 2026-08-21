@@ -6,6 +6,7 @@ Single-file, zero-dependency (stdlib only). Talks to any OpenAI-compatible
 endpoint, or natively to Anthropic's Messages API.
 """
 import os, sys, json, sqlite3, urllib.request, urllib.error, urllib.parse, subprocess, atexit, shutil, time, threading, re, html, shlex, signal, ipaddress, calendar
+import http.client
 import select, tempfile
 import concurrent.futures
 import zipfile
@@ -2521,6 +2522,96 @@ class BackendError(Exception):
         self.retry_after = retry_after
 
 
+class _ConnPool:
+    """Tiny keep-alive pool for backend POSTs. stdlib urlopen opens a fresh
+    TCP+TLS handshake per request (~0.3-0.5s on phone networks); a tool loop
+    makes 5-20 requests per turn, so reusing connections cuts real seconds off
+    EVERY cloud backend. One persistent http.client connection per
+    (scheme, host, port); a stale/broken connection is dropped and reopened
+    transparently (one retry on first use)."""
+
+    _MAX_LIFETIME = 300.0   # re-handshake every 5 min (avoids half-dead NAT sockets)
+
+    def __init__(self):
+        self._conns = {}          # (scheme, host, port) -> [conn, born_ts, in_use]
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(url):
+        u = urllib.parse.urlparse(url)
+        scheme = u.scheme or "https"
+        host = u.hostname or ""
+        port = u.port or (443 if scheme == "https" else 80)
+        return (scheme, host, port), (u.path or "/") + (("?" + u.query) if u.query else "")
+
+    def post(self, url, headers, body, timeout=120):
+        """POST via a pooled connection. Returns (response, conn). The response
+        is already begun; callers stream .read(). After fully reading, callers
+        must call recycle()/drop so the socket returns to the pool."""
+        (scheme, host, port), path = self._key(url)
+        last = None
+        for _attempt in (1, 2):
+            conn, fresh = self._take(scheme, host, port, timeout)
+            try:
+                conn.request("POST", path, body=body, headers=headers)
+                resp = conn.getresponse()
+                self._mark(scheme, host, port, conn, resp)
+                return resp, conn
+            except Exception as e:
+                last = e
+                self._drop(scheme, host, port)
+                if fresh:
+                    raise    # a brand-new connection failing is a real error
+        raise last
+
+    def _take(self, scheme, host, port, timeout):
+        with self._lock:
+            slot = self._conns.get((scheme, host, port))
+            if slot and not slot[2] and (time.monotonic() - slot[1]) < self._MAX_LIFETIME:
+                slot[2] = True
+                return slot[0], False
+        if scheme == "https":
+            return http.client.HTTPSConnection(host, port, timeout=timeout), True
+        return http.client.HTTPConnection(host, port, timeout=timeout), True
+
+    def _mark(self, scheme, host, port, conn, resp):
+        """Mark the slot reusable only if the response allows keep-alive."""
+        try:
+            ka = not resp.will_close
+        except Exception:
+            ka = False
+        with self._lock:
+            if ka:
+                self._conns[(scheme, host, port)] = [conn, time.monotonic(), False]
+            else:
+                self._conns.pop((scheme, host, port), None)
+
+    def recycle(self, conn):
+        """No-op bookkeeping kept for clarity: _mark already returned the conn."""
+        return None
+
+    def _drop(self, scheme, host, port):
+        with self._lock:
+            slot = self._conns.pop((scheme, host, port), None)
+        if slot:
+            try: slot[0].close()
+            except Exception: pass
+
+    def drop_conn(self, conn):
+        try: conn.close()
+        except Exception: pass
+
+    def close(self):
+        with self._lock:
+            conns = list(self._conns.values()); self._conns.clear()
+        for slot in conns:
+            try: slot[0].close()
+            except Exception: pass
+
+
+_POOL = _ConnPool()
+
+
 def _parse_retry_after(val):
     """Parse an HTTP Retry-After header (integer seconds or HTTP-date) into a
     clamped delay in seconds, or None when unparseable."""
@@ -2855,6 +2946,33 @@ class OpenAIDeltaAccumulator:
         return [self.tool_calls[k] for k in sorted(self.tool_calls)]
 
 
+class _PooledResponse:
+    """Adapter over http.client responses returned by _ConnPool.post. Mimics
+    the urllib surface our code uses: .read(n), .status, context-manager, and
+    raises nothing exotic. The pooled connection was already marked for reuse
+    by the pool (based on keep-alive); errors mid-read are surfaced as OSError."""
+
+    def __init__(self, resp, conn):
+        self._resp = resp
+        self._conn = conn
+
+    @property
+    def status(self):
+        return self._resp.status
+
+    def read(self, n=-1):
+        return self._resp.read(n if n and n > 0 else None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        # Nothing to close per-request: the socket lives in the pool. A failed
+        # body read already dropped/reopened the connection via the pool's
+        # retry on next use.
+        return False
+
+
 class Backend:
 
     @staticmethod
@@ -2987,28 +3105,33 @@ class Backend:
             if v: return v
         return ""
     def _req(self, url, data, headers, timeout=120):
-        """Single HTTP attempt. Retry/backoff is the CALLER's job (_stream_req
-        for streaming, _with_retry otherwise) — having _req retry too would
-        compound into up to 9 attempts on a persistent 429/503, which is what
-        made cloud backends slow and noisy. Classifies the error as transient
-        and parses Retry-After so the caller waits the right amount."""
+        """Single HTTP attempt via the KEEP-ALIVE POOL (fresh TCP+TLS per
+        request was costing ~0.3-0.5s x every call in tool loops). Retry/backoff
+        is the CALLER's job (_stream_req / _with_retry). Classifies errors as
+        transient and parses Retry-After so the caller waits the right amount.
+        Returns a response-like object: .read(n), .status, context manager."""
         body = json.dumps(data).encode()
-        r = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            return urllib.request.urlopen(r, timeout=timeout)
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try: err_body = e.read().decode()[:300]
-            except Exception: pass
-            transient = e.code in (408, 429, 500, 502, 503, 504)
-            ra = _parse_retry_after(e.headers.get("Retry-After")) if e.code == 429 else None
-            raise BackendError(f"HTTP {e.code}: {err_body}", transient=transient, retry_after=ra)
-        except urllib.error.URLError as e:
-            if isinstance(e.reason, TimeoutError):
+            resp, _conn = _POOL.post(url, headers, body, timeout=timeout)
+            if resp.status >= 400:
+                err_body = ""
+                try: err_body = resp.read().decode()[:300]
+                except Exception: pass
+                _POOL.drop_conn(_conn)
+                transient = resp.status in (408, 429, 500, 502, 503, 504)
+                ra = None
+                try:
+                    ra = _parse_retry_after(resp.getheader("Retry-After")) if resp.status == 429 else None
+                except Exception:
+                    pass
+                raise BackendError(f"HTTP {resp.status}: {err_body}", transient=transient, retry_after=ra)
+            return _PooledResponse(resp, _conn)
+        except http.client.HTTPException as e:
+            raise BackendError(f"Connection failed: {e}", transient=True)
+        except OSError as e:
+            if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
                 raise BackendError("Request timed out.", transient=True)
-            raise BackendError(f"Connection failed: {e.reason}", transient=True)
-        except TimeoutError:
-            raise BackendError("Request timed out.", transient=True)
+            raise BackendError(f"Connection failed: {e}", transient=True)
 
     # Read-only, independent tools safe to run concurrently in a batch.
     SAFE_PARALLEL = {"read_file", "list_files", "search_files", "fetch_url", "web_search", "weather", "graphify", "project_info"}  # not test/git-mutations: side effects
