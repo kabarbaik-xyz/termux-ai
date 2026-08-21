@@ -21,9 +21,44 @@ class Database:
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id));
             CREATE TABLE IF NOT EXISTS resume_state (
                 cid INTEGER PRIMARY KEY, msgs TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS usage_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, cid INTEGER, model TEXT, backend TEXT,
+                tin INTEGER DEFAULT 0, tout INTEGER DEFAULT 0, est INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         """)
         self.conn.commit()
         self._init_fts()
+
+    def log_usage(self, cid, model, backend, tin, tout, est=False):
+        """Persist one request's real (or estimated) token usage."""
+        self.conn.execute(
+            "INSERT INTO usage_log (cid, model, backend, tin, tout, est) VALUES (?,?,?,?,?,?)",
+            (cid, model or "", backend or "", int(tin or 0), int(tout or 0), 1 if est else 0))
+        self.conn.commit()
+
+    def usage_totals(self, cid=None, days=None):
+        """Aggregated usage {tin, tout, requests, est} for a session (cid), a
+        time window (days), or everything."""
+        sql = "SELECT COALESCE(SUM(tin),0) tin, COALESCE(SUM(tout),0) tout, COUNT(*) n, COALESCE(SUM(est),0) est FROM usage_log WHERE 1=1"
+        params = []
+        if cid is not None:
+            sql += " AND cid = ?"; params.append(cid)
+        if days:
+            sql += " AND created_at >= datetime('now', ?)"; params.append(f"-{int(days)} days")
+        row = self.conn.execute(sql, params).fetchone()
+        return {"tin": row["tin"], "tout": row["tout"], "requests": row["n"], "est": row["est"]}
+
+    def usage_by_model(self, days=None):
+        """Per-model usage rows: {model: {tin, tout, requests, est}}."""
+        sql = "SELECT model, COALESCE(SUM(tin),0) tin, COALESCE(SUM(tout),0) tout, COUNT(*) n, COALESCE(SUM(est),0) est FROM usage_log"
+        params = []
+        if days:
+            sql += " WHERE created_at >= datetime('now', ?)"; params.append(f"-{int(days)} days")
+        sql += " GROUP BY model ORDER BY (SUM(tin)+SUM(tout)) DESC"
+        out = {}
+        for r in self.conn.execute(sql, params).fetchall():
+            out[r["model"]] = {"tin": r["tin"], "tout": r["tout"], "requests": r["n"], "est": r["est"]}
+        return out
 
     def _init_fts(self):
         """FTS5 full-text index over messages (external-content: the index holds

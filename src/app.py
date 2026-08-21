@@ -39,6 +39,7 @@ class App:
         self._step_count = 0             # tool steps in the current turn
         self._ctx_cache = None           # ((path, mtime), body) for CONTEXT.md project memory
         self._ws_backfilled = False     # one-time legacy workspace backfill
+        self._sess_usage = {"in": 0, "out": 0, "req": 0}   # live process counters (status line)
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
         # Pre-load the local model in the background at startup so the first
@@ -585,7 +586,37 @@ class App:
                         # (now history-laden) prompt — show its wait instead of
                         # a silent freeze. The final answer's first text stops it.
                         self._start_spinner()
+                elif et == "usage":
+                    # Real per-request usage from the backend (Phase A). Counted
+                    # live and persisted; a turn that yields NONE gets one
+                    # estimate entry at turn end (below).
+                    self._sess_usage["in"] += event.get("in", 0)
+                    self._sess_usage["out"] += event.get("out", 0)
+                    self._sess_usage["req"] += 1
+                    try:
+                        self.db.log_usage(self.cid,
+                                          (self.backend.profile.get("model", "") if self.backend else ""),
+                                          self.cfg.get("backend", ""),
+                                          event.get("in", 0), event.get("out", 0), est=False)
+                    except Exception:
+                        pass
                 elif et == "turn_end":
+                    # Estimation fallback: backends that report no usage get one
+                    # estimated entry per turn (marked est=1 so /tokens can show
+                    # honest "(estimated)" markers).
+                    if self._sess_usage["req"] == 0 and self.backend:
+                        try:
+                            _est_in = est_tok(" ".join(str(mm.get("content", "")) for mm in msgs)) if msgs else 0
+                            _est_out = est_tok(event.get("text") or "")
+                            self._sess_usage = {"in": self._sess_usage["in"] + _est_in,
+                                                "out": self._sess_usage["out"] + _est_out,
+                                                "req": self._sess_usage["req"] + 1}
+                            self.db.log_usage(self.cid,
+                                              (self.backend.profile.get("model", "") if self.backend else ""),
+                                              self.cfg.get("backend", ""),
+                                              _est_in, _est_out, est=True)
+                        except Exception:
+                            pass
                     # Verified-changes footer: from the LEDGER (ground truth of
                     # what actually changed on disk), never from the model's words.
                     if not self.quiet:
