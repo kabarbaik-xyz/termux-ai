@@ -74,3 +74,30 @@ def needs_completion_tokens(name, base_url=""):
     (and only accepts temperature=1). Other gateways (OpenRouter, opencode, vLLM
     ...) happily accept max_tokens, so only the official host is special-cased."""
     return "api.openai.com" in (base_url or "") and bool(_O_SERIES.search((name or "").lower()))
+
+# Context windows by model family (tokens). First-match-wins on the
+# lowercased name; falls back to config context_window. LOCAL models'
+# effective window is their num_ctx (the real limit on the phone), so the
+# registry is mainly for cloud families.
+CONTEXT_WINDOWS = [
+    (re.compile(r"(?:^|/)gpt-4\.1"), 1047576),
+    (re.compile(r"(?:^|/)gpt-4o"), 128000),
+    (re.compile(r"(?:^|/)o[1-3](?:-|$)"), 200000),
+    (re.compile(r"(?:^|/)claude-(?:3|4|sonnet|opus|haiku)"), 200000),
+    (re.compile(r"(?:^|/)gemini"), 1048576),
+    (re.compile(r"(?:^|/)deepseek"), 64000),
+    (re.compile(r"(?:^|/)grok"), 131072),
+    (re.compile(r"(?:^|/)mistral|mixtral"), 32768),
+    (re.compile(r"(?:^|/)qwen3"), 32768),
+    (re.compile(r"(?:^|/)qwen2|llama3|gemma|phi"), 8192),
+]
+
+
+def context_window_for(name, fallback=32000):
+    """Best-effort context window for a model name (cloud registry first,
+    config fallback). Local models should pass their num_ctx explicitly."""
+    nm = (name or "").lower()
+    for pat, win in CONTEXT_WINDOWS:
+        if pat.search(nm):
+            return win
+    return int(fallback or 32000)

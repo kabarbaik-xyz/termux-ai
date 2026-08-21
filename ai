@@ -1029,7 +1029,8 @@ class Config:
         "continue_every": 10,
         "continue_mode": "auto",   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "auto_verify": True,
-        "usage_stream": True,   # ask cloud streams for real token usage (final-chunk accounting)   # after edits in Build mode, run the project's tests once and show the model the result before it can claim done   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
+        "usage_stream": True,
+        "compact_at": 0.8,      # auto-compact at this fraction of the model's effective context window   # ask cloud streams for real token usage (final-chunk accounting)   # after edits in Build mode, run the project's tests once and show the model the result before it can claim done   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,
@@ -2479,6 +2480,34 @@ def needs_completion_tokens(name, base_url=""):
     (and only accepts temperature=1). Other gateways (OpenRouter, opencode, vLLM
     ...) happily accept max_tokens, so only the official host is special-cased."""
     return "api.openai.com" in (base_url or "") and bool(_O_SERIES.search((name or "").lower()))
+
+# Context windows by model family (tokens). First-match-wins on the
+# lowercased name; falls back to config context_window. LOCAL models'
+# effective window is their num_ctx (the real limit on the phone), so the
+# registry is mainly for cloud families.
+CONTEXT_WINDOWS = [
+    (re.compile(r"(?:^|/)gpt-4\.1"), 1047576),
+    (re.compile(r"(?:^|/)gpt-4o"), 128000),
+    (re.compile(r"(?:^|/)o[1-3](?:-|$)"), 200000),
+    (re.compile(r"(?:^|/)claude-(?:3|4|sonnet|opus|haiku)"), 200000),
+    (re.compile(r"(?:^|/)gemini"), 1048576),
+    (re.compile(r"(?:^|/)deepseek"), 64000),
+    (re.compile(r"(?:^|/)grok"), 131072),
+    (re.compile(r"(?:^|/)mistral|mixtral"), 32768),
+    (re.compile(r"(?:^|/)qwen3"), 32768),
+    (re.compile(r"(?:^|/)qwen2|llama3|gemma|phi"), 8192),
+]
+
+
+def context_window_for(name, fallback=32000):
+    """Best-effort context window for a model name (cloud registry first,
+    config fallback). Local models should pass their num_ctx explicitly."""
+    nm = (name or "").lower()
+    for pat, win in CONTEXT_WINDOWS:
+        if pat.search(nm):
+            return win
+    return int(fallback or 32000)
+
 
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
 # ══ termux_ai.backends ══ (fragment; merged by build.py)
@@ -5643,12 +5672,30 @@ class App:
                 print(f"{C.DIM}[{est_tok(reply)} tokens]{C.RESET}")
         elif pending:
             self._handle_interruption(pending, model)
-            # Auto-compact long conversations to stay within the context budget.
-            if self.cfg.get("auto_compact", True) and not self.quiet \
-                    and self.db.get_conv_tokens(self.cid) > self.cfg.get("auto_compact_threshold", 3000):
-                self.info("Auto-compacting long conversation...")
+        # Auto-compact long conversations to stay within the context budget.
+        # Model-aware: the trigger is a FRACTION of the effective window —
+        # cloud uses the model's registry window (gpt-4o 128k, gemini 1M...),
+        # local uses its num_ctx — instead of a fixed 3000-token guess. That's
+        # the pi-style '(auto)': compaction fires at the right moment per model.
+        if self.cid and self.cfg.get("auto_compact", True) and not self.quiet:
+            win = self._effective_window()
+            threshold = int(win * float(self.cfg.get("compact_at", 0.8)))
+            if self.db.get_conv_tokens(self.cid) > threshold:
+                self.info(f"Auto-compacting long conversation ({self.db.get_conv_tokens(self.cid)}t > {threshold}t = {int(self.cfg.get('compact_at', 0.8) * 100)}% of {win // 1000}k)...")
                 ok, cmsg = self._compact_conversation(self.cid)
                 if ok: self.success(cmsg)
+
+    def _effective_window(self):
+        """The effective context window for the ACTIVE model: local models
+        use their num_ctx tuning (the phone's real limit); cloud models use the
+        CONTEXT_WINDOWS registry with the config context_window fallback."""
+        if not self.backend:
+            return int(self.cfg.get("context_window", 32000))
+        if getattr(self.backend, "is_local", False):
+            nctx = self.backend._eff("num_ctx") or 0
+            return int(nctx) if nctx else int(self.cfg.get("context_window", 32000))
+        return context_window_for(self.backend.profile.get("model", ""),
+                                  fallback=self.cfg.get("context_window", 32000))
 
     def _make_strategy(self, task):
         """Produce a concise numbered strategy for a task via a non-tool completion.

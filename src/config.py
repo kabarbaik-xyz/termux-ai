@@ -79,7 +79,8 @@ class Config:
         "continue_every": 10,
         "continue_mode": "auto",   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "auto_verify": True,
-        "usage_stream": True,   # ask cloud streams for real token usage (final-chunk accounting)   # after edits in Build mode, run the project's tests once and show the model the result before it can claim done   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
+        "usage_stream": True,
+        "compact_at": 0.8,      # auto-compact at this fraction of the model's effective context window   # ask cloud streams for real token usage (final-chunk accounting)   # after edits in Build mode, run the project's tests once and show the model the result before it can claim done   # auto = keep working pi-style (backstops still guard); prompt = ask to continue every continue_every calls
         "repeat_limit": 3,
         "re_read_limit": 3,
         "gather_first": True,

@@ -1296,12 +1296,30 @@ class App:
                 print(f"{C.DIM}[{est_tok(reply)} tokens]{C.RESET}")
         elif pending:
             self._handle_interruption(pending, model)
-            # Auto-compact long conversations to stay within the context budget.
-            if self.cfg.get("auto_compact", True) and not self.quiet \
-                    and self.db.get_conv_tokens(self.cid) > self.cfg.get("auto_compact_threshold", 3000):
-                self.info("Auto-compacting long conversation...")
+        # Auto-compact long conversations to stay within the context budget.
+        # Model-aware: the trigger is a FRACTION of the effective window —
+        # cloud uses the model's registry window (gpt-4o 128k, gemini 1M...),
+        # local uses its num_ctx — instead of a fixed 3000-token guess. That's
+        # the pi-style '(auto)': compaction fires at the right moment per model.
+        if self.cid and self.cfg.get("auto_compact", True) and not self.quiet:
+            win = self._effective_window()
+            threshold = int(win * float(self.cfg.get("compact_at", 0.8)))
+            if self.db.get_conv_tokens(self.cid) > threshold:
+                self.info(f"Auto-compacting long conversation ({self.db.get_conv_tokens(self.cid)}t > {threshold}t = {int(self.cfg.get('compact_at', 0.8) * 100)}% of {win // 1000}k)...")
                 ok, cmsg = self._compact_conversation(self.cid)
                 if ok: self.success(cmsg)
+
+    def _effective_window(self):
+        """The effective context window for the ACTIVE model: local models
+        use their num_ctx tuning (the phone's real limit); cloud models use the
+        CONTEXT_WINDOWS registry with the config context_window fallback."""
+        if not self.backend:
+            return int(self.cfg.get("context_window", 32000))
+        if getattr(self.backend, "is_local", False):
+            nctx = self.backend._eff("num_ctx") or 0
+            return int(nctx) if nctx else int(self.cfg.get("context_window", 32000))
+        return context_window_for(self.backend.profile.get("model", ""),
+                                  fallback=self.cfg.get("context_window", 32000))
 
     def _make_strategy(self, task):
         """Produce a concise numbered strategy for a task via a non-tool completion.
