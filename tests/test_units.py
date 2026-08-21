@@ -3498,7 +3498,7 @@ class TestInterruptContinue(_TmpHome):
         self.assertIn("Interrupted turn pending", buf.getvalue())
 
 
-class TestHelpers(unittest.TestCase):
+class TestHelpers(_TmpHome):
     def test_parse_value(self):
         from_types = lambda v: type(m.parse_value(v)).__name__
         self.assertEqual(m.parse_value("true"), True)

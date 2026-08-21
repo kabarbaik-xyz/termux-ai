@@ -663,6 +663,23 @@ class Database:
         except sqlite3.Error: return set()
 
     def _migrate_schema(self):
+        # Safety net: snapshot the DB BEFORE any schema change. Migrations are
+        # additive in practice, but if anything ever goes wrong here the user's
+        # history is recoverable from the pre-migration backup (kept, rotating,
+        # alongside /backup snapshots).
+        conv_cols = self._table_cols("conversations")
+        msg_cols = self._table_cols("messages")
+        needs_alter = (conv_cols and any(c not in conv_cols for c in (
+            "title", "model", "backend", "created_at", "updated_at", "pinned",
+            "cwd", "tools_mode", "skills_json", "slug", "workspace"))) or \
+                     (msg_cols and any(c not in msg_cols for c in (
+                         "conversation_id", "role", "content", "model", "tokens", "created_at")))
+        if needs_alter:
+            try:
+                ts = time.strftime("%Y%m%d-%H%M%S")
+                self.conn.execute("VACUUM INTO ?", (str(CONFIG_DIR / f"backup-premigrate-{ts}.db"),))
+            except Exception:
+                pass   # migration proceeds even if the snapshot fails
         try:
             self.conn.execute("BEGIN")
             conv_cols = self._table_cols("conversations")
