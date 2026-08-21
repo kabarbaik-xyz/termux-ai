@@ -2992,6 +2992,45 @@ class TestBackendResilience(_TmpHome):
         self.assertIn("(r42)", line)
         self.assertIn("(auto)", line)
 
+    def test_reasoning_effort_per_profile_and_selfhealing(self):
+        """Phase B: reasoning_effort is per-profile opt-in (bynara-style reasoning
+        models think by default; 'low' = shortest thinking). Never sent unset,
+        invalid, or on the native Ollama path; a gateway 400 mentioning it gets
+        the field stripped, ONE retry, and the profile cleared."""
+        # set -> included
+        b = m.OpenAICompatible({}, "bynara", {"base_url": "https://router.bynara.id/v1", "model": "laguna-s-2.1",
+                                              "api_key": "k", "reasoning_effort": "low"})
+        self.assertEqual(b._payload([{"role": "user", "content": "x"}], True)["reasoning_effort"], "low")
+        # unset -> absent (every other backend: byte-identical payloads)
+        b2 = m.OpenAICompatible({}, "opencode", {"base_url": "https://opencode.ai/zen/v1", "model": "big-pickle", "api_key": "k"})
+        self.assertNotIn("reasoning_effort", b2._payload([{"role": "user", "content": "x"}], True))
+        # invalid value ignored
+        b3 = m.OpenAICompatible({}, "t", {"base_url": "https://x/v1", "model": "m", "api_key": "k", "reasoning_effort": "turbo"})
+        self.assertNotIn("reasoning_effort", b3._payload([{"role": "user", "content": "x"}], True))
+        # local NEVER sends it (native shim governs thinking)
+        b4 = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b",
+                                                "api_key": "o", "reasoning_effort": "low"})
+        b4._caps_cache["qwen3:1.7b"] = ["thinking"]
+        self.assertNotIn("reasoning_effort", b4._payload([{"role": "user", "content": "x"}], True))
+        # self-heal: 400 mentioning reasoning_effort -> strip, retry once, clear profile
+        calls = {"n": 0, "bodies": []}
+        def fake_req(url, data, headers, timeout=120):
+            calls["n"] += 1; calls["bodies"].append(json.loads(json.dumps(data)))
+            if "reasoning_effort" in data:
+                raise m.BackendError("HTTP 400: {'error':'reasoning_effort is not supported'}", transient=False)
+            class R:
+                status = 200
+                def read(self, n=-1):
+                    return b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return R()
+        with um.patch.object(b, "_req", side_effect=fake_req):
+            list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        self.assertEqual(calls["n"], 2)
+        self.assertNotIn("reasoning_effort", calls["bodies"][-1])
+        self.assertIsNone(b.profile.get("reasoning_effort"))
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API

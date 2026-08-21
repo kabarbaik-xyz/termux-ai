@@ -761,11 +761,21 @@ class Backend:
                 try:
                     resp = self._req(url, _req_data, headers)
                 except BackendError as _be:
-                    _so = (_req_data or {}).get("stream_options")
-                    if (_so and "stream_options" in str(_be).lower()
-                            and "400" in str(_be)):
-                        data = {k: v for k, v in _req_data.items() if k != "stream_options"}
-                        self.c["usage_stream"] = False   # stop asking this gateway
+                    _msg = str(_be).lower()
+                    _dropped = False
+                    if "400" in _msg:
+                        # Self-heal strict gateways: strip the optional field the
+                        # gateway complained about, retry ONCE, remember.
+                        if _req_data.get("stream_options") and "stream_options" in _msg:
+                            data = {k: v for k, v in _req_data.items() if k != "stream_options"}
+                            self.c["usage_stream"] = False
+                            _dropped = True
+                        elif _req_data.get("reasoning_effort") and "reasoning" in _msg:
+                            data = {k: v for k, v in _req_data.items() if k != "reasoning_effort"}
+                            try: self.profile.pop("reasoning_effort", None)
+                            except Exception: pass
+                            _dropped = True
+                    if _dropped:
                         resp = self._req(url, data, headers)
                     else:
                         raise
@@ -1225,6 +1235,16 @@ class OpenAICompatible(Backend):
         d = {"model": self._model(), "messages": msgs, "stream": stream}
         if tools is not None:
             d["tools"] = tools
+        # Reasoning-effort control (per-profile opt-in, e.g. bynara's reasoning
+        # models): 'low' = shortest thinking / fastest reply, 'high' = deep.
+        # Documented no-op on non-reasoning models (bynara) and ignored by
+        # unknown gateways; a 400 mentioning it is stripped + retried once by
+        # _stream_req (same self-healing stream_options has). NEVER sent on
+        # the native Ollama path (local thinking is controlled by the shim).
+        if not self._native_ollama():
+            reff = (self.profile.get("reasoning_effort") or "").strip().lower()
+            if reff in ("low", "medium", "high", "minimal"):
+                d["reasoning_effort"] = reff
         # Ask OpenAI-compat streams for usage in the final chunk (pi-style
         # accounting). Native Ollama reports usage on its final NDJSON event;
         # Anthropic reports it in message_start/message_delta. If a strict
