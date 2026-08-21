@@ -586,6 +586,20 @@ class App:
                         # (now history-laden) prompt — show its wait instead of
                         # a silent freeze. The final answer's first text stops it.
                         self._start_spinner()
+                elif et == "stream_progress":
+                    # Live phase/size on the spinner: turns a silent
+                    # gateway-buffered wait into visible progress ("writing
+                    # docker.md · 8.4KB · 41s"), and proves the stream is alive.
+                    if self.spinner and not self.quiet:
+                        el = int(event.get("elapsed") or 0)
+                        cc = int(event.get("content_chars") or 0)
+                        ac = int(event.get("arg_chars") or 0)
+                        if ac > 200:
+                            self.spinner.set_msg(f"streaming tool call · {ac / 1000:.1f}KB")
+                        elif cc > 0:
+                            self.spinner.set_msg(f"streaming · {cc} chars")
+                        else:
+                            self.spinner.set_msg(f"generating · {el}s")
                 elif et == "usage":
                     # Real per-request usage from the backend (Phase A). Counted
                     # live and persisted; a turn that yields NONE gets one

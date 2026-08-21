@@ -1438,8 +1438,24 @@ class OpenAICompatible(Backend):
             acc = OpenAIDeltaAccumulator()
             _live = []   # native LOCAL thinking chunks, re-yielded dim as they arrive
             _usage = {}
+            _prog_t0 = time.monotonic(); _prog_args = 0; _prog_content = 0; _prog_last = 0.0
             for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 acc.feed(chunk, live_thinking=(_live.append if mapper else None))
+                # Progress beacon (throttled to ~1/s): lets the UI show WHAT is
+                # streaming (content chars, or write_file argument bytes for the
+                # doc case) even when the gateway buffers and nothing renders
+                # for tens of seconds. Cheap: int counters, one compare.
+                _d = (chunk.get("choices") or [{}])[0].get("delta") if chunk.get("choices") else None
+                if _d:
+                    _prog_content += len(_d.get("content") or "")
+                    for _tc in (_d.get("tool_calls") or []):
+                        _fn = _tc.get("function") or {}
+                        _prog_args += len(_fn.get("arguments") or "") + len(_fn.get("name") or "")
+                _now = time.monotonic()
+                if _now - _prog_last >= 1.0:
+                    _prog_last = _now
+                    yield {"type": "stream_progress", "elapsed": _now - _prog_t0,
+                           "content_chars": _prog_content, "arg_chars": _prog_args}
                 _u = Backend._usage_from_chunk(chunk)
                 if _u:
                     _usage.update({"in": _usage.get("in", 0) + (0 if _u[2] == "out" else _u[0]),
@@ -1666,7 +1682,15 @@ class AnthropicBackend(Backend):
             stop_reason = None
 
             _usage = {}
+            _prog_t0 = time.monotonic(); _prog_last = 0.0; _prog_content = 0
             for chunk in self._stream_req(url, d, h):
+                _dt = chunk.get("delta") or {} if chunk.get("type") == "content_block_delta" else {}
+                _prog_content += len(_dt.get("text") or "") if isinstance(_dt, dict) else 0
+                _now = time.monotonic()
+                if _now - _prog_last >= 1.0:
+                    _prog_last = _now
+                    yield {"type": "stream_progress", "elapsed": _now - _prog_t0,
+                           "content_chars": _prog_content, "arg_chars": 0}
                 _u = Backend._usage_from_chunk(chunk)
                 if _u:
                     _usage.update({"in": _usage.get("in", 0) + (0 if _u[2] == "out" else _u[0]),
