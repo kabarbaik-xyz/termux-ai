@@ -344,6 +344,31 @@ class OpenAIDeltaAccumulator:
 
 
 class Backend:
+
+    @staticmethod
+    def _usage_from_chunk(evt):
+        """Pull real usage (input, output) from a stream chunk of ANY backend:
+        OpenAI-compat final chunk (usage.prompt_tokens/completion_tokens),
+        Anthropic message_start (usage.input_tokens) / message_delta
+        (usage.output_tokens), native Ollama final event (prompt_eval_count/
+        eval_count). Returns (tin, tout, kind) or None; kind says which field
+        arrived so callers can merge over multiple events."""
+        if not isinstance(evt, dict):
+            return None
+        u = evt.get("usage")
+        if isinstance(u, dict):
+            tin = u.get("prompt_tokens") or u.get("input_tokens") or u.get("input_tokens_details")
+            tout = u.get("completion_tokens") or u.get("output_tokens")
+            if isinstance(tin, dict):
+                tin = sum(v for v in tin.values() if isinstance(v, (int, float))) or None
+            if isinstance(tout, dict):
+                tout = sum(v for v in tout.values() if isinstance(v, (int, float))) or None
+            if tin is not None or tout is not None:
+                return (int(tin or 0), int(tout or 0), "both" if (tin is not None and tout is not None) else ("in" if tin is not None else "out"))
+        # native Ollama final event
+        if evt.get("done") and (evt.get("prompt_eval_count") or evt.get("eval_count")):
+            return (int(evt.get("prompt_eval_count") or 0), int(evt.get("eval_count") or 0), "both")
+        return None
     def __init__(self, cfg):
         self.c = cfg
         self.profile = {}
@@ -608,7 +633,18 @@ class Backend:
         for attempt in range(1, attempts + 1):
             emitted = False
             try:
-                resp = self._req(url, data, headers)
+                _req_data = data
+                try:
+                    resp = self._req(url, _req_data, headers)
+                except BackendError as _be:
+                    _so = (_req_data or {}).get("stream_options")
+                    if (_so and "stream_options" in str(_be).lower()
+                            and "400" in str(_be)):
+                        data = {k: v for k, v in _req_data.items() if k != "stream_options"}
+                        self.c["usage_stream"] = False   # stop asking this gateway
+                        resp = self._req(url, data, headers)
+                    else:
+                        raise
                 for evt in self._sse_lines(resp, ndjson=ndjson):
                     if mapper:
                         evt = mapper(evt)
@@ -1065,6 +1101,14 @@ class OpenAICompatible(Backend):
         d = {"model": self._model(), "messages": msgs, "stream": stream}
         if tools is not None:
             d["tools"] = tools
+        # Ask OpenAI-compat streams for usage in the final chunk (pi-style
+        # accounting). Native Ollama reports usage on its final NDJSON event;
+        # Anthropic reports it in message_start/message_delta. If a strict
+        # gateway 400s on stream_options, _stream_req disables it for the
+        # process and retries once (usage falls back to estimates).
+        if (stream and not self._native_ollama()
+                and bool(self.c.get("usage_stream", True))):
+            d["stream_options"] = {"include_usage": True}
         if self._native_ollama():
             d["think"] = not bool(self._eff("ollama_no_think", True))
             opts = {}
@@ -1149,7 +1193,12 @@ class OpenAICompatible(Backend):
         fr = evt.get("finish_reason")
         if fr is None and evt.get("done_reason"):
             fr = evt["done_reason"]
-        return {"choices": [{"delta": delta, "finish_reason": fr}]}
+        out = {"choices": [{"delta": delta, "finish_reason": fr}]}
+        # carry native usage through so the loop's extractor sees it
+        if evt.get("done") and (evt.get("prompt_eval_count") or evt.get("eval_count")):
+            out["usage"] = {"prompt_tokens": evt.get("prompt_eval_count") or 0,
+                            "completion_tokens": evt.get("eval_count") or 0}
+        return out
 
     def _model(self):
         m = self.profile.get("model")
@@ -1180,7 +1229,8 @@ class OpenAICompatible(Backend):
             body = json.loads(self._with_retry(lambda: self._req(self._url(), d, h).read()))
             yield (body.get("message") or {}).get("content", "")
         else:
-            yield self._with_retry(lambda: json.loads(self._req(self._url(), d, h).read())["choices"][0]["message"]["content"])
+            _body = self._with_retry(lambda: json.loads(self._req(self._url(), d, h).read()))
+            yield _body["choices"][0]["message"]["content"]
 
     def chat_with_tools(self, msgs, confirm_batch_fn=None, continue_fn=None):
         self._check_api_key()
@@ -1243,11 +1293,18 @@ class OpenAICompatible(Backend):
 
             acc = OpenAIDeltaAccumulator()
             _live = []   # native LOCAL thinking chunks, re-yielded dim as they arrive
+            _usage = {}
             for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 acc.feed(chunk, live_thinking=(_live.append if mapper else None))
+                _u = Backend._usage_from_chunk(chunk)
+                if _u:
+                    _usage.update({"in": _usage.get("in", 0) + (0 if _u[2] == "out" else _u[0]),
+                                   "out": _usage.get("out", 0) + (0 if _u[2] == "in" else _u[1])})
                 if _live:
                     yield {"type": "thinking", "content": "".join(_live)}
                     _live.clear()
+            if _usage:
+                yield {"type": "usage", **_usage}
 
             content_buf, reasoning_buf = acc.content, acc.reasoning
             calls = acc.calls
@@ -1464,7 +1521,12 @@ class AnthropicBackend(Backend):
             text_block = ""
             stop_reason = None
 
+            _usage = {}
             for chunk in self._stream_req(url, d, h):
+                _u = Backend._usage_from_chunk(chunk)
+                if _u:
+                    _usage.update({"in": _usage.get("in", 0) + (0 if _u[2] == "out" else _u[0]),
+                                   "out": _usage.get("out", 0) + (0 if _u[2] == "in" else _u[1])})
                 evt_type = chunk.get("type")
                 if evt_type == "message_delta":
                     sr = chunk.get("delta", {}).get("stop_reason")
@@ -1496,6 +1558,8 @@ class AnthropicBackend(Backend):
 
             blocks = [content_blocks[k] for k in sorted(content_blocks.keys())]
             tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+            if _usage:
+                yield {"type": "usage", **_usage}
 
             for tu in tool_uses:
                 try: tu["input"] = json.loads(tu.get("input", "{}") or "{}")
