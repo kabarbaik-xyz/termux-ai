@@ -512,6 +512,8 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         ctx = self._project_context()
         if ctx:
             print(f"{C.BOLD}Context:{C.RESET} CONTEXT.md attached ({len(ctx)} chars)")
+        u = self._sess_usage
+        print(f"{C.BOLD}Usage:{C.RESET} \u2191{u['in']:,} \u2193{u['out']:,} \u00b7 {u['req']} req (session) \u00b7 window {self._effective_window() // 1000}k")
         ws = self._current_workspace()
         if ws:
             n_ws = len(self.db.list_convs(workspace=ws))
@@ -802,8 +804,30 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         self.success(f"Renamed to: {title}")
 
     def _cmd_tokens(self, args):
-        if not self.cid: self.warn("No active chat."); return
-        self.info(f"This chat: {self.db.get_conv_tokens(self.cid)} tokens | All chats: {self.db.get_total_tokens()} tokens")
+        """Pi-style token usage: /tokens [today|7d|all] (default all)."""
+        scope = args[0].lower() if args and args[0].lower() in ("today", "7d", "all") else "all"
+        days = {"today": 1, "7d": 7, "all": None}.get(scope)
+        u = self._sess_usage
+        self.info(f"Session (this process): \u2191{u['in']:,} \u2193{u['out']:,} over {u['req']} request(s)")
+        by_model = self.db.usage_by_model(days=days)
+        if not by_model:
+            self.info("No recorded usage yet.")
+        else:
+            print(f"{C.BOLD}{scope.upper():<6}{'model':<28}{'\u2191in':>12}{'\u2193out':>12}{'req':>7}{'':>10}{C.RESET}")
+            ti = to = tr = 0
+            for mdl, r in by_model.items():
+                ti += r["tin"]; to += r["tout"]; tr += r["requests"]
+                est = f"{C.DIM}~{C.RESET}" if r["est"] else " "
+                price = self._match_price(mdl)
+                cost = f"${(r['tin'] * price) / 1e6 + (r['tout'] * price * 3) / 1e6:.3f}" if price else "local"
+                print(f"{scope:<6}{(mdl or '?'):<28}{r['tin']:>12,}{r['tout']:>12,}{r['requests']:>7}  {est} {cost:>8}")
+            print(f"{C.BOLD}{scope:<6}{'TOTAL':<28}{ti:>12,}{to:>12,}{tr:>7}{C.RESET}")
+            if any(r["est"] for r in by_model.values()):
+                print(f"{C.DIM}~ = estimated (backend did not report usage){C.RESET}")
+        if self.cid:
+            win = self._effective_window()
+            conv_t = self.db.get_conv_tokens(self.cid)
+            self.info(f"This chat: {conv_t:,}t / {win:,}t window ({conv_t * 100 // max(win, 1)}%) \u00b7 All chats: {self.db.get_total_tokens():,}t")
 
     def _cmd_diff(self, args):
         try:

@@ -1293,7 +1293,7 @@ class App:
             self._persist_session()
             if self.cfg.get("tts_replies", False): TermuxAPI.speak(reply)
             if self.cfg.get("show_tokens", True) and not self.quiet:
-                print(f"{C.DIM}[{est_tok(reply)} tokens]{C.RESET}")
+                print(self._usage_line())
         elif pending:
             self._handle_interruption(pending, model)
         # Auto-compact long conversations to stay within the context budget.
@@ -1308,6 +1308,23 @@ class App:
                 self.info(f"Auto-compacting long conversation ({self.db.get_conv_tokens(self.cid)}t > {threshold}t = {int(self.cfg.get('compact_at', 0.8) * 100)}% of {win // 1000}k)...")
                 ok, cmsg = self._compact_conversation(self.cid)
                 if ok: self.success(cmsg)
+
+    def _usage_line(self):
+        """Pi-style usage footer after each reply:
+            ↑1.2k ↓340 · 12.1k/32k (38%) (auto)
+        Real numbers from usage events (est → '~' markers when estimated);
+        context is conversation tokens vs the model's effective window
+        (local = num_ctx). '(auto)' shows when auto-compact is armed."""
+        u = self._sess_usage
+        est_mark = "~" if u["req"] and self.db.usage_totals(self.cid, days=1).get("est", 1) > 0 and u["in"] == 0 else ""
+        win = self._effective_window()
+        conv_t = self.db.get_conv_tokens(self.cid) if self.cid else 0
+        pct = min(100.0, conv_t * 100.0 / win) if win else 0.0
+        auto = " (auto)" if self.cfg.get("auto_compact", True) else ""
+        def _fmt(n):
+            return f"{n / 1e6:.1f}M" if n >= 1e6 else (f"{n / 1e3:.1f}k" if n >= 1000 else str(n))
+        return (f"{C.DIM}\u2191{est_mark}{_fmt(u['in'])} \u2193{est_mark}{_fmt(u['out'])} \u00b7 "
+                f"{_fmt(conv_t)}/{_fmt(win)} ({pct:.0f}%) (r{u['req']}){auto}{C.RESET}")
 
     def _effective_window(self):
         """The effective context window for the ACTIVE model: local models
@@ -1606,7 +1623,14 @@ class App:
                 # Multi-line input is visible in the prompt (¶) so a silent
                 # config toggle can never surprise you with double-Enter.
                 ml = "\u00b6" if self.multi_line else ""
-                info_str = f"{C.DIM}[{b_name}:{b_model} | {mode_s} | {tok_count}t{ml}]{C.RESET}"
+                # Context pressure: % of the model's effective window in use.
+                try:
+                    _win = self._effective_window()
+                    _pct = min(99, int(tok_count * 100 / _win)) if _win else 0
+                    ctx_s = f" | {_pct}%" if tok_count else ""
+                except Exception:
+                    ctx_s = ""
+                info_str = f"{C.DIM}[{b_name}:{b_model} | {mode_s} | {tok_count}t{ctx_s}{ml}]{C.RESET}"
                 
                 if self.multi_line:
                     prefix = f"{C.GREEN}┌─ {info_str}\n{C.GREEN}└─▸{C.RESET} "
