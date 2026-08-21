@@ -356,6 +356,8 @@ class Backend:
         if not isinstance(evt, dict):
             return None
         u = evt.get("usage")
+        if not isinstance(u, dict) and isinstance(evt.get("message"), dict):
+            u = evt["message"].get("usage")   # Anthropic message_start nests it
         if isinstance(u, dict):
             tin = u.get("prompt_tokens") or u.get("input_tokens") or u.get("input_tokens_details")
             tout = u.get("completion_tokens") or u.get("output_tokens")

@@ -2892,6 +2892,82 @@ class TestBackendResilience(_TmpHome):
             self.assertEqual(nv["level"], "info")          # dim, not a warning
             self.assertNotIn("Stop reading one file", nv["text"])   # no paragraph leak
 
+    def test_usage_capture_openai_anthropic_native(self):
+        """Usage events: OpenAI final chunk (with stream_options requested),
+        native Ollama via the mapper, Anthropic message_start/delta merge —
+        and the stream_options-400 recovery path."""
+        b = m.OpenAICompatible({}, "t", {"base_url": "https://x.test/v1", "model": "gpt-4o", "api_key": "k"})
+        seen_body = {}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            seen_body.update(data)
+            yield {"choices": [{"delta": {"content": "hi"}}]}
+            yield {"choices": [], "usage": {"prompt_tokens": 120, "completion_tokens": 45}}
+        with um.patch.object(b, "_stream_req", side_effect=fs):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "x"}], confirm_batch_fn=lambda c: True))
+        u = [e for e in evts if e["type"] == "usage"][0]
+        self.assertEqual((u["in"], u["out"]), (120, 45))
+        self.assertEqual(seen_body.get("stream_options"), {"include_usage": True})
+        # native Ollama final event flows through the mapper
+        b2 = m.OpenAICompatible({}, "ollama", {"base_url": "http://localhost:11434/v1", "model": "qwen3:1.7b"})
+        b2._caps_cache["qwen3:1.7b"] = ["thinking"]
+        def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+            yield mapper({"message": {"content": "ok"}, "done": True, "done_reason": "stop",
+                          "prompt_eval_count": 892, "eval_count": 12})
+        with um.patch.object(b2, "_stream_req", side_effect=fs2):
+            u2 = [e for e in b2.chat_with_tools([{"role": "user", "content": "x"}], confirm_batch_fn=lambda c: True) if e["type"] == "usage"][0]
+        self.assertEqual((u2["in"], u2["out"]), (892, 12))
+        # extractor: anthropic shapes
+        self.assertEqual(m.Backend._usage_from_chunk({"type": "message_start", "message": {"usage": {"input_tokens": 55}}})[:2], (55, 0))
+        self.assertEqual(m.Backend._usage_from_chunk({"type": "message_delta", "usage": {"output_tokens": 30}})[:2], (0, 30))
+        self.assertIsNone(m.Backend._usage_from_chunk({"choices": [{"delta": {}}]}))
+
+    def test_usage_persistence_and_aggregates(self):
+        app = m.App(); app.quiet = True
+        cid = app.db.new_conv("t", "gpt-4o", "openai", cwd="/tmp")
+        app.db.log_usage(cid, "gpt-4o", "openai", 100, 40, est=False)
+        app.db.log_usage(cid, "gpt-4o", "openai", 50, 10, est=False)
+        app.db.log_usage(cid, "llama3.2", "ollama", 300, 60, est=True)
+        t = app.db.usage_totals(cid)
+        self.assertEqual((t["tin"], t["tout"], t["requests"], t["est"]), (450, 110, 3, 1))
+        by = app.db.usage_by_model()
+        self.assertEqual(by["gpt-4o"]["requests"], 2)
+        self.assertEqual(by["llama3.2"]["est"], 1)
+        self.assertEqual(app.db.usage_totals(days=1)["requests"], 3)
+
+    def test_context_window_registry_and_effective(self):
+        """Per-model windows: cloud registry, local num_ctx, config fallback."""
+        for name, want in [("gpt-4o", 128000), ("gpt-4.1", 1047576), ("o3-mini", 200000),
+                           ("claude-3-5-sonnet", 200000), ("gemini-2.5-pro", 1048576),
+                           ("qwen3:1.7b", 32768), ("llama3.2:3b", 8192), ("mystery", 32000)]:
+            self.assertEqual(m.context_window_for(name), want, name)
+        app = m.App(); app.quiet = True
+        app.cfg.set_path("backends.cloud", {"base_url": "https://x.test/v1", "model": "gpt-4o", "api_key": "k"}, save=False)
+        app.cfg.set("backend", "cloud", save=False)
+        app.backend = m.get_backend(app.cfg)
+        self.assertEqual(app._effective_window(), 128000)     # cloud registry
+        app2 = m.App(); app2.quiet = True
+        app2.cfg.set("backend", "ollama", save=False)
+        app2.backend = m.get_backend(app2.cfg)
+        self.assertEqual(app2._effective_window(), 8192)      # local llama3.2 num_ctx via tuning
+
+    def test_usage_line_format(self):
+        """The pi-style footer: ↑in ↓out · conv/window (%) (rN) (auto)."""
+        app = m.App(); app.quiet = True
+        app.cfg.set_path("backends.cloud", {"base_url": "https://x.test/v1", "model": "gpt-4o", "api_key": "k"}, save=False)
+        app.cfg.set("backend", "cloud", save=False)
+        app.backend = m.get_backend(app.cfg)
+        app._sess_usage = {"in": 1234567, "out": 340, "req": 42}
+        cid = app.db.new_conv("t", "gpt-4o", "openai", cwd="/tmp")
+        app.cid = cid
+        for _ in range(5):
+            app.db.save_msg(cid, "user", "x" * 4000, "gpt-4o", 1000)
+        line = app._usage_line()
+        self.assertIn("\u21911.2M", line)
+        self.assertIn("\u2193340", line)
+        self.assertIn("/128.0k", line)
+        self.assertIn("(r42)", line)
+        self.assertIn("(auto)", line)
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API
