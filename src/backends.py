@@ -57,9 +57,14 @@ class _ConnPool:
             if slot and not slot[2] and (time.monotonic() - slot[1]) < self._MAX_LIFETIME:
                 slot[2] = True
                 return slot[0], False
+        # http.client timeouts are PER SOCKET OP (connect, each read) -- not
+        # whole-stream -- which is the right shape for buffered gateways. Give
+        # reads generous headroom beyond connect: a big doc can sit silently
+        # server-side >100s before a burst of SSE arrives.
+        rt = max(timeout, 240)
         if scheme == "https":
-            return http.client.HTTPSConnection(host, port, timeout=timeout), True
-        return http.client.HTTPConnection(host, port, timeout=timeout), True
+            return http.client.HTTPSConnection(host, port, timeout=rt), True
+        return http.client.HTTPConnection(host, port, timeout=rt), True
 
     def _mark(self, scheme, host, port, conn, resp):
         """Mark the slot reusable only if the response allows keep-alive."""
@@ -676,7 +681,10 @@ class Backend:
                 Backend._track_read(args, r, coverage)
         return results
 
-    def _sse_lines(self, resp, idle_timeout=120, ndjson=False):
+    def _sse_lines(self, resp, idle_timeout=None, ndjson=False):
+        if idle_timeout is None:
+            try: idle_timeout = float(self.c.get("stream_idle_timeout", 240) or 240)
+            except (TypeError, ValueError): idle_timeout = 240.0
         buf = b""
         last_byte = time.monotonic()
         while True:
