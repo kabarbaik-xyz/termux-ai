@@ -1446,7 +1446,8 @@ class OpenAICompatible(Backend):
             acc = OpenAIDeltaAccumulator()
             _live = []   # native LOCAL thinking chunks, re-yielded dim as they arrive
             _usage = {}
-            _prog_t0 = time.monotonic(); _prog_args = 0; _prog_content = 0; _prog_last = 0.0
+            _t_stream0 = time.monotonic()
+            _prog_t0 = _t_stream0; _prog_args = 0; _prog_content = 0; _prog_last = 0.0
             for chunk in self._stream_req(self._url(), d, h, mapper=mapper, ndjson=mapper is not None):
                 acc.feed(chunk, live_thinking=(_live.append if mapper else None))
                 # Progress beacon (throttled to ~1/s): lets the UI show WHAT is
@@ -1472,7 +1473,7 @@ class OpenAICompatible(Backend):
                     yield {"type": "thinking", "content": "".join(_live)}
                     _live.clear()
             if _usage:
-                yield {"type": "usage", **_usage}
+                yield {"type": "usage", **_usage, "secs": round(time.monotonic() - _t_stream0, 2)}
 
             content_buf, reasoning_buf = acc.content, acc.reasoning
             calls = acc.calls
@@ -1690,7 +1691,8 @@ class AnthropicBackend(Backend):
             stop_reason = None
 
             _usage = {}
-            _prog_t0 = time.monotonic(); _prog_last = 0.0; _prog_content = 0
+            _t_stream0 = time.monotonic()
+            _prog_t0 = _t_stream0; _prog_last = 0.0; _prog_content = 0
             for chunk in self._stream_req(url, d, h):
                 _dt = chunk.get("delta") or {} if chunk.get("type") == "content_block_delta" else {}
                 _prog_content += len(_dt.get("text") or "") if isinstance(_dt, dict) else 0
@@ -1735,7 +1737,7 @@ class AnthropicBackend(Backend):
             blocks = [content_blocks[k] for k in sorted(content_blocks.keys())]
             tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
             if _usage:
-                yield {"type": "usage", **_usage}
+                yield {"type": "usage", **_usage, "secs": round(time.monotonic() - _t_stream0, 2)}
 
             for tu in tool_uses:
                 try: tu["input"] = json.loads(tu.get("input", "{}") or "{}")

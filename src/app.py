@@ -8,7 +8,7 @@ def _dbg_exc(e):
 
 
 class App:
-    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/backup", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/fold", "/graphify", "/process", "/context", "/clear", "/help", "/exit"]
+    COMMANDS = ["/new", "/continue", "/show", "/history", "/load", "/rename", "/delete", "/save", "/sessions", "/session", "/unsave", "/backup", "/regen", "/retry", "/export", "/import", "/prune", "/compact", "/search", "/undo", "/diff", "/cost", "/setup", "/update", "/backends", "/backend", "/model", "/models", "/profile", "/system", "/config", "/tools", "/strategy", "/think", "/skill", "/multi", "/tokens", "/status", "/copy", "/paste", "/speak", "/share", "/server", "/expand", "/fold", "/graphify", "/process", "/context", "/bench", "/clear", "/help", "/exit"]
 
     def __init__(self):
         self.cfg = Config()
@@ -327,7 +327,7 @@ class App:
         manage = [
             ("/sessions /session", "List / tag sessions (ai -S <n>)"), ("/rename <t>", "Rename (auto = AI title)"),
             ("/search <q>", "Search chats"), ("/context", "Project memory (CONTEXT.md)"),
-            ("/status", "Engine + backend status"), ("/config", "View/set config"),
+            ("/status", "Engine + backend status"), ("/bench", "Time the active backend"), ("/config", "View/set config"),
             ("/setup /update", "Configure / self-update"), ("/models /profile", "Models & profiles"),
         ]
         more = [
@@ -607,6 +607,8 @@ class App:
                     self._sess_usage["in"] += event.get("in", 0)
                     self._sess_usage["out"] += event.get("out", 0)
                     self._sess_usage["req"] += 1
+                    if event.get("secs"):
+                        self._sess_usage["gen_secs"] = self._sess_usage.get("gen_secs", 0.0) + float(event["secs"])
                     try:
                         self.db.log_usage(self.cid,
                                           (self.backend.profile.get("model", "") if self.backend else ""),
@@ -1330,6 +1332,8 @@ class App:
         context is conversation tokens vs the model's effective window
         (local = num_ctx). '(auto)' shows when auto-compact is armed."""
         u = self._sess_usage
+        gen = u.get("out", 0) and u.get("gen_secs") and (u["out"] / u["gen_secs"]) or None
+        speed = f" \u00b7 {gen:.0f} tok/s" if gen else ""
         est_mark = "~" if u["req"] and self.db.usage_totals(self.cid, days=1).get("est", 1) > 0 and u["in"] == 0 else ""
         win = self._effective_window()
         conv_t = self.db.get_conv_tokens(self.cid) if self.cid else 0
@@ -1337,7 +1341,7 @@ class App:
         auto = " (auto)" if self.cfg.get("auto_compact", True) else ""
         def _fmt(n):
             return f"{n / 1e6:.1f}M" if n >= 1e6 else (f"{n / 1e3:.1f}k" if n >= 1000 else str(n))
-        return (f"{C.DIM}\u2191{est_mark}{_fmt(u['in'])} \u2193{est_mark}{_fmt(u['out'])} \u00b7 "
+        return (f"{C.DIM}\u2191{est_mark}{_fmt(u['in'])} \u2193{est_mark}{_fmt(u['out'])}{speed} \u00b7 "
                 f"{_fmt(conv_t)}/{_fmt(win)} ({pct:.0f}%) (r{u['req']}){auto}{C.RESET}")
 
     def _effective_window(self):
@@ -1566,7 +1570,7 @@ class App:
         "/tokens": "_cmd_tokens", "/diff": "_cmd_diff", "/compact": "_cmd_compact",
         "/regen": "_cmd_regen", "/retry": "_cmd_regen",
         "/tune": "_cmd_tune",
-        "/context": "_cmd_context",
+        "/context": "_cmd_context", "/bench": "_cmd_bench",
     }
 
     # Toggle commands that accept a unified boolean: bare = flip,

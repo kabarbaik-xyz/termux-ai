@@ -340,6 +340,41 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
         for r in results:
             print(f"{C.BOLD}{r['id']}{C.RESET}. {r['title']} {C.DIM}({r['model']}){C.RESET}")
 
+    def _cmd_bench(self, args):
+        """Quick backend benchmark: 2 timed streaming calls -- TTFB, tok/s,
+        total -- to compare models/backends in ~15s."""
+        if not self.backend:
+            self.err("No backend configured."); return
+        name, prof = self.cfg.active_profile()
+        self.info(f"Benchmarking {name} / {prof.get('model')} (2 calls)...")
+        results = []
+        for i in range(2):
+            t0 = time.time(); first = None; chars = 0; t_usage = None; tout = 0
+            try:
+                for ev in self.backend.chat_with_tools(
+                        [{"role": "user", "content": "Answer with one informative sentence about the sea."}],
+                        confirm_batch_fn=lambda c: True):
+                    et = ev.get("type")
+                    if et == "stream_progress" and first is None:
+                        first = time.time() - t0
+                    if et == "text":
+                        chars += len(ev.get("content") or "")
+                        if first is None: first = time.time() - t0
+                    if et == "usage":
+                        t_usage = ev; tout = ev.get("out") or 0
+                    if et == "turn_end": break
+            except Exception as e:
+                self.err(f"call {i+1} failed: {str(e)[:120]}"); return
+            dt = time.time() - t0
+            tok_s = (tout / dt) if (t_usage and dt > 0) else None
+            results.append((first or dt, dt, tok_s))
+            time.sleep(0.5)
+        (f1, d1, s1), (f2, d2, s2) = results
+        print(f"{C.BOLD}{'call':<6}{'TTFB':>8}{'total':>8}{'tok/s':>8}{C.RESET}")
+        for i, (f, d, sp) in enumerate(results, 1):
+            print(f"{i:<6}{f:>7.1f}s{d:>7.1f}s{(f'{sp:.0f}' if sp else 'n/a'):>8}")
+        self.info(f"Backend: {name} | model: {prof.get('model')} | window {self._effective_window() // 1000}k")
+
     def _cmd_backup(self, args):
         """/backup — atomic snapshot of the FULL history DB into the config dir
         via VACUUM INTO (one statement, safe while the app is running under WAL).
