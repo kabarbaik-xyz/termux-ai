@@ -4076,6 +4076,35 @@ class OpenAICompatible(Backend):
                 except Exception: args = {}
                 norm_calls.append({"id": c.get("id", ""), "name": fn["name"], "args": args})
 
+            # Stream-time sandbox guard: catch doomed writes BEFORE executing
+            # (the old path executed, failed, and burned a full corrective
+            # round). A write outside cwd gets one system correction asking
+            # for a relative path; the whole batch is skipped this round.
+            _bad_paths = []
+            for nc in norm_calls:
+                if nc["name"] in ("write_file", "edit_file"):
+                    _p = os.path.expanduser(nc["args"].get("path", "") or "")
+                    if _p and not os.path.isabs(_p):
+                        _p = os.path.join(os.getcwd(), _p)
+                    try:
+                        _inside = os.path.commonpath([os.path.realpath(_p), os.path.realpath(os.getcwd())]) == os.path.realpath(os.getcwd())
+                    except (ValueError, OSError):
+                        _inside = False
+                    if not _inside:
+                        _bad_paths.append(nc["args"].get("path", ""))
+            if _bad_paths:
+                msgs.append(self._asst_msg(content_buf, calls, reasoning_buf))
+                note = ("SANDBOX: write paths must stay inside the current working directory "
+                        "(%s). These were outside: %s. "
+                        "Re-issue the SAME writes with RELATIVE paths (e.g. 'rust-guidebook.md'), "
+                        "keeping the content identical." % (os.getcwd(), ", ".join(_bad_paths[:3])))
+                for c in calls:
+                    msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": note})
+                yield {"type": "notice", "level": "warn", "icon": "\u26a0",
+                       "text": f"write path outside sandbox \u00b7 asking for a relative path",
+                       "fatal": False}
+                continue
+
             if not confirm_batch_fn(norm_calls):
                 msgs.append(self._asst_msg(content_buf, calls, reasoning_buf))
                 for c in calls:
