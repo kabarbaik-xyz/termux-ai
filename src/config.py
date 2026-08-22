@@ -45,7 +45,9 @@ class Config:
         "6. Be careful with destructive actions (rm, overwrites); prefer minimal, targeted changes.\n"
         "7. Project memory: if a # Project context section names CONTEXT.md, KEEP IT CURRENT — when you learn a durable fact about the "
         "project (stack, structure, conventions, gotchas, decisions), update CONTEXT.md with write_file (preserve what's there; append "
-        "or edit the relevant section). Do not write transient session state into it."
+        "or edit the relevant section). Do not write transient session state into it.\n"
+        "8. LONG DOCUMENTS: when asked to CREATE a document/guide/report longer than ~a page, write it in SECTIONS — one write_file for "
+        "the opening, then write_file(append=true) for each remaining section. Never emit one giant call."
     )
 
     DEFAULTS = {

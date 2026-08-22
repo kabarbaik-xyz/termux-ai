@@ -1519,6 +1519,22 @@ class OpenAICompatible(Backend):
                        "claimed_done": bool(_DONE_CLAIM_RE.search(content_buf or ""))}
                 return
 
+            # Oversized single write coaching: a >15KB write_file will be
+            # executed as-is (the model already paid for it), but the next
+            # message tells it to CONTINUE the document in append sections --
+            # so the remainder streams in smaller chunks instead of another
+            # monolith (faster first-file + less loss on any mid-turn drop).
+            _big_write = next((c for c in calls
+                               if c.get("function", {}).get("name") == "write_file"
+                               and len(c["function"].get("arguments") or "") > 15000), None)
+            if _big_write and finish_reason != "length":
+                msgs.append({"role": "system", "content":
+                             "Note: that was a very large single write_file. Continue any remaining "
+                             "document sections as write_file(append=true) calls of one section each, "
+                             "not one giant call."})
+                yield {"type": "notice", "level": "info", "icon": "\u2139",
+                       "text": "large write \u00b7 asking the model to continue in sections", "fatal": False}
+
             if finish_reason == "length" and calls:
                 # Output was truncated mid-tool-call -> the arguments are almost
                 # certainly incomplete (often parse to {}). Executing would just
