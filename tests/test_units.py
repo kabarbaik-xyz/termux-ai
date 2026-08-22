@@ -3031,6 +3031,70 @@ class TestBackendResilience(_TmpHome):
         self.assertNotIn("reasoning_effort", calls["bodies"][-1])
         self.assertIsNone(b.profile.get("reasoning_effort"))
 
+    def test_long_doc_rules_and_big_write_coaching(self):
+        """Long documents: tool rule 8 instructs sectioned writing; a >15KB
+        single write_file still executes but the model is coached to continue
+        in append sections (never blocked, never wasted)."""
+        self.assertIn("LONG DOCUMENTS", m.Config.TOOL_RULES)
+        self.assertIn("append=true", m.Config.TOOL_RULES)
+        d = tempfile.mkdtemp(prefix="aidoc_"); old = os.getcwd(); os.chdir(d)
+        try:
+            b = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://x/v1", "model": "m", "api_key": "k"})
+            big = json.dumps({"path": "guide.md", "content": "x" * 16000})
+            n = {"n": 0}; sent = []
+            def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n["n"] += 1; sent.append(data)
+                if n["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "write_file", "arguments": big}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"content": "done"}}]}
+            with um.patch.object(b, "_stream_req", side_effect=fs):
+                evts = list(b.chat_with_tools([{"role": "user", "content": "make a guide"}], confirm_batch_fn=lambda c: True))
+            self.assertTrue(any("sections" in e.get("text", "") for e in evts if e["type"] == "notice"))
+            self.assertTrue(any("append=true" in (mm.get("content") or "")
+                                for mm in sent[-1]["messages"] if mm.get("role") == "system"))
+            self.assertGreater(os.path.getsize("guide.md"), 15000)   # executed, not blocked
+            # small writes: no coaching noise
+            b2 = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://x/v1", "model": "m", "api_key": "k"})
+            small = json.dumps({"path": "s.md", "content": "tiny"})
+            n2 = {"n": 0}; sent2 = []
+            def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n2["n"] += 1; sent2.append(data)
+                if n2["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "write_file", "arguments": small}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"content": "done"}}]}
+            with um.patch.object(b2, "_stream_req", side_effect=fs2):
+                evts2 = list(b2.chat_with_tools([{"role": "user", "content": "x"}], confirm_batch_fn=lambda c: True))
+            self.assertFalse(any("sections" in e.get("text", "") for e in evts2 if e["type"] == "notice"))
+        finally:
+            os.chdir(old); shutil.rmtree(d, ignore_errors=True)
+
+    def test_stream_progress_beacons_flow(self):
+        """The loop emits throttled stream_progress beacons (elapsed, content
+        chars, tool-arg bytes) so buffered gateways still show live progress;
+        usage events carry measured stream seconds for the tok/s footer."""
+        b = m.OpenAICompatible({}, "t", {"base_url": "http://x/v1", "model": "m", "api_key": "k"})
+        n = {"n": 0}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            n["n"] += 1
+            if n["n"] == 1:
+                for piece in ("one", "two", "three"):
+                    yield {"choices": [{"delta": {"content": piece}}]}
+                yield {"choices": [{"delta": {}}, {"delta": {}}], "usage": {"prompt_tokens": 10, "completion_tokens": 30}}
+            else:
+                yield {"choices": [{"delta": {"content": "done"}}]}
+        with um.patch.object(b, "_stream_req", side_effect=fs), um.patch("time.monotonic") as tm:
+            tm.side_effect = [0, 2, 4, 6, 8, 10, 12, 14]   # force the 1s throttle
+            evts = list(b.chat_with_tools([{"role": "user", "content": "x"}], confirm_batch_fn=lambda c: True))
+        beacons = [e for e in evts if e["type"] == "stream_progress"]
+        usage = [e for e in evts if e["type"] == "usage"]
+        self.assertTrue(beacons)
+        self.assertEqual(beacons[0]["content_chars"], 3)   # "one"
+        self.assertTrue(usage and usage[0].get("secs") is not None)
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API
