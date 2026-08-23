@@ -101,6 +101,37 @@ class App:
                           f"{C.CYAN}/config set ollama_max_tokens 2048{C.RESET}.")
             self.cfg.set("_hint_ollama_mt", True)
 
+    def _get_remote_models(self, base_url, api_key=""):
+        """List models from an OpenAI-compat /v1/models endpoint (2s timeout,
+        best-effort: gateways behind auth, quota-locked, or slow simply return
+        []). Used for Tab completion so users can see what a gateway offers."""
+        try:
+            base = (base_url or "").rstrip("/")
+            if not base or not base.startswith("http"):
+                return []
+            # Anthropic-style base (no /v1/models): skip
+            if "/v1" not in base and "messages" in base:
+                return []
+            url = base + "/models"
+            h = {"User-Agent": "Mozilla/5.0"}
+            if api_key:
+                h["Authorization"] = "Bearer " + api_key
+            req = urllib.request.Request(url, headers=h)
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            out = []
+            for itm in (data.get("data") or data.get("models") or []):
+                mid = itm.get("id") or itm.get("name") if isinstance(itm, dict) else None
+                if mid:
+                    # google's OpenAI-compat prefixes ids with 'models/' --
+                    # strip it so completion matches what users type
+                    if mid.startswith("models/"):
+                        mid = mid[len("models/"):]
+                    out.append(mid)
+            return out
+        except Exception:
+            return []
+
     def _get_ollama_models(self):
         try:
             r = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
@@ -234,8 +265,17 @@ class App:
             except Exception:
                 return []
         if cmd == "/model":
-            models = self._get_ollama_models()
-            return models[:20] if models else []
+            # Active backend first: local Ollama lists pulled models; cloud
+            # gateways list their catalog via /v1/models (best-effort, 3s).
+            name, prof = self.cfg.active_profile() or (None, {})
+            base = (prof or {}).get("base_url", "")
+            if "localhost" in base or "127.0.0.1" in base:
+                models = self._get_ollama_models()
+            else:
+                models = self._get_remote_models(base, (prof or {}).get("api_key", ""))
+                # free-tier models float to the top (gateways suffix them)
+                models.sort(key=lambda x: (0 if "free" in x.lower() else 1, x))
+            return models[:40] if models else []
         if cmd in ("/backend", "/backends"):
             return list((self.cfg.get("backends") or {}).keys())
         if cmd == "/load":
