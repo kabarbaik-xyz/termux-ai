@@ -3181,6 +3181,29 @@ class TestBackendResilience(_TmpHome):
         self.assertGreaterEqual(calls["n"], 2)
         self.assertIn("Chapter 1", app.last_reply or "")
 
+    def test_none_filler_tool_deltas_do_not_crash(self):
+        """opencode/big-pickle emits name=None / arguments=None in filler
+        tool-call deltas; concatenating them crashed the whole turn with
+        'can only concatenate str (not NoneType) to str'. The accumulator now
+        skips None fragments and still merges the real ones."""
+        b = m.OpenAICompatible({"tools_enabled": True}, "opencode",
+                               {"base_url": "https://opencode.ai/zen/v1", "model": "big-pickle", "api_key": "x"})
+        done = {"n": 0}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            done["n"] += 1
+            if done["n"] == 1:
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                    "function": {"name": None, "arguments": None}}]}}]}                          # filler
+                yield {"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "function": {"name": "list_files", "arguments": '{"path":"."}'}}]}}]}      # real
+                yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            else:
+                yield {"choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}]}
+        with um.patch.object(b, "_stream_req", side_effect=fs), \
+             um.patch.object(m.Tools, "run_checked", side_effect=lambda n_, a, bm=False, mr=10000: (True, "f")):
+            evts = list(b.chat_with_tools([{"role": "user", "content": "hi"}], confirm_batch_fn=lambda c: True))
+        self.assertTrue(any(e["type"] == "tool_progress" for e in evts))   # call merged, not lost
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API

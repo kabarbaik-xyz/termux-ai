@@ -425,6 +425,11 @@ class OpenAIDeltaAccumulator:
                         slot[k] = v
                 if tc.get("function"):
                     for fk, fv in tc["function"].items():
+                        # Some gateways (opencode/big-pickle) emit name=None or
+                        # arguments=None in filler deltas -- concatenating would
+                        # crash the whole turn with a TypeError.
+                        if fv is None:
+                            continue
                         if fk == "name":
                             slot["function"]["name"] += fv
                         elif fk == "arguments":
@@ -442,18 +447,40 @@ class _PooledResponse:
     """Adapter over http.client responses returned by _ConnPool.post. Mimics
     the urllib surface our code uses: .read(n), .status, context-manager, and
     raises nothing exotic. The pooled connection was already marked for reuse
-    by the pool (based on keep-alive); errors mid-read are surfaced as OSError."""
+    by the pool (based on keep-alive); errors mid-read are surfaced as OSError.
 
-    def __init__(self, resp, conn):
+    First-byte watchdog: a gateway that connects but then sends NOTHING is the
+    worst failure mode (the UI spins 'prefilling' until the idle timeout). The
+    socket timeout starts TIGHT (first_byte_timeout); the first data read
+    relaxes it to the normal idle value so long buffered generations still
+    complete."""
+
+    def __init__(self, resp, conn, first_byte_timeout=60.0, idle_timeout=240.0):
         self._resp = resp
         self._conn = conn
+        self._first_byte_timeout = float(first_byte_timeout)
+        self._idle_timeout = float(idle_timeout)
+        self._got_first = False
+        try:
+            if getattr(conn, "sock", None) is not None:
+                conn.sock.settimeout(self._first_byte_timeout)
+        except OSError:
+            pass
 
     @property
     def status(self):
         return self._resp.status
 
     def read(self, n=-1):
-        return self._resp.read(n if n and n > 0 else None)
+        data = self._resp.read(n if n and n > 0 else None)
+        if data and not self._got_first:
+            self._got_first = True
+            try:
+                if getattr(self._conn, "sock", None) is not None:
+                    self._conn.sock.settimeout(self._idle_timeout)
+            except OSError:
+                pass
+        return data
 
     def __enter__(self):
         return self
@@ -617,12 +644,21 @@ class Backend:
                 except Exception:
                     pass
                 raise BackendError(f"HTTP {resp.status}: {err_body}", transient=transient, retry_after=ra)
-            return _PooledResponse(resp, _conn)
+            try:
+                _fbt = float(self.c.get("first_byte_timeout", 60) or 60)
+            except (TypeError, ValueError):
+                _fbt = 60.0
+            try:
+                _idt = float(self.c.get("stream_idle_timeout", 240) or 240)
+            except (TypeError, ValueError):
+                _idt = 240.0
+            return _PooledResponse(resp, _conn, first_byte_timeout=_fbt, idle_timeout=_idt)
         except http.client.HTTPException as e:
             raise BackendError(f"Connection failed: {e}", transient=True)
         except OSError as e:
             if isinstance(e, TimeoutError) or "timed out" in str(e).lower():
-                raise BackendError("Request timed out.", transient=True)
+                raise BackendError("Gateway sent nothing (first-byte timeout) — the backend is "
+                                   "silent or overloaded. /retry continues.", transient=True)
             raise BackendError(f"Connection failed: {e}", transient=True)
 
     # Read-only, independent tools safe to run concurrently in a batch.
