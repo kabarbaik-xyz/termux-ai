@@ -102,6 +102,33 @@ class App:
             self.cfg.set("_hint_ollama_mt", True)
 
     def _get_remote_models(self, base_url, api_key=""):
+        """List models from an OpenAI-compat /v1/models endpoint (3s timeout,
+        best-effort: gateways behind auth, quota-locked, or slow simply return
+        []). TTL-cached 10 minutes PER BACKEND: readline invokes the completer
+        once per candidate, so an uncached fetch would hit the gateway up to
+        40x on a single Tab press. /model <Tab> after a cache miss refreshes;
+        switching backends uses a separate cache slot."""
+        try:
+            key = (base_url or "").rstrip("/")
+            now = time.monotonic()
+            hit = self._model_list_cache.get(key)
+            if hit and now - hit[0] < 600:      # 10 min TTL
+                return list(hit[1])
+        except AttributeError:
+            self._model_list_cache = {}
+        except Exception:
+            pass
+        models = self._fetch_remote_models(base_url, api_key)
+        try:
+            self._model_list_cache[key] = (time.monotonic(), models)
+        except Exception:
+            pass
+        return list(models)
+
+    _model_list_cache = {}
+
+    @staticmethod
+    def _fetch_remote_models(base_url, api_key=""):
         """List models from an OpenAI-compat /v1/models endpoint (2s timeout,
         best-effort: gateways behind auth, quota-locked, or slow simply return
         []). Used for Tab completion so users can see what a gateway offers."""
