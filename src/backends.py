@@ -689,7 +689,9 @@ class Backend:
         last_byte = time.monotonic()
         while True:
             if time.monotonic() - last_byte > idle_timeout:
-                raise BackendError("Stream idle for too long. Aborting.", transient=True)
+                raise BackendError("Stream idle for too long (gateway went silent mid-generation; buffered "
+                                   "providers can pause on long outputs). Aborting this attempt \u2014 "
+                                   "/retry continues from the checkpoint, /bench compares backends.", transient=True)
             chunk = resp.read(4096)
             if not chunk: break
             buf += chunk

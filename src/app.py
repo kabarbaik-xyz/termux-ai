@@ -665,10 +665,14 @@ class App:
             if self.spinner: self.spinner.stop(); self.spinner = None
             self._errored = True
             _dbg_exc(e)
-            if (current_block or "").strip() or did_tools or any((x or "").strip() for x in buf):
-                # Mid-stream / mid-tool interruption: snapshot the in-flight
+            if (current_block or "").strip() or did_tools or any((x or "").strip() for x in buf) \
+                    or isinstance(e, m.BackendError if False else Exception) and getattr(e, "transient", False):
+                # Mid-stream / mid-tool interruption OR a transient first-stream
+                # drop (idle timeout, connection reset): snapshot the in-flight
                 # state -- executed tool results are already in msgs -- so the
-                # turn can CONTINUE instead of restarting from scratch.
+                # turn can CONTINUE instead of restarting from scratch. Even a
+                # first-stream-only drop checkpoints: /retry re-sends the turn
+                # without the user retyping it.
                 self._pending_checkpoint = [dict(m) for m in msgs]
                 return ""
             self._pending_checkpoint = None
