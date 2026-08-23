@@ -13,7 +13,7 @@ import zipfile
 import hashlib, base64
 from pathlib import Path
 
-__version__ = "7.9.5"
+__version__ = "7.9.6"
 
 
 # ══ termux_ai._constants ══ (fragment; merged by build.py)
@@ -4769,6 +4769,7 @@ class App:
                     continue          # local: the live pull list covers it
                 try:
                     self._get_remote_models(base, (prof or {}).get("api_key", ""))
+                    self._get_free_models(base, (prof or {}).get("api_key", ""))
                 except Exception:
                     pass
                 self._stop_prefetch.wait(0.4)   # stagger: gentle on gateways
@@ -4792,13 +4793,62 @@ class App:
         except Exception:
             pass
         models = self._fetch_remote_models(base_url, api_key)
-        try:
-            self._model_list_cache[key] = (time.monotonic(), models)
-        except Exception:
-            pass
+        # Cache only SUCCESSFUL listings: caching an empty result (offline
+        # gateway, tightened auth) would block the next attempt for 10 min
+        # exactly when the user most needs the retry.
+        if models:
+            try:
+                self._model_list_cache[key] = (time.monotonic(), models)
+            except Exception:
+                pass
         return list(models)
 
     _model_list_cache = {}
+    _free_models_cache = {}   # base_url -> (ts, set(free ids))
+
+    # gateways/aliases known to serve a free tier without a name marker
+    KNOWN_FREE_ALIASES = {
+        "opencode": {"big-pickle"},          # opencode's own free alias
+    }
+
+    def _get_free_models(self, base_url, api_key=""):
+        """Set of model ids on the gateway's FREE tier. Authoritative when the
+        host exposes a keyed plans API (bynara /api/plans code=free); fallback
+        heuristic: -free / -contributor suffixes + known aliases. TTL-cached
+        with the catalog."""
+        base = (base_url or "").rstrip("/")
+        now = time.monotonic()
+        hit = self._free_models_cache.get(base)
+        if hit and now - hit[0] < 600:
+            return set(hit[1])
+        free = set()
+        try:
+            # plans API (bynara-style): authoritative free-tier list
+            host = urllib.parse.urlparse(base).netloc
+            req = urllib.request.Request(f"https://{host}/api/plans",
+                headers={"Authorization": "Bearer " + api_key, "User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                plans = json.loads(r.read().decode("utf-8", "replace"))
+            tier = next((p for p in (plans.get("data") or [])
+                         if (p.get("code") or "").lower() == "free"), None)
+            if tier:
+                free = set(tier.get("models") or [])
+        except Exception:
+            pass
+        if not free:
+            # fallback: name markers + known aliases for this backend
+            bname = next((n for n, p in (self.cfg.get("backends") or {}).items()
+                          if (p.get("base_url") or "").rstrip("/") == base), "")
+            free = set(self.KNOWN_FREE_ALIASES.get(bname, set()))
+            for mid in self._model_list_cache.get(base, (0, []))[1]:
+                low = mid.lower()
+                if "free" in low or "contributor" in low:
+                    free.add(mid)
+        try:
+            self._free_models_cache[base] = (time.monotonic(), free)
+        except Exception:
+            pass
+        return set(free)
 
     @staticmethod
     def _fetch_remote_models(base_url, api_key=""):
@@ -4817,7 +4867,10 @@ class App:
             if api_key:
                 h["Authorization"] = "Bearer " + api_key
             req = urllib.request.Request(url, headers=h)
-            with urllib.request.urlopen(req, timeout=3) as r:
+            # 8s: slow gateways take 3-7s on keyed model lists (bynara measured).
+            # The background prefetcher owns most calls; the interactive Tab
+            # path hits the warm cache anyway.
+            with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
             out = []
             for itm in (data.get("data") or data.get("models") or []):
@@ -6885,13 +6938,28 @@ class App:
             print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
 
     def _cmd_models(self, args):
-        """List local Ollama models with size, capabilities, and a num_ctx
+        """Cloud backends: list the gateway's catalog with FREE badges and the
+        active model. Local Ollama: sizes, capabilities, and a num_ctx
         suggestion based on free RAM (helps avoid the Android OOM killer)."""
         name, prof = self.cfg.active_profile()
         base = (prof.get("base_url") or "").rstrip("/")
-        if not base or ("localhost" not in base and "127.0.0.1" not in base):
-            self.err("Active backend isn't a local Ollama server.")
-            self.info("Switch with /backend <name>, or list with /backends.")
+        if base and "localhost" not in base and "127.0.0.1" not in base:
+            models = self._get_remote_models(base, (prof or {}).get("api_key", ""))
+            if not models:
+                self.err(f"Couldn't list models from {name} (unreachable or slow).")
+                return
+            free_set = self._get_free_models(base, (prof or {}).get("api_key", ""))
+            active = (prof.get("model") or "").lower()
+            free_first = [x for x in models if x.lower() in {f.lower() for f in free_set}]
+            rest = [x for x in models if x not in free_first]
+            self.info(f"{name} catalog: {len(models)} models ({len(free_first)} free tier{'' if len(free_first) == 1 else 's'}) — free first:")
+            for mid in free_first:
+                mark = f" {C.GREEN}\u2190 active{C.RESET}" if mid.lower() == active else ""
+                print(f"  {C.GREEN}FREE{C.RESET}  {mid}{mark}")
+            for mid in rest[:60 - len(free_first)]:
+                mark = f" {C.GREEN}\u2190 active{C.RESET}" if mid.lower() == active else ""
+                print(f"        {mid}{mark}")
+            self.info(f"Set with: /model <name>  ·  Tab completes the catalog")
             return
         base = base[:-3] if base.endswith("/v1") else base
         try:

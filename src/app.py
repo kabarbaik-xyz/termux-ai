@@ -126,6 +126,7 @@ class App:
                     continue          # local: the live pull list covers it
                 try:
                     self._get_remote_models(base, (prof or {}).get("api_key", ""))
+                    self._get_free_models(base, (prof or {}).get("api_key", ""))
                 except Exception:
                     pass
                 self._stop_prefetch.wait(0.4)   # stagger: gentle on gateways
@@ -149,13 +150,62 @@ class App:
         except Exception:
             pass
         models = self._fetch_remote_models(base_url, api_key)
-        try:
-            self._model_list_cache[key] = (time.monotonic(), models)
-        except Exception:
-            pass
+        # Cache only SUCCESSFUL listings: caching an empty result (offline
+        # gateway, tightened auth) would block the next attempt for 10 min
+        # exactly when the user most needs the retry.
+        if models:
+            try:
+                self._model_list_cache[key] = (time.monotonic(), models)
+            except Exception:
+                pass
         return list(models)
 
     _model_list_cache = {}
+    _free_models_cache = {}   # base_url -> (ts, set(free ids))
+
+    # gateways/aliases known to serve a free tier without a name marker
+    KNOWN_FREE_ALIASES = {
+        "opencode": {"big-pickle"},          # opencode's own free alias
+    }
+
+    def _get_free_models(self, base_url, api_key=""):
+        """Set of model ids on the gateway's FREE tier. Authoritative when the
+        host exposes a keyed plans API (bynara /api/plans code=free); fallback
+        heuristic: -free / -contributor suffixes + known aliases. TTL-cached
+        with the catalog."""
+        base = (base_url or "").rstrip("/")
+        now = time.monotonic()
+        hit = self._free_models_cache.get(base)
+        if hit and now - hit[0] < 600:
+            return set(hit[1])
+        free = set()
+        try:
+            # plans API (bynara-style): authoritative free-tier list
+            host = urllib.parse.urlparse(base).netloc
+            req = urllib.request.Request(f"https://{host}/api/plans",
+                headers={"Authorization": "Bearer " + api_key, "User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                plans = json.loads(r.read().decode("utf-8", "replace"))
+            tier = next((p for p in (plans.get("data") or [])
+                         if (p.get("code") or "").lower() == "free"), None)
+            if tier:
+                free = set(tier.get("models") or [])
+        except Exception:
+            pass
+        if not free:
+            # fallback: name markers + known aliases for this backend
+            bname = next((n for n, p in (self.cfg.get("backends") or {}).items()
+                          if (p.get("base_url") or "").rstrip("/") == base), "")
+            free = set(self.KNOWN_FREE_ALIASES.get(bname, set()))
+            for mid in self._model_list_cache.get(base, (0, []))[1]:
+                low = mid.lower()
+                if "free" in low or "contributor" in low:
+                    free.add(mid)
+        try:
+            self._free_models_cache[base] = (time.monotonic(), free)
+        except Exception:
+            pass
+        return set(free)
 
     @staticmethod
     def _fetch_remote_models(base_url, api_key=""):
@@ -174,7 +224,10 @@ class App:
             if api_key:
                 h["Authorization"] = "Bearer " + api_key
             req = urllib.request.Request(url, headers=h)
-            with urllib.request.urlopen(req, timeout=3) as r:
+            # 8s: slow gateways take 3-7s on keyed model lists (bynara measured).
+            # The background prefetcher owns most calls; the interactive Tab
+            # path hits the warm cache anyway.
+            with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
             out = []
             for itm in (data.get("data") or data.get("models") or []):

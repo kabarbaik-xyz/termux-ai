@@ -438,13 +438,28 @@ class App:  # BUILD-SHIM: stripped by build.py at merge (lets this class-body fr
             print(f"  {marker} {C.BOLD}{b}{C.RESET} {C.DIM}({b_model}){C.RESET}")
 
     def _cmd_models(self, args):
-        """List local Ollama models with size, capabilities, and a num_ctx
+        """Cloud backends: list the gateway's catalog with FREE badges and the
+        active model. Local Ollama: sizes, capabilities, and a num_ctx
         suggestion based on free RAM (helps avoid the Android OOM killer)."""
         name, prof = self.cfg.active_profile()
         base = (prof.get("base_url") or "").rstrip("/")
-        if not base or ("localhost" not in base and "127.0.0.1" not in base):
-            self.err("Active backend isn't a local Ollama server.")
-            self.info("Switch with /backend <name>, or list with /backends.")
+        if base and "localhost" not in base and "127.0.0.1" not in base:
+            models = self._get_remote_models(base, (prof or {}).get("api_key", ""))
+            if not models:
+                self.err(f"Couldn't list models from {name} (unreachable or slow).")
+                return
+            free_set = self._get_free_models(base, (prof or {}).get("api_key", ""))
+            active = (prof.get("model") or "").lower()
+            free_first = [x for x in models if x.lower() in {f.lower() for f in free_set}]
+            rest = [x for x in models if x not in free_first]
+            self.info(f"{name} catalog: {len(models)} models ({len(free_first)} free tier{'' if len(free_first) == 1 else 's'}) — free first:")
+            for mid in free_first:
+                mark = f" {C.GREEN}\u2190 active{C.RESET}" if mid.lower() == active else ""
+                print(f"  {C.GREEN}FREE{C.RESET}  {mid}{mark}")
+            for mid in rest[:60 - len(free_first)]:
+                mark = f" {C.GREEN}\u2190 active{C.RESET}" if mid.lower() == active else ""
+                print(f"        {mid}{mark}")
+            self.info(f"Set with: /model <name>  ·  Tab completes the catalog")
             return
         base = base[:-3] if base.endswith("/v1") else base
         try:
