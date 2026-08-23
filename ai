@@ -5875,6 +5875,18 @@ class App:
         msgs = [{"role": "system", "content": sysp}]
         msgs.extend(self.db.get_msgs(self.cid))
 
+        # Document-creation guidance (per-message, NOT in the shared system
+        # prompt -- the warm-prefix lock requires message-stability): doc
+        # requests make models pick absolute paths outside the cwd sandbox
+        # (~/guide.md, /storage/...), doomed at execution. State the rule so
+        # the FIRST write uses a relative path (saves a full corrective round).
+        _doc_re = re.compile(
+            r"\b(guide|guidebook|tutorial|ebook|handbook|manual|report|dokumentasi|panduan)\b", re.IGNORECASE)
+        if _doc_re.search(user_input or "") and self.cfg.get("tools_enabled", False):
+            msgs[0]["content"] += ("\n\nFILE OUTPUT RULE: when creating a document/guide, write it to a RELATIVE "
+                                   "path in the current directory (e.g. 'guide.md'), one section per write "
+                                   "with append=true for the rest. Never use absolute or home-directory paths.")
+
         # Local non-thinking chat models over-use tools on casual questions
         # (qwen2.5 lists files for 'say hi') — a 60s+ tool loop on slow phones.
         # Tell them to answer trivial chat directly so tools only fire when real,
