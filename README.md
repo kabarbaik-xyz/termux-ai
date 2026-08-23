@@ -2,7 +2,7 @@
 
 A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — and any terminal. Talks to OpenAI-compatible endpoints, Anthropic's Claude API natively, or runs fully offline with Ollama.
 
-![version](https://img.shields.io/badge/version-7.9.0-green)
+![version](https://img.shields.io/badge/version-7.9.1-green)
 ![python](https://img.shields.io/badge/python-3.8+-blue)
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
@@ -474,6 +474,7 @@ The AI can also **write files** and **run any shell command**. Key behaviors:
 - **Structured search (`search_files`)** — regex mode, `ignore_case`, `context` lines, `glob` file filter (`*.py`), `max_results` cap; results grouped per file with match counts and a shown/total tally
 - **`test` tool** — runs the project's suite with the runner auto-detected from its manifest (pytest / npm test / cargo / go / make / composer); returns `total/passed/failed` counts plus the failing test names and first error lines, so "run tests → fix failures" loops are one call per round
 - **`project_info` tool** — one-shot project snapshot: languages, test runner, lint/format config, entry points, file counts, recent commits. The model calls it first in an unfamiliar directory instead of probing file by file
+- **CWD sandbox (with stream-time guard)** — `write_file`/`edit_file` are restricted to the current working directory for safety. Writes targeting outside paths are intercepted **before execution** with a one-shot correction asking the model for relative paths (instead of executing a doomed 20KB write and burning a corrective round); document-creation requests state the relative-path rule up front. A transient first-stream drop (buffered gateway pausing, connection reset) checkpoints the turn and **auto-resumes** — the session continues instead of "disconnecting"
 - **CWD sandbox** — `write_file` and `edit_file` are restricted to the current working directory for safety
 - **Surgical edits (`edit_file`)** — replace an exact substring instead of rewriting whole files: far cheaper (no 300-line regen on local models) and safer. `find` must match exactly once (or `replace_all`); a miss returns a helpful "re-read and copy exactly" error, ambiguity reports the match count. Build mode only, cwd-sandboxed like `write_file`
 - **Git tool** — `git` with actions: `status` / `diff` / `log` / `show` run read-only in ANY mode (auto-approved, no shell overhead); `stage` / `commit` / `unstage` / `checkout_file` require Build mode + the normal approval prompt. Makes edit→verify→commit loops natural instead of shell round-trips

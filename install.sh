@@ -7,7 +7,7 @@ REPO="kabarbaik-xyz/termux-ai"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 INSTALL_DIR="${HOME}/.local/bin"
 SCRIPT_PATH="${INSTALL_DIR}/ai"
-VERSION="7.9.0"
+VERSION="7.9.1"
 
 echo "🔍 Termux AI Installer v${VERSION}"
 echo ""

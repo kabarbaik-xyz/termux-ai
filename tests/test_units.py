@@ -3095,6 +3095,92 @@ class TestBackendResilience(_TmpHome):
         self.assertEqual(beacons[0]["content_chars"], 3)   # "one"
         self.assertTrue(usage and usage[0].get("secs") is not None)
 
+    def test_sandbox_guard_intercepts_doomed_writes(self):
+        """Writes outside the cwd sandbox are caught BEFORE execution (the old
+        path streamed a full 23KB doc, failed at exec, and burned a corrective
+        round): one system correction asks for relative paths; the retry lands
+        the file. Non-write batches never trigger it."""
+        d = tempfile.mkdtemp(prefix="aisg_"); old = os.getcwd(); os.chdir(d)
+        try:
+            b = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://x/v1", "model": "m", "api_key": "k"})
+            outside = json.dumps({"path": "/definitely/outside/guide.md", "content": "c1"})
+            inside = json.dumps({"path": "guide.md", "content": "c1"})
+            n = {"n": 0}; sent = []; executed = []
+            def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n["n"] += 1; sent.append(data)
+                if n["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "write_file", "arguments": outside}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c2", "type": "function",
+                        "function": {"name": "write_file", "arguments": inside}}]}, "finish_reason": "tool_calls"}]}
+                    yield {"choices": [{"delta": {"content": "done"}}]}
+            orig = m.Tools.run_checked
+            def spy(name, args, bm=False, mr=10000):
+                executed.append(name); return orig(name, args, bm, mr)
+            with um.patch.object(b, "_stream_req", side_effect=fs), \
+                 um.patch.object(m.Tools, "run_checked", side_effect=spy):
+                evts = list(b.chat_with_tools([{"role": "user", "content": "make a guide"}], confirm_batch_fn=lambda c: True))
+            self.assertTrue(any("sandbox" in e.get("text", "") for e in evts if e["type"] == "notice"))
+            self.assertEqual(executed.count("write_file"), 1)      # doomed one never executed
+            self.assertTrue(any("RELATIVE" in (mm.get("content") or "")
+                                for mm in sent[-1]["messages"] if mm.get("role") == "tool"))
+            self.assertTrue(os.path.exists("guide.md"))
+            # read-only batches: guard silent
+            b2 = m.OpenAICompatible({"tools_enabled": True}, "t", {"base_url": "http://x/v1", "model": "m", "api_key": "k"})
+            n2 = {"n": 0}
+            def fs2(url, data, headers, notify=None, mapper=None, ndjson=False):
+                n2["n"] += 1
+                if n2["n"] == 1:
+                    yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                        "function": {"name": "list_files", "arguments": '{"path":"."}'}}]}, "finish_reason": "tool_calls"}]}
+                else:
+                    yield {"choices": [{"delta": {"content": "ok"}}]}
+            with um.patch.object(b2, "_stream_req", side_effect=fs2), \
+                 um.patch.object(m.Tools, "run_checked", side_effect=lambda n_, a, bm=False, mr=10000: (True, "f")):
+                evts2 = list(b2.chat_with_tools([{"role": "user", "content": "list"}], confirm_batch_fn=lambda c: True))
+            self.assertFalse(any("sandbox" in e.get("text", "") for e in evts2 if e["type"] == "notice"))
+        finally:
+            os.chdir(old); shutil.rmtree(d, ignore_errors=True)
+
+    def test_doc_request_gets_relative_path_rule(self):
+        """Guide/report requests append the FILE OUTPUT RULE (relative path,
+        sections with append) to the system message; other requests don't;
+        _assemble_system_prompt stays message-independent (warm-prefix lock)."""
+        app = m.App(); app.quiet = True
+        app.cfg.set("tools_enabled", True, save=False)
+        captured = {}
+        def fake(msgs, confirm_batch_fn=None, continue_fn=None):
+            captured["sysp"] = msgs[0]["content"]
+            yield {"type": "text", "content": "ok"}
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake):
+            app._chat("Create me a fully comprehensive guidebook panduan rust")
+        self.assertIn("FILE OUTPUT RULE", captured["sysp"])
+        with um.patch.object(app.backend, "chat_with_tools", side_effect=fake):
+            app._chat("what is two plus two")
+        self.assertNotIn("FILE OUTPUT RULE", captured["sysp"])
+        self.assertEqual(app._assemble_system_prompt(), app._assemble_system_prompt())
+
+    def test_transient_first_stream_drop_checkpoints(self):
+        """A transient first-stream failure (idle timeout/reset, no work yet)
+        checkpoints the turn so auto-resume//retry continues it instead of the
+        user retyping; the resumed reply is saved normally."""
+        app = m.App(); app.quiet = True
+        app.cfg.set("tools_enabled", False, save=False)
+        app.backend = m.OpenAICompatible({}, "t", {"base_url": "http://x/v1", "model": "m", "api_key": "k"})
+        calls = {"n": 0}
+        def fs(url, data, headers, notify=None, mapper=None, ndjson=False):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                time.sleep(0.1)
+                raise m.BackendError("Stream idle for too long (gateway went silent mid-generation) /retry continues", transient=True)
+            yield {"choices": [{"delta": {"content": "Chapter 1: welcome"}}]}
+        app.cfg.set("auto_continue", True, save=False)
+        with um.patch.object(app.backend, "_stream_req", side_effect=fs):
+            app._chat("make a rust guide")
+        self.assertGreaterEqual(calls["n"], 2)
+        self.assertIn("Chapter 1", app.last_reply or "")
+
     def test_run_batch_parallel_reads_order_preserved(self):
         """Read-only batched calls run CONCURRENTLY (wall-clock ~= the slowest
         call, not the sum) while results stay in the original order for the API
