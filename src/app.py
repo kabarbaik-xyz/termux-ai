@@ -42,6 +42,16 @@ class App:
         self._sess_usage = {"in": 0, "out": 0, "req": 0}   # live process counters (status line)
         self._resume_mode = "auto"   # auto|continue|new|load (set by CLI flags)
         self._resume_arg = None
+        # Pre-fetch every configured CLOUD backend's model catalog in the
+        # background at startup (config: model_prefetch, default on): the
+        # user's FIRST /model <Tab> is instant instead of waiting on a
+        # gateway round-trip, and catalogs refresh continuously (every 10
+        # minutes) so new models appear without any 10-min cold spot.
+        if not self.quiet and self.cfg.get("model_prefetch", True):
+            self._stop_prefetch = threading.Event()
+            threading.Thread(target=self._model_prefetch_loop, daemon=True).start()
+            atexit.register(self._stop_prefetch.set)
+
         # Pre-load the local model in the background at startup so the first
         # real prompt doesn't pay a ~30s cold load+prefill (config: ollama_warm).
         if (self.backend and not self.quiet and self.cfg.get("ollama_warm", True)
@@ -100,6 +110,26 @@ class App:
                           f"{C.CYAN}/config set max_tokens 8192{C.RESET} and cap local separately with "
                           f"{C.CYAN}/config set ollama_max_tokens 2048{C.RESET}.")
             self.cfg.set("_hint_ollama_mt", True)
+
+    def _model_prefetch_loop(self):
+        """Background catalog refresher: fetch every cloud backend's /v1/models
+        into the TTL cache (staggered so we don't burst), then re-refresh every
+        10 minutes. Cache hits mean Tab completion is always instant AND the
+        list is never stale for a waiting user. Failures are silent (offline
+        backends just keep their last good list or stay empty)."""
+        while not self._stop_prefetch.is_set():
+            for name, prof in (self.cfg.get("backends") or {}).items():
+                if self._stop_prefetch.is_set():
+                    break
+                base = (prof or {}).get("base_url", "")
+                if not base or "localhost" in base or "127.0.0.1" in base:
+                    continue          # local: the live pull list covers it
+                try:
+                    self._get_remote_models(base, (prof or {}).get("api_key", ""))
+                except Exception:
+                    pass
+                self._stop_prefetch.wait(0.4)   # stagger: gentle on gateways
+            self._stop_prefetch.wait(600)      # then every 10 minutes
 
     def _get_remote_models(self, base_url, api_key=""):
         """List models from an OpenAI-compat /v1/models endpoint (3s timeout,

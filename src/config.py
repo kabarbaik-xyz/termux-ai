@@ -108,6 +108,7 @@ class Config:
         # Per-model auto-tuning is applied automatically from the MODEL_TUNING
         # registry; users may override per-model via model_tuning (rarely needed).
         "model_tuning": {},
+        "model_prefetch": True,  # background-refresh every cloud backend's model catalog (Tab completion always instant, never stale)
         "local_defaults": {},      # safety net: applied only to local backends
         "backends": {"ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.2", "api_key": "ollama"}},
     }
