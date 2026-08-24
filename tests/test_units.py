@@ -549,6 +549,46 @@ class TestWorkspaceIsolation(_TmpHome):
         d4 = tempfile.mkdtemp()
         self.assertIsNone(wr(d4))
 
+    def test_workspace_sessions_never_leak_into_unmarked_dirs(self):
+        """The ~/rust case: an unmarked directory (no .git/manifest/CONTEXT.md)
+        must NOT resume the global last-cid session when that session belongs
+        to a WORKSPACE. Fresh start + a dim hint instead; the pointer stays
+        for returning. NULL-workspace sessions still resume normally, and
+        exact-cwd sessions in the unmarked dir resume too."""
+        home = tempfile.mkdtemp(prefix="aileak_")
+        wa = os.path.join(home, "proj"); os.makedirs(os.path.join(wa, ".git"))
+        rust = os.path.join(home, "rust"); os.makedirs(rust)   # unmarked
+        app = m.App(); app.quiet = True
+        sid = app.db.new_conv("proj chat", "m", "b", cwd=wa, workspace=wa)
+        app.db.save_msg(sid, "user", "x", "m", 1)
+        app._set_last_cid(sid)
+        old = os.getcwd(); os.chdir(rust)
+        try:
+            app2 = m.App(); app2.quiet = False
+            buf = io.StringIO(); old2 = sys.stdout; sys.stdout = buf
+            try:
+                app2._resume_mode = "continue"; app2._maybe_resume()
+            finally:
+                sys.stdout = old2
+            self.assertIsNone(app2.cid)                    # NOT resumed
+            self.assertIn("Fresh start", buf.getvalue())   # dim hint
+            self.assertIn("/load", buf.getvalue())
+            self.assertEqual(app2._get_last_cid(), sid)     # pointer intact
+            # returning to the workspace resumes normally
+            os.chdir(wa)
+            app3 = m.App(); app3.quiet = True
+            app3._resume_mode = "continue"; app3._maybe_resume()
+            self.assertEqual(app3.cid, sid)
+            # a NULL-workspace session created IN the unmarked dir resumes there
+            os.chdir(rust)
+            sid2 = app.db.new_conv("rust local", "m", "b", cwd=rust, workspace=None)
+            app.db.save_msg(sid2, "user", "y", "m", 1)
+            app4 = m.App(); app4.quiet = True
+            app4._resume_mode = "continue"; app4._maybe_resume()
+            self.assertEqual(app4.cid, sid2)
+        finally:
+            os.chdir(old); shutil.rmtree(home, ignore_errors=True)
+
     def test_resume_isolated_by_workspace(self):
         wa, wb = self._mkws("a"), self._mkws("b")
         app = m.App(); app.quiet = True

@@ -983,8 +983,11 @@ class App:
         if not resume: return
         # WORKSPACE isolation: inside a detected workspace, resume only that
         # workspace's last session — never another project's, never a global
-        # fallback (fresh start instead). Outside workspaces (home/tmp), keep
-        # the global last-cid behavior: that's personal-chat territory.
+        # fallback (fresh start instead). Outside workspaces (unmarked dirs,
+        # home/tmp): exact-cwd sessions still resume, and the global last-cid
+        # fallback ONLY applies to sessions that don't belong to a workspace —
+        # a workspace's session must never leak into an unmarked directory
+        # (~/rust with no .git must not resume the termux-ai session).
         ws = self._current_workspace()
         if ws:
             cand = self.db.last_conv_in_workspace(ws)
@@ -993,8 +996,22 @@ class App:
             return
         here = os.getcwd()
         cand = self.db.last_conv_in_cwd(here)
-        cid = cand["id"] if cand else self._get_last_cid()
+        if cand:
+            self._activate(cand["id"], banner=True)
+            return
+        cid = self._get_last_cid()
         if cid and self.db.get_conv(cid):
+            conv = self.db.get_conv(cid)
+            conv_ws = (conv["workspace"] if "workspace" in conv.keys() else None) or None
+            if conv_ws:
+                # The global pointer names a WORKSPACE session and we're outside
+                # any workspace: don't drag another project's chat in. Fresh
+                # start here; the pointer stays for when you return there.
+                if not self.quiet:
+                    nm = os.path.basename(str(conv_ws).rstrip("/"))
+                    print(f"{C.DIM}[Fresh start — your last session belongs to the {nm} workspace; "
+                          f"/load {cid} to open it anyway, or start a workspace here with git init/CONTEXT.md]{C.RESET}")
+                return
             self._activate(cid, banner=True)
         elif cid:
             self._clear_last_cid()  # stale pointer (session deleted)
