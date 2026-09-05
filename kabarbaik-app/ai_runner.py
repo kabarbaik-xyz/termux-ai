@@ -129,7 +129,7 @@ async def run(
     An ``ai`` non-zero exit or an empty response raises AiError.
     """
     binary = ensure_binary()
-    argv = [str(binary)]
+    argv = [str(binary), "--yes"]
     if model:
         argv += ["-m", model]
     if json_mode:

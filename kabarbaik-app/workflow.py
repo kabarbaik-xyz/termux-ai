@@ -33,6 +33,7 @@ def refresh_artifact_state(project: dict) -> dict:
         has[folder] = _folder_has_files(docs / folder)
 
     # Advance to the furthest completed stage.
+    stage = -1  # -1 = nothing on disk yet
     if has["inbox"]:
         stage = 0
     if has["discovery"]:
@@ -159,7 +160,7 @@ docs/plan/backlog.md onto sprints/months, marking dependencies, and the demoable
 milestone that ends each month. Write it as docs/reports/schedule.md."""
 
 
-async def run_stage(project: dict, stage_index: int) -> str:
+async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> str:
     """Execute one SDLC stage for a project; returns the full AI output.
 
     Creates the docs/ scaffold if missing, records the stage run, streams the
@@ -186,6 +187,7 @@ async def run_stage(project: dict, stage_index: int) -> str:
             project_dir=root,
             skill=skill,
             tools=tools,
+            timeout=timeout,
         ):
             buf.append(line)
     except ai_runner.AiError as e:
