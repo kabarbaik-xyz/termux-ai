@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ client.name }} — KabarBaik SDLC{% endblock %}
+
+{% block content %}
+<h1>{{ client.name }}</h1>
+{% if client.org %}<p class="muted">{{ client.org }}{% if client.contact %} · {{ client.contact }}{% endif %}</p>{% endif %}
+{% if client.notes %}<p class="muted">{{ client.notes }}</p>{% endif %}
+
+<section class="card">
+  <h2>New project</h2>
+  <form method="post" action="/clients/{{ client.id }}/projects" class="stacked">
+    <label>Project name <input name="name" required placeholder="e.g. Courier Tracking Portal"></label>
+    <label>Description <textarea name="description" rows="2" placeholder="One-liner about what we're building"></textarea></label>
+    <button type="submit">Create project</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Projects for {{ client.name }}</h2>
+  <table>
+    <thead><tr><th>Project</th><th>Stage</th><th>Status</th><th>Created</th></tr></thead>
+    <tbody>
+    {% for p in projects %}
+      <tr>
+        <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
+        <td>
+          {% for name, label in stages %}
+            {% if loop.index0 == p.stage %}{{ label }}{% endif %}
+          {% endfor %}
+        </td>
+        <td>{{ p.status }}</td>
+        <td>{{ p.created[:10] }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">No projects yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

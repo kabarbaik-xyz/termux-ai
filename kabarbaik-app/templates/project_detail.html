@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — KabarBaik SDLC{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ project.name }}</h1>
+    <p class="muted">Client: <a href="/clients/{{ project.client_id }}">{{ project.client_name }}</a>
+       · Created {{ project.created[:10] }}{% if project.description %} · {{ project.description }}{% endif %}</p>
+  </div>
+  <div class="stage-pill">Stage {{ project.stage + 1 }} / {{ stages|length }} · {{ project.stage_name }}</div>
+</div>
+
+<nav class="tabs">
+  <a href="#flow" class="active">Flow</a>
+  <a href="#docs">Documents</a>
+  <a href="#inbox">Inputs</a>
+  <a href="#feedback">Feedback</a>
+</nav>
+
+{% if ran_stage is defined %}
+<section class="card output">
+  <h2>Output — {{ stages[ran_stage][1] }}</h2>
+  <pre class="ai-output">{{ output }}</pre>
+</section>
+{% endif %}
+
+<section id="flow" class="card">
+  <h2>SDLC Flow</h2>
+  <ol class="flow">
+    {% for name, label in stages %}
+    <li class="flow-step {{ 'done' if stage_idx[name] < fresh_stage else ('current' if stage_idx[name] == fresh_stage else '') }}">
+      <div class="step-head">
+        <span class="step-idx">{{ loop.index }}</span>
+        <span class="step-label">{{ label }}</span>
+        {% if stage_runs[name].status == 'ok' %}<span class="badge ok">done</span>
+        {% elif stage_runs[name].status == 'running' %}<span class="badge run">running</span>
+        {% elif stage_runs[name].status == 'failed' %}<span class="badge fail">failed</span>{% endif %}
+      </div>
+      {% if stage_idx[name] >= fresh_stage %}
+      <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
+        <button type="submit" class="btn-small" {% if name == 'development' %}data-relay{% endif %}>
+          {% if name == 'development' %}Run / track{% elif name == 'monthly_report' %}Generate report{% else %}Run stage{% endif %}
+        </button>
+      </form>
+      {% endif %}
+      {% if stage_runs[name].log %}<details class="run-log"><summary>last run</summary><pre>{{ stage_runs[name].log }}</pre></details>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+
+<section id="inbox" class="card">
+  <h2>Inputs (Discovery / Meeting notes / Requirements)</h2>
+  <div class="grid-2">
+    <div>
+      <h3>Upload reference file</h3>
+      <form method="post" action="/projects/{{ project.id }}/upload" enctype="multipart/form-data" class="stacked">
+        <input type="file" name="file" required>
+        <button type="submit">Upload to inbox</button>
+      </form>
+      <p class="hint">Accepted: md, txt, pdf, docx, xlsx, csv, eml, json, html, rtf</p>
+    </div>
+    <div>
+      <h3>Add a note (WYSIWYG)</h3>
+      <form method="post" action="/projects/{{ project.id }}/note" class="stacked">
+        <label>Title <input name="title" required placeholder="Meeting notes — 2026-09-05"></label>
+        <textarea name="body" class="rte" data-editor rows="8" placeholder="Type or paste meeting notes / requirements…"></textarea>
+        <button type="submit">Save note to inbox</button>
+      </form>
+    </div>
+  </div>
+
+  {% if artifacts.get('inbox') %}
+  <h3>Inbox files</h3>
+  <ul class="plain">
+    {% for f in artifacts['inbox'] %}
+      <li><a class="doc-link" data-path="inbox/{{ f }}" href="#docs">{{ f }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section id="docs" class="card">
+  <h2>Documents</h2>
+  {% set folders = ['inbox','discovery','brd','prd','prototype','proposal','tsd','sad','plan','reports'] %}
+  {% for folder in folders %}
+    {% if artifacts.get(folder) %}
+    <h3>{{ folder }}</h3>
+    <ul class="plain">
+      {% for f in artifacts[folder] %}
+        <li><a class="doc-link" data-path="{{ folder }}/{{ f }}" href="#docs">{{ f }}</a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  {% endfor %}
+  <div id="doc-viewer" class="doc-viewer hidden">
+    <div class="doc-viewer-head">
+      <h3 id="doc-title"></h3>
+      <div>
+        <button id="btn-toggle-edit" class="btn-small">Edit</button>
+        <button id="btn-save-doc" class="btn-small primary hidden">Save</button>
+        <a id="btn-close" class="btn-small" href="#docs">Close</a>
+      </div>
+    </div>
+    <div id="doc-body" class="doc-body"></div>
+    <textarea id="doc-editor" class="hidden" rows="30"></textarea>
+  </div>
+</section>
+
+<section id="feedback" class="card">
+  <h2>Client Feedback</h2>
+  <form method="post" action="/projects/{{ project.id }}/feedback" class="stacked">
+    <label>Source <input name="source" value="web" placeholder="web / meeting / email"></label>
+    <label>Verbatim quote <textarea name="quote" rows="2" placeholder="Client's exact words"></textarea></label>
+    <label>Your interpretation / notes <textarea name="notes" rows="2"></textarea></label>
+    <button type="submit">Record feedback</button>
+  </form>
+  {% if feedback %}
+  <table>
+    <thead><tr><th>Source</th><th>Quote</th><th>Notes</th><th>Status</th><th>Created</th></tr></thead>
+    <tbody>
+    {% for fb in feedback %}
+      <tr>
+        <td>{{ fb.source }}</td>
+        <td>{{ fb.quote }}</td>
+        <td>{{ fb.notes }}</td>
+        <td>{{ fb.status }}</td>
+        <td>{{ fb.created[:10] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/editor.js"></script>
+<script src="/static/js/docs.js"></script>
+<script src="/static/js/app.js"></script>
+{% endblock %}

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Clients — KabarBaik SDLC{% endblock %}
+
+{% block content %}
+<h1>Clients</h1>
+
+<section class="card">
+  <h2>Add client</h2>
+  <form method="post" action="/clients" class="stacked">
+    <label>Client name <input name="name" required placeholder="PT Maju Bersama"></label>
+    <label>Organization <input name="org" placeholder="Company / org (optional)"></label>
+    <label>Contact <input name="contact" placeholder="Email or phone"></label>
+    <label>Notes <textarea name="notes" rows="2" placeholder="Anything worth remembering"></textarea></label>
+    <button type="submit">Add client</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>All clients</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Org</th><th>Contact</th></tr></thead>
+    <tbody>
+    {% for c in clients %}
+      <tr>
+        <td><a href="/clients/{{ c.id }}">{{ c.name }}</a></td>
+        <td>{{ c.org }}</td>
+        <td>{{ c.contact }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" class="muted">No clients yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

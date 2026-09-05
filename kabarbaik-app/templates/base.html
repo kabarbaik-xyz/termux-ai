@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}KabarBaik SDLC{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">KabarBaik <span>SDLC</span></a>
+      <nav>
+        <a href="/">Dashboard</a>
+        <a href="/clients">Clients</a>
+      </nav>
+      <div class="backend">
+        <span class="dot"></span>
+        <span class="bk-label">backend</span>
+        <strong>{{ active.backend }}</strong>
+        {% if active.model %}<code class="model">{{ active.model }}</code>{% endif %}
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>KabarBaik SDLC · thin layer over termux-ai · local-only</span>
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
