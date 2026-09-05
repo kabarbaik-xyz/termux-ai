@@ -30,7 +30,8 @@ class App:
         self._validate_config()
         self.setup_rl()
         self.spinner = None
-        self._auto_approve_all = False
+        self._auto_approve_all = (os.environ.get("AI_APPROVE", "").lower()
+                                  in ("1", "true", "yes"))
         self._auto_continue = False
         self.quiet = not IS_TTY  # suppress UI when stdout is piped (one-shot mode)
         self._errored = False  # set when a request fails (for one-shot exit codes)
@@ -559,13 +560,14 @@ class App:
         if all(_safe(c) for c in calls):
             return True
 
+        if self._auto_approve_all:
+            return True  # CI / scripting mode (--yes or AI_APPROVE=1)
+
         if self.quiet:
             # Non-interactive (piped output): cannot prompt, so decline any
             # mutating action. Read-only tools above already auto-approve.
             return False
-        if self._auto_approve_all:
-            return True
-        
+
         if self.spinner: self.spinner.stop(); self.spinner = None  # backend calls this before the event that stops the spinner
         print(f"\n{C.YELLOW}Approval needed for {len(calls)} action(s):{C.RESET}")
         for c in calls:
@@ -1694,6 +1696,16 @@ class App:
         if not prompt or not prompt.strip():
             return
         self._chat(prompt)
+        # Scripting robustness: flaky backends sometimes succeed with an EMPTY
+        # completion (no text, no tool calls, no error). Surface that as a
+        # failure instead of a silent exit 0 so callers can retry.
+        if not self._errored and self.quiet and self._step_count == 0:
+            try:
+                last = self.db.get_msgs(self.cid)[-1].get("content") or ""
+            except Exception:
+                last = ""
+            if not last.strip():
+                self._errored = True
 
     def json_oneshot(self, prompt, stdin_data=None):
         if stdin_data:

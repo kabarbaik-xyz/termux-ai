@@ -36,10 +36,14 @@ def main():
                         help="force Build (on) or Plan/off mode for this run (default: config tools_enabled)")
     parser.add_argument("--process", choices=["on", "off", "auto"], default=None,
                         help="override tool-call display for this run: on=compact, off=full, auto")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="auto-approve tool actions (write_file/commands) in non-interactive runs; same as AI_APPROVE=1")
     args = parser.parse_args()
 
     app = App()
     app._override_model(args.model)
+    if args.yes:
+        app._auto_approve_all = True
     # Per-run overrides (in-memory only; use /config set to persist).
     if args.tools:
         app.cfg.set("tools_enabled", args.tools == "on", save=False)
