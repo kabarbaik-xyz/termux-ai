@@ -1221,6 +1221,9 @@ class App:
             "python": ("python refactor", "python package", "pip package"),
             "qa": ("qa test", "test plan", "manual testing", "corner case"),
             "reverse-engineer": ("reverse engineer", "reverse-engineer", "prd from code"),
+            "discovery": ("client brief", "requirement gathering", "discovery workshop"),
+            "epic-breakdown": ("epic breakdown", "break down the epic", "breakdown into stories"),
+            "ui-audit": ("ui audit", "design audit", "audit the screens"),
             "review": ("code review", "pr review", "review this pr"),
         }
         return TRIGGERS.get(name, ())

@@ -210,9 +210,9 @@ class TestSkills(_TmpHome):
 
     def test_seed_and_load(self):
         sk = self._skills()
-        self.assertEqual(sorted(sk.seed()), ["brainstorm", "cloud-arch", "commit", "data-engineer", "finops", "frontend-tester", "fullstack", "pentest", "python", "qa", "reverse-engineer", "review"])
+        self.assertEqual(sorted(sk.seed()), ["brainstorm", "client-feedback", "cloud-arch", "commit", "data-engineer", "db-migration", "deploy-checklist", "discovery", "doc-ingest", "epic-breakdown", "figma-to-component", "figma-tokens", "finops", "frontend-tester", "fullstack", "go-api-endpoint", "nuxt-component", "nuxt-page", "pentest", "proposal", "py-api-endpoint", "python", "qa", "reverse-engineer", "review", "tsd-sad", "ui-audit", "webapp"])
         self.assertEqual(sk.seed(), [])  # doesn't overwrite
-        self.assertEqual(sorted(n for n, _ in sk.list()), ["brainstorm", "cloud-arch", "commit", "data-engineer", "finops", "frontend-tester", "fullstack", "pentest", "python", "qa", "reverse-engineer", "review"])
+        self.assertEqual(sorted(n for n, _ in sk.list()), ["brainstorm", "client-feedback", "cloud-arch", "commit", "data-engineer", "db-migration", "deploy-checklist", "discovery", "doc-ingest", "epic-breakdown", "figma-to-component", "figma-tokens", "finops", "frontend-tester", "fullstack", "go-api-endpoint", "nuxt-component", "nuxt-page", "pentest", "proposal", "py-api-endpoint", "python", "qa", "reverse-engineer", "review", "tsd-sad", "ui-audit", "webapp"])
         meta, body = sk.load("review")
         self.assertEqual(meta["mode"], "once")
         self.assertIn("senior code reviewer", body)
@@ -234,7 +234,7 @@ class TestSkills(_TmpHome):
         self.assertIn('name="review"', cat)
         self.assertIn('path="', cat)                 # real path for read_file
         self.assertIn("read_file", cat)               # the load instruction
-        self.assertNotIn("secret", cat)               # hidden skill excluded
+        self.assertNotIn('name="secret"', cat)        # hidden skill excluded (by entry, not substring — descriptions may legitimately contain the word)
 
     def _bundled_fullstack(self):
         return m.EXAMPLES["fullstack.md"]
