@@ -2,14 +2,29 @@
 
 Thin orchestration layer over the termux-ai `ai` binary + the team-kit SDLC
 methodology. Local-only (bind 127.0.0.1) with an optional token gate.
+
+Auto-detects .venv on startup so the correct (pydantic-v2) Python is always
+used, even when invoked via ``python3 main.py`` from the system interpreter.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Optional
+
+def _ensure_venv() -> None:
+    """Re-exec via .venv/bin/python if needed; no-op when already in venv."""
+    if getattr(sys, "real_prefix", None) or sys.prefix != sys.base_prefix:
+        return
+    venv_python = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+    if venv_python.is_file():
+        os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+
+_ensure_venv()
 
 import markdown as md_lib
 from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
@@ -161,7 +176,7 @@ async def run_stage(project_request: Request, pid: int, stage_index: int):
     ctx["stage_runs"] = _stage_runs_map(pid)
     ctx["stage_idx"] = db.STAGE_IDX
     ctx["fresh_stage"] = workflow.refresh_artifact_state(db.get_project(pid))["stage"]
-    return templates.TemplateResponse(request, "project_detail.html", ctx)
+    return templates.TemplateResponse(project_request, "project_detail.html", ctx)
 
 
 @app.post("/projects/{pid}/monthly", response_class=HTMLResponse)
@@ -179,7 +194,7 @@ async def monthly(project_request: Request, pid: int):
     ctx["stage_runs"] = _stage_runs_map(pid)
     ctx["stage_idx"] = db.STAGE_IDX
     ctx["fresh_stage"] = workflow.refresh_artifact_state(db.get_project(pid))["stage"]
-    return templates.TemplateResponse(request, "project_detail.html", ctx)
+    return templates.TemplateResponse(project_request, "project_detail.html", ctx)
 
 
 def _all_stage_runs(pid: int) -> list:

@@ -1,177 +1,83 @@
-"""Subprocess wrapper around the termux-ai ``ai`` binary.
+"""Async subprocess wrapper around the termux-ai CLI.
 
-The web app never calls the model APIs directly — it shells out to termux-ai,
-which reads its own config.json and therefore always uses the currently active
-backend + model. This module provides:
-
-* ``run()`` — a one-shot call with optional skill/tools flags and stdin context.
-* ``active_backend()`` — read termux-ai's config.json to display the active
-  backend/model in the UI (read-only; termux-ai remains the single source).
-* ``install_team_kit_skills()`` — copy the team-kit house skills into the live
-  skills dir so ``ai --skill <name>`` can resolve them.
-
-The ``ai`` binary is a single-file executable; we invoke it as a subprocess and
-stream its output back to the caller (the FastAPI route returns it, so a long
-document generation is streamed to the browser rather than buffered whole).
+Runs one `ai` invocation and returns the full output as a string.
+Raises AiError when the process fails or times out.
 """
-from __future__ import annotations
 
 import asyncio
-import json
-import shutil
-import sys
+import os
+import re
 from pathlib import Path
-from typing import Optional
 
-import settings
-
-# Skills in team-kit that form the SDLC pipeline (installed into the live dir).
-PIPELINE_SKILLS = [
-    "doc-ingest",
-    "discovery",
-    "client-feedback",
-    "webapp",
-    "proposal",
-    "tsd-sad",
-    "epic-breakdown",
-    "go-api-endpoint",
-    "py-api-endpoint",
-    "nuxt-component",
-    "nuxt-page",
-    "db-migration",
-    "deploy-checklist",
-    "figma-tokens",
-    "figma-to-component",
-    "ui-audit",
-]
+from settings import AI_BINARY, PROJECTS_ROOT
 
 
-class AiError(RuntimeError):
-    pass
-
-
-def ensure_binary() -> Path:
-    """Accept either `ai` on PATH or the explicit AI_BINARY path."""
-    if settings.AI_BINARY.is_file():
-        return settings.AI_BINARY
-    on_path = shutil.which("ai")
-    if on_path:
-        return Path(on_path)
-    raise AiError(
-        "termux-ai `ai` binary not found. Set KABARBAIK_AI_BIN or build it "
-        "with `python3 build.py` in the termux-ai repo."
-    )
-
-
-def active_backend() -> dict:
-    """Return {backend, model, base_url, available} describing termux-ai's active setup."""
-    cfg = {}
-    try:
-        cfg = json.loads(settings.TERMUX_AI_CONFIG_FILE.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {"backend": "(unconfigured)", "model": "", "base_url": "", "available": False}
-    except Exception:
-        return {"backend": "(unreadable config)", "model": "", "base_url": "", "available": False}
-
-    backend = cfg.get("backend", "ollama")
-    model = ""
-    base_url = ""
-    backends = cfg.get("backends") or {}
-    prof = backends.get(backend) or {}
-    if isinstance(prof, dict):
-        model = prof.get("model") or ""
-        base_url = prof.get("base_url") or ""
-    return {
-        "backend": backend,
-        "model": model,
-        "base_url": base_url,
-        "available": True,
-    }
-
-
-def install_team_kit_skills() -> list:
-    """Copy team-kit skills into the live termux-ai skills dir.
-
-    The `ai` binary loads skills only from its config-dir skills folder, so for
-    `--skill <name>` to work for the pipeline skills we stage them there.
-    Existing files are never overwritten (a user may have customized a skill).
-    Returns the list of names installed (created).
-    """
-    settings.ensure_dirs()
-    src = settings.TEAM_KIT_DIR / "skills"
-    installed = []
-    if not src.is_dir():
-        return installed
-    for name in PIPELINE_SKILLS:
-        f = src / f"{name}.md"
-        dst = settings.AI_SKILLS_DIR / f"{name}.md"
-        if f.is_file() and not dst.exists():
-            shutil.copyfile(f, dst)
-            installed.append(name)
-    return installed
+class AiError(Exception):
+    """Raised when the AI subprocess fails or times out."""
 
 
 async def run(
     prompt: str,
-    *,
-    project_dir: Path,
-    skill: Optional[str] = None,
-    json_mode: bool = False,
-    tools: Optional[str] = None,
-    process: Optional[str] = None,
-    stdin_data: Optional[str] = None,
-    model: Optional[str] = None,
+    project_dir: Path | None = None,
+    skill: str | None = None,
+    tools: str = "on",
     timeout: float = 900.0,
-):
-    """Run one `ai` one-shot inside project_dir and stream lines to the caller.
+) -> str:
+    """Run one `ai` invocation and return its stdout.
 
-    Yields the text output line-by-line (so the browser can show progress).
-    An ``ai`` non-zero exit or an empty response raises AiError.
+    Parameters
+    ----------
+    prompt : str
+        The task description sent to the model.
+    project_dir : Path | None
+        Working directory for the `ai` process (defaults to PROJECTS_ROOT).
+    skill : str | None
+        Activate this skill before running (e.g. ``"discovery"``).
+    tools : str
+        ``"on"`` to enable tool calls.
+    timeout : float
+        Maximum seconds for the entire call.
+
+    Returns
+    -------
+    str
+        Full stdout from the ``ai`` process with ANSI codes stripped.
     """
-    binary = ensure_binary()
-    argv = [str(binary), "--yes"]
-    if model:
-        argv += ["-m", model]
-    if json_mode:
-        argv += ["-j"]
+    cmd = [AI_BINARY, "--yes"]
     if skill:
-        argv += ["--skill", skill]
-    if tools in ("on", "off"):
-        argv += ["--tools", tools]
-    if process in ("on", "off", "auto"):
-        argv += ["--process", process]
-    argv.append(prompt)
+        cmd += ["--skill", skill]
+    cmd += ["--tools", tools]
+    cmd += [prompt]
+
+    cwd = str(project_dir) if project_dir else str(PROJECTS_ROOT)
 
     proc = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=str(project_dir),
-        stdin=asyncio.subprocess.PIPE,
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=cwd,
+        env=os.environ.copy(),
     )
+
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=stdin_data.encode("utf-8") if stdin_data else None),
-            timeout=timeout,
-        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        proc.terminate()
         try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
             proc.kill()
-        except ProcessLookupError:
-            pass
+            await proc.wait()
         raise AiError("termux-ai call timed out.")
 
-    out = stdout.decode("utf-8", errors="replace")
-    err = stderr.decode("utf-8", errors="replace")
-
-    text = out.strip()
     if proc.returncode != 0:
-        # Fall back to showing stderr when stdout is empty.
-        detail = (text or err).strip()
-        raise AiError(detail or f"termux-ai exited {proc.returncode}.")
-    if not text:
-        raise AiError("termux-ai returned no output.")
+        text = stdout.decode("utf-8", errors="replace")
+        raise AiError(f"ai exited with code {proc.returncode}: {text[:200]}")
 
-    # Emit stdout line-by-line (already captured; in future this can stream).
-    for line in out.splitlines():
-        yield line
+    return _strip_ansi(stdout.decode("utf-8", errors="replace"))
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from a string."""
+    return re.sub(r'\x1b\[[0-9;]*[mKH]|\x1b\][^\x07]*\x07', '', text)

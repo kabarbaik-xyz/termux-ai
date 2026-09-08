@@ -16,6 +16,7 @@ from typing import Optional
 
 import ai_runner
 import db
+from settings import PROJECTS_ROOT
 
 
 def refresh_artifact_state(project: dict) -> dict:
@@ -176,20 +177,15 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     root.mkdir(parents=True, exist_ok=True)
     _scaffold_docs(root)
 
-    # Assemble the context prompt from the project's identity.
-    prompt = prompt_template
-
     db.start_stage(project["id"], stage_name)
-    buf: list[str] = []
     try:
-        async for line in ai_runner.run(
-            prompt,
+        output = await ai_runner.run(
+            prompt_template,
             project_dir=root,
             skill=skill,
             tools=tools,
             timeout=timeout,
-        ):
-            buf.append(line)
+        )
     except ai_runner.AiError as e:
         db.finish_stage(project["id"], stage_name, False, str(e))
         raise
@@ -198,7 +194,7 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     refreshed = refresh_artifact_state(project)
     if refreshed["stage"] > project["stage"]:
         db.set_stage(project["id"], min(refreshed["stage"], len(db.STAGES) - 1))
-    return "\n".join(buf)
+    return output
 
 
 def _scaffold_docs(root: Path) -> None:
@@ -221,14 +217,12 @@ async def generate_monthly_report(project: dict) -> str:
         "docs/plan/backlog.md), demoable results, risks, next-month plan. "
         "Cite US-xx IDs. Match the client's language."
     )
-    buf: list[str] = []
-    async for line in ai_runner.run(
+    output = await ai_runner.run(
         prompt, project_dir=root, skill="deploy-checklist", tools="on"
-    ):
-        buf.append(line)
+    )
     db.start_stage(project["id"], "monthly_report", target=f"monthly-{stamp}.md")
     db.finish_stage(project["id"], "monthly_report", True)
-    return "\n".join(buf)
+    return output
 
 
 def build_schedule_prompt(client: str, project: str, months: int) -> str:
