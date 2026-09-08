@@ -87,8 +87,9 @@ def stage_recipe(stage_index: int) -> tuple:
             "on",
             "Follow the discovery skill. From the sources already in docs/inbox/ "
             "and docs/discovery/, produce docs/discovery/discovery.md if missing, "
-            "then write docs/brd/brd.md and docs/prd/prd.md using the BRD and PRD "
-            "templates in the team-kit (docs/brd/ and docs/prd/ folders). Every "
+            "then FILL docs/brd/TEMPLATE.md content into docs/brd/brd.md and "
+            "docs/prd/TEMPLATE.md content into docs/prd/prd.md — every section "
+            "populated from the sources, NONE left as template placeholder. Every "
             "claim cites [SRC-n]; scope OUT is as binding as IN; number OPEN "
             "QUESTIONS that drive the next client meeting.",
         ),
@@ -197,11 +198,22 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     return output
 
 
+_KIT = Path(__file__).resolve().parent.parent / "team-kit"
+
 def _scaffold_docs(root: Path) -> None:
-    """Create the team-kit docs/ folder tree if missing."""
+    """Create the team-kit docs/ folder tree if missing, seeding BRD/PRD
+    templates from the kit so stage recipes reference files that exist in
+    the PROJECT (the model can't see the kit from the project dir)."""
     for folder in ("inbox", "discovery", "brd", "prd", "prototype",
                    "proposal", "tsd", "sad", "plan", "reports"):
         (root / "docs" / folder).mkdir(parents=True, exist_ok=True)
+    seeds = {"docs/brd/TEMPLATE.md": "templates/brd.md",
+             "docs/prd/TEMPLATE.md": "templates/prd.md"}
+    for dst, src in seeds.items():
+        kit_src = _KIT / src
+        target = root / dst
+        if kit_src.is_file() and not target.exists():
+            target.write_text(kit_src.read_text())
 
 
 async def generate_monthly_report(project: dict) -> str:
