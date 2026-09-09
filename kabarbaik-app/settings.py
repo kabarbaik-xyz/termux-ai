@@ -49,9 +49,14 @@ TEAM_KIT_DIR = PROJECT_DIR.parent / "team-kit"
 MAX_UPLOAD_BYTES = int(os.environ.get("KABARBAIK_MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 
 ALLOWED_UPLOAD_EXT = {
-    ".md", ".txt", ".pdf", ".docx", ".xlsx", ".eml", ".csv",
-    ".json", ".html", ".htm", ".rtf",
+    ".md", ".txt", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt",
+    ".odt", ".eml", ".csv", ".json", ".html", ".htm", ".rtf", ".url",
 }
+# What the AI (termux-ai FileReader) can read natively vs. what needs a
+# converter at upload time.
+NATIVE_AI_EXTS = {".md", ".txt", ".csv", ".json", ".html", ".htm",
+                  ".pdf", ".docx", ".pptx", ".xlsx"}
+LEGACY_EXTS = {".doc", ".ppt", ".xls", ".odt"}
 
 
 def ensure_dirs() -> None:

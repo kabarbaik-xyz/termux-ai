@@ -12,6 +12,8 @@ import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -219,6 +221,95 @@ def _stage_runs_map(pid: int) -> dict:
 # Inbox uploads (doc-ingest feedstock) + WYSIWYG input
 # ----------------------------------------------------------------------------
 
+def _ingest_sidecar(path: Path) -> Path | None:
+    """Write ``<name>.extracted.md`` next to formats the AI can't read raw.
+
+    - .rtf/.eml/.url: plain-text-ish → parse/strip in python (no deps).
+    - .doc/.ppt/.xls/.odt: try any installed converter (soffice/pandoc/
+      antiword/catdoc); if none, write a stub so doc-ingest still sees the
+      source exists and can ask the client for a docx/pdf export.
+    Native AI formats (md/txt/csv/json/html/pdf/docx/pptx/xlsx) need nothing.
+    """
+    ext = path.suffix.lower()
+    if ext in settings.NATIVE_AI_EXTS:
+        return None
+    out = path.with_suffix(path.suffix + ".extracted.md")
+    try:
+        if ext == ".eml":
+            from email import policy
+            from email.parser import BytesParser
+            msg = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+            parts = [f"From: {msg.get('From','')}  To: {msg.get('To','')}  "
+                     f"Subject: {msg.get('Subject','')}  Date: {msg.get('Date','')}"]
+            body = msg.get_body(preferencelist=("plain", "html"))
+            if body:
+                parts.append(body.get_content() if not body.get_content_maintype()
+                             == "multipart" else str(body))
+            text = "\n\n".join(parts)
+        elif ext == ".rtf":
+            import re as _re
+            raw = path.read_text(errors="ignore")
+            text = _re.sub(r"\\'([0-9a-f]{2})", lambda m: chr(int(m.group(1), 16)), raw)
+            text = text.replace("\\par", "\n")
+            text = _re.sub(r"\\[a-z]+-?\d* ?|[{}]", "", text)
+        elif ext == ".url":
+            text = path.read_text(errors="ignore")
+        else:  # legacy office / odf
+            text = ""
+            if shutil.which("soffice"):
+                r = subprocess.run(["soffice", "--headless", "--convert-to", "txt",
+                                    "--outdir", path.parent, str(path)],
+                                   capture_output=True, timeout=120)
+                txt = path.with_suffix(".txt")
+                if r.returncode == 0 and txt.exists():
+                    text = txt.read_text(errors="ignore")
+                    txt.unlink(missing_ok=True)
+            for tool, cmd in (("antiword", ["antiword", str(path)]),
+                              ("catdoc", ["catdoc", str(path)])):
+                if not text and shutil.which(tool):
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                    if r.returncode == 0:
+                        text = r.stdout
+            if not text:
+                text = (f"[BINARY SOURCE — not machine-readable on this device]\n"
+                        f"File: {path.name}\n"
+                        f"Format: {ext}\n"
+                        f"Ask the client to export it as .docx or .pdf and "
+                        f"re-upload; the original is kept in docs/inbox/.")
+        out.write_text(f"<!-- extracted from {path.name} -->\n{text}\n")
+        return out
+    except Exception as e:
+        out.unlink(missing_ok=True)
+        return None
+
+
+def _slugify(text: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "source"
+
+
+_GDOC_PATTERNS = (
+    ("document", "docs.google.com/document/d/", "docx"),
+    ("spreadsheet", "docs.google.com/spreadsheets/d/", "xlsx"),
+    ("presentation", "docs.google.com/presentation/d/", "pptx"),
+    ("drive", "drive.google.com/file/d/", None),
+)
+
+
+def _gdoc_target(url: str) -> tuple[str, str] | None:
+    """(download_url, ext) for a Google Docs/Sheets/Slides/Drive link."""
+    for kind, marker, ext in _GDOC_PATTERNS:
+        if marker in url:
+            doc_id = url.split(marker, 1)[1].split("/")[0].split("?")[0]
+            if not doc_id:
+                return None
+            if kind == "drive":
+                return (f"https://drive.google.com/uc?export=download&id={doc_id}", "")
+            return (f"https://docs.google.com/{'spreadsheets' if kind=='spreadsheet' else kind}"
+                    f"/d/{doc_id}/export?format={ext}", ext)
+    return None
+
+
 @app.post("/projects/{pid}/upload", response_class=HTMLResponse)
 async def upload_inbox(project_request: Request, pid: int, file: UploadFile):
     _auth(project_request)
@@ -234,7 +325,61 @@ async def upload_inbox(project_request: Request, pid: int, file: UploadFile):
     if len(data) > settings.MAX_UPLOAD_BYTES:
         raise HTTPException(413, "File too large")
     (inbox / name).write_bytes(data)
+    _ingest_sidecar(inbox / name)
     return RedirectResponse(f"/projects/{pid}", status_code=303)
+
+
+@app.post("/projects/{pid}/link", response_class=HTMLResponse)
+async def ingest_link(project_request: Request, pid: int, url: str = Form(...)):
+    """Ingest a pasted link — Google Docs/Sheets/Slides/Drive get exported
+    to their office equivalent; anything else becomes a link-source note."""
+    _auth(project_request)
+    project = _project_or_404(pid)
+    inbox = db.project_dir(project) / "docs" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    url = url.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "Paste a full http(s) URL")
+
+    target = _gdoc_target(url)
+    if not target:
+        slug = _slugify(url.split("//", 1)[-1])
+        note = inbox / f"link-{slug}.md"
+        note.write_text(f"<!-- link source -->\nSource URL: {url}\n\n"
+                        f"[LINK SOURCE]\nFetch/read this URL during doc-ingest "
+                        f"(ask the delivery lead if it needs credentials).\n")
+        return RedirectResponse(f"/projects/{pid}", status_code=303)
+
+    dl, ext = target
+    slug = _slugify(url.split("/d/", 1)[-1][:40] or "gdoc")
+    name = inbox / f"gdoc-{slug}{ext}"
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        r = subprocess.run(["curl", "-fsSL", "--max-time", "90", "-o", tmp.name, dl],
+                           capture_output=True, timeout=120)
+        ok = r.returncode == 0 and _looks_like_file(tmp.name, ext)
+        if ok:
+            name.write_bytes(Path(tmp.name).read_bytes())
+        import os as _os
+        _os.unlink(tmp.name)
+    if not ok:
+        # Private doc: keep the link so a human can export it manually.
+        (inbox / f"gdoc-{slug}.link.md").write_text(
+            f"<!-- link source -->\nSource URL: {url}\n\n[PRIVATE GOOGLE DOC — "
+            f"export manually]\nThis document is not link-shared. Open the URL, "
+            f"export as {ext or 'docx'} and upload it.\n")
+    return RedirectResponse(f"/projects/{pid}", status_code=303)
+
+
+def _looks_like_file(path: str, ext: str) -> bool:
+    """Cheap magic sniff: docx/xlsx/pptx are zip (PK), pdf is %PDF; for
+    anything else reject obvious HTML error pages."""
+    head = Path(path).read_bytes()[:5]
+    if ext in ("docx", "xlsx", "pptx"):
+        return head[:2] == b"PK"
+    if ext == "pdf":
+        return head[:4] == b"%PDF"
+    return head[:1] not in (b"<", b"{", b"")
 
 
 @app.post("/projects/{pid}/note", response_class=HTMLResponse)

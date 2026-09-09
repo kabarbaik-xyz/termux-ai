@@ -56,12 +56,24 @@
     <div>
       <h3>Upload reference file</h3>
       <form method="post" action="/projects/{{ project.id }}/upload" enctype="multipart/form-data" class="stacked">
-        <input type="file" name="file" required>
+        <input type="file" name="file" required
+               accept=".md,.txt,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.eml,.csv,.json,.html,.htm,.rtf,.url">
         <button type="submit">Upload to inbox</button>
       </form>
-      <p class="hint">Accepted: md, txt, pdf, docx, xlsx, csv, eml, json, html, rtf</p>
+      <p class="hint">Accepted: md, txt, pdf, doc/docx, ppt/pptx, xls/xlsx, odt,
+        eml, csv, json, html, rtf — pdf/docx/pptx/xlsx are read directly by the AI;
+        legacy formats get an extracted-text sidecar.</p>
     </div>
     <div>
+      <h3>Paste a link (Google Docs / Drive)</h3>
+      <form method="post" action="/projects/{{ project.id }}/link" class="stacked">
+        <label>URL <input name="url" type="url" required placeholder="https://docs.google.com/document/d/…"></label>
+        <button type="submit">Ingest link to inbox</button>
+      </form>
+      <p class="hint">Link-shared Google Docs/Sheets/Slides export to docx/xlsx/pptx
+        automatically; private docs are kept as a link note to export manually.</p>
+    </div>
+    <div style="grid-column: 1 / -1;">
       <h3>Add a note (WYSIWYG)</h3>
       <form method="post" action="/projects/{{ project.id }}/note" class="stacked">
         <label>Title <input name="title" required placeholder="Meeting notes — 2026-09-05"></label>

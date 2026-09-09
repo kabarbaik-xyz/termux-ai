@@ -74,7 +74,11 @@ def stage_recipe(stage_index: int) -> tuple:
             "doc-ingest",
             "on",
             "Normalize every raw file in docs/inbox/ into structured, citable "
-            "markdown. Produce docs/<phase>/<slug>.md files with SRC-<n> headers, "
+            "markdown. Sources may be md/txt, pdf/docx/pptx/xlsx (read them "
+            "with your file tool), *.extracted.md sidecars (pre-extracted text "
+            "from rtf/eml/legacy formats — cite the ORIGINAL file name), and "
+            "link-*.md / gdoc-*.md link notes (fetch the URL if public, else "
+            "flag as an open question). Produce docs/<phase>/<slug>.md files with SRC-<n> headers, "
             "docs/<phase>/index.md, and an Open Questions section per source. "
             "Then produce docs/discovery/discovery.md (executive summary, "
             "stakeholders, current state, pain points, scope IN/OUT, assumptions, "
