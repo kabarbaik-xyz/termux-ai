@@ -1,5 +1,22 @@
+# ── Python deps (pip) ─────────────────────────────────────────────
 fastapi
 uvicorn[standard]
 jinja2
 python-multipart
 markdown
+
+# ── System deps (NOT pip — install with your package manager) ────
+#   Termux : pkg install poppler curl
+#   Debian : sudo apt-get install -y poppler-utils curl
+#
+#   poppler  → pdftotext: REQUIRED for the AI to read uploaded PDFs
+#              (termux-ai's read_file shells out to it)
+#   curl     → REQUIRED for Google Docs/Sheets/Slides/Drive link
+#              ingestion (export → docx/xlsx/pptx download)
+#
+#   OPTIONAL — legacy office converters (only needed if clients upload
+#   .doc/.ppt/.xls/.odt; without them a [BINARY SOURCE] stub is written
+#   and the client is asked to re-export as docx/pdf):
+#   Termux : pkg install antiword          # .doc
+#            (no Termux package for catdoc/soffice — convert on a PC)
+#   Debian : sudo apt-get install -y antiword catdoc libreoffice-core

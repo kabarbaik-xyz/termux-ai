@@ -353,6 +353,12 @@ async def ingest_link(project_request: Request, pid: int, url: str = Form(...)):
     dl, ext = target
     slug = _slugify(url.split("/d/", 1)[-1][:40] or "gdoc")
     name = inbox / f"gdoc-{slug}{ext}"
+    if not shutil.which("curl"):
+        (inbox / f"gdoc-{slug}.link.md").write_text(
+            f"<!-- link source -->\nSource URL: {url}\n\n[MISSING TOOL: curl] "
+            f"Install curl (see requirements.txt) to auto-export Google Docs, "
+            f"or export manually and upload the {ext or 'docx'}.\n")
+        return RedirectResponse(f"/projects/{pid}", status_code=303)
     import tempfile
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         r = subprocess.run(["curl", "-fsSL", "--max-time", "90", "-o", tmp.name, dl],

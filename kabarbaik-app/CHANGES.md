@@ -1,5 +1,17 @@
 # KabarBaik-App 改进总结
 
+## 2026-09: 输入格式扩展（pdf/doc/gdoc/链接）
+
+**新增依赖（系统级，非 pip）** — 已记入 `requirements.txt` 注释区：
+
+| 工具 | 用途 | 必需性 | 安装 |
+|---|---|---|---|
+| `poppler` (`pdftotext`) | AI 读取上传的 PDF | 上传 PDF 时必需 | `pkg install poppler`（Debian: `poppler-utils`）|
+| `curl` | Google Docs/Sheets/Slides/Drive 链接导出下载（docx/xlsx/pptx）| 链接导入时必需 | `pkg install curl` |
+| `antiword` / `catdoc` / `soffice` | 旧格式 `.doc/.ppt/.xls/.odt` 转换 | 可选 — 缺失时写入 `[BINARY SOURCE]` 占位并提示客户重新导出 | `pkg install antiword`（Termux 无 catdoc/soffice 包）|
+
+**无新增 Python 依赖**：rtf/eml 解析用标准库（`email` + 正则），下载走 `curl` 子进程。
+
 ## 已修复的问题
 
 ### 1. Pydantic 版本不匹配 (主要原因)

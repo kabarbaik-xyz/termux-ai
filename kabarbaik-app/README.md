@@ -39,6 +39,11 @@ cd kabarbaik-app
 python3 -m venv --without-pip .venv
 python3 /tmp/opencode/get-pip.py   # or any pip bootstrap
 .venv/bin/pip install -r requirements.txt
+
+# System tools (full matrix in requirements.txt):
+pkg install poppler curl   # Termux; poppler-utils + curl on Debian
+# optional legacy-office converters:
+pkg install antiword       # .doc uploads
 ```
 
 `ai_runner.install_team_kit_skills()` (called automatically on startup) copies
@@ -69,8 +74,16 @@ KABARBAIK_TOKEN=secret .venv/bin/python -m main
 
 ## Notes
 
-- Meeting notes / requirements can be **uploaded** (pdf/docx/xlsx/…) into the
-  project inbox or **typed in a rich-text editor** (CKEditor 5); both land in
-  `docs/inbox/` for `doc-ingest` to normalize.
+- Meeting notes / requirements can be **uploaded** into the project inbox,
+  **pasted as a link** (Google Docs/Sheets/Slides/Drive — link-shared docs are
+  exported to docx/xlsx/pptx automatically), or **typed in a rich-text
+  editor** (CKEditor 5); all land in `docs/inbox/` for `doc-ingest` to
+  normalize.
+- Upload formats: `md txt csv json html htm` + `pdf docx pptx xlsx` (read
+  directly by the AI; PDF needs `poppler`) + `rtf eml` (parsed to
+  `<name>.extracted.md` sidecars) + `doc ppt xls odt` (converted if
+  `soffice`/`antiword`/`catdoc` present, else tracked as a binary-source
+  stub). External tools: `poppler` (PDF), `curl` (link ingestion) — see
+  requirements.txt.
 - Document artifacts are edited as Markdown (source-of-truth), rendered with a
   live preview.
