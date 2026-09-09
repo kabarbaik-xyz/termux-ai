@@ -96,11 +96,13 @@ def stage_recipe(stage_index: int) -> tuple:
         2: (
             "webapp",
             "on",
-            "Follow the webapp skill in PROTOTYPE mode. Read docs/prd/ (latest) "
-            "and the UX Spec, then build a clickable prototype in docs/prototype/ "
-            "(or a prototype/ subfolder) using the house stack. Record the preview "
-            "URL in docs/prototype/ and a handoff note: what's fake, what's real, "
-            "known gaps. Mobile-responsive from the start.",
+            "Follow the webapp skill in PROTOTYPE mode. Read docs/prd/prd.md, "
+            "then build a MINIMAL clickable prototype in docs/prototype/: a single "
+            "index.html (clean tokens-style CSS, seeded realistic fake data for the "
+            "PRD's modules, all screens reachable by link, mobile-responsive) is "
+            "ENOUGH for the client demo. Then write docs/prototype/handoff.md: "
+            "what's fake, what's real, known gaps. Do NOT scaffold a full build "
+            "chain (no npm install) at this stage.",
         ),
         3: (
             "client-feedback",
@@ -179,17 +181,26 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     _scaffold_docs(root)
 
     db.start_stage(project["id"], stage_name)
-    try:
-        output = await ai_runner.run(
-            prompt_template,
-            project_dir=root,
-            skill=skill,
-            tools=tools,
-            timeout=timeout,
-        )
-    except ai_runner.AiError as e:
-        db.finish_stage(project["id"], stage_name, False, str(e))
-        raise
+    output = None
+    last_err = None
+    for attempt in (1, 2):   # one transparent retry: free-tier gateways 429
+        try:
+            output = await ai_runner.run(
+                prompt_template,
+                project_dir=root,
+                skill=skill,
+                tools=tools,
+                timeout=timeout,
+            )
+            break
+        except ai_runner.AiError as e:
+            last_err = e
+            if attempt == 1:
+                import asyncio as _aio
+                await _aio.sleep(30)   # let the rate-limit window pass
+    if output is None:
+        db.finish_stage(project["id"], stage_name, False, str(last_err))
+        raise last_err
     db.finish_stage(project["id"], stage_name, True)
     # The project advances to the next stage once artifacts exist.
     refreshed = refresh_artifact_state(project)
