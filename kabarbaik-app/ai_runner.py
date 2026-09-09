@@ -9,11 +9,39 @@ import os
 import re
 from pathlib import Path
 
+import settings
 from settings import AI_BINARY, PROJECTS_ROOT
 
 
 class AiError(Exception):
     """Raised when the AI subprocess fails or times out."""
+
+
+def active_backend() -> dict:
+    """Mirror termux-ai's backend resolution (src/config.py active_profile).
+
+    Follows whatever backend/model termux-ai has active — this app never
+    stores its own copy. ``available`` is False only when the config is
+    missing, the active backend has no profile, or no API key is set
+    (local/ollama backends need no key).
+    """
+    import json
+    try:
+        cfg = json.loads(settings.TERMUX_AI_CONFIG_FILE.read_text())
+    except (OSError, ValueError):
+        return {"backend": "not configured", "model": "", "available": False}
+
+    name = cfg.get("backend") or cfg.get("default_backend") or "ollama"
+    prof = (cfg.get("backends") or {}).get(name)
+    if not isinstance(prof, dict) or not prof:
+        return {"backend": name, "model": "", "available": False}
+
+    model = prof.get("model") or cfg.get("model") or ""
+    key = prof.get("api_key") or (cfg.get("api_keys") or {}).get(name) or ""
+    base = str(prof.get("base_url") or "")
+    local = ("localhost" in base or "127.0.0.1" in base
+             or base.endswith(":11434/v1") or name == "ollama")
+    return {"backend": name, "model": model, "available": bool(key) or local}
 
 
 async def run(
