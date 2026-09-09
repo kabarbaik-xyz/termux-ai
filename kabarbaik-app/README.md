@@ -63,6 +63,23 @@ KABARBAIK_TOKEN=secret .venv/bin/python -m main
 # then access via http://127.0.0.1:8021/?token=secret
 ```
 
+## Reset (wipe all clients/projects/runs + artifacts)
+
+```bash
+curl -X POST -d "confirm=reset everything" http://127.0.0.1:8021/admin/reset
+# with a token: http://127.0.0.1:8021/admin/reset?token=secret
+```
+
+- Immediate, no undo — deletes all DB rows (clients, projects, stage runs,
+  feedback), empties `data/projects/`, re-inits the schema.
+- Wrong/missing confirm field → `400` refusal.
+- Without the server running:
+
+```bash
+python3 -c "import db; db.reset_all(); db.init()"   # DB rows
+rm -rf data/projects                                  # artifacts
+```
+
 ## Config (env vars)
 
 - `KABARBAIK_AI_BIN` — path to the `ai` binary (default `~/.local/bin/ai`)
