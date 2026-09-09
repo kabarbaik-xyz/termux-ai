@@ -262,3 +262,12 @@ def _slug(name: str) -> str:
 
     base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return base or "project"
+
+def reset_all() -> None:
+    """Delete all runtime rows (clients, projects, stage runs, feedback)."""
+    with get_db() as db:
+        for table in ("feedback", "stage_runs", "projects", "clients"):
+            try:
+                db.execute(f"DELETE FROM {table}")
+            except Exception:
+                pass

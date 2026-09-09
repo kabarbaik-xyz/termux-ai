@@ -26,3 +26,6 @@ kabarbaik-app/data/
 .idea/
 .vscode/
 gh_ai_probe
+# KabarBaik runtime logs (never commit client data / logs)
+kabarbaik-app/*.log
+kabarbaik-app/kb.log

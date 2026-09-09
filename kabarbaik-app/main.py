@@ -338,6 +338,29 @@ async def healthz():
     return PlainTextResponse("ok")
 
 
+
+
+@app.post("/admin/reset")
+async def admin_reset(request: Request):
+    """Wipe ALL clients/projects/runs + project artifact folders. Requires
+    the app token when one is set (same gate as every route)."""
+    import shutil as _sh
+    _auth(request)
+    form = await request.form()
+    confirm = str(form.get("confirm", "")).strip().lower()
+    if confirm != "reset everything":
+        return PlainTextResponse("Refusing: type 'reset everything' in the confirm field.", status_code=400)
+    db.reset_all()                     # DB rows: clients, projects, runs, feedback
+    if settings.DATA_DIR.is_dir():
+        for child in settings.DATA_DIR.iterdir():
+            if child.name in ("kabarbaik.db",):
+                continue
+            if child.is_dir():
+                _sh.rmtree(child, ignore_errors=True)   # per-project artifact folders
+    db.init()                          # recreate schema fresh
+    return RedirectResponse("/", status_code=303)
+
+
 if __name__ == "__main__":
     import uvicorn
 
