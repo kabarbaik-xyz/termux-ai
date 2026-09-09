@@ -5,9 +5,9 @@ project's docs/ tree, and which artifact(s) to expect after it completes. The
 heavy lifting (document structure, citations, QA gates) lives in the team-kit
 skills themselves — the web app only orchestrates.
 
-Flow (matches team-kit samples 00→10):
-  doc-ingest → discovery → BRD+PRD → webapp(prototype) → client-feedback
-  → proposal → tsd-sad → epic-breakdown → development → monthly report
+Flow (client feedback arrives via docs/inbox/ uploads, not a stage):
+  doc-ingest → discovery → BRD+PRD → prototype → proposal
+  → final BRD/PRD/TSD/SAD → task breakdown
 """
 from __future__ import annotations
 
@@ -43,16 +43,12 @@ def refresh_artifact_state(project: dict) -> dict:
         stage = 2
     if has["prototype"]:
         stage = 3
-    if (has["prd"]) and _folder_has_files(docs / "prd", "change-requests"):
-        stage = 4
     if has["proposal"]:
-        stage = 5
+        stage = 4
     if has["tsd"] and has["sad"]:
-        stage = 6
+        stage = 4
     if has["plan"]:
-        stage = 7
-    if has["reports"]:
-        stage = 9
+        stage = 5
     return {"stage": stage, "has": has}
 
 
@@ -113,14 +109,6 @@ def stage_recipe(stage_index: int) -> tuple:
             "chain (no npm install) at this stage.",
         ),
         3: (
-            "client-feedback",
-            "on",
-            "Follow the client-feedback skill. Convert the client meeting notes in "
-            "docs/inbox/ and the demo reactions into structured change requests "
-            "(CR-xxx) with impact analysis in docs/prd/change-requests.md, a PRD "
-            "redline appendix, and update docs/prd/CHANGELOG.md.",
-        ),
-        4: (
             "proposal",
             "on",
             "Follow the proposal skill. From docs/prd/ (latest v), docs/prototype/, "
@@ -130,11 +118,11 @@ def stage_recipe(stage_index: int) -> tuple:
             "RFP compliance matrix, scope, delivery phases, team & allocation, "
             "risks, why-us). Keep pricing as a [PRICING — HUMAN OWNED] "
             "placeholder. If a proposal already exists (proposal-vN.md), write "
-            "the next version vN+1 incorporating client feedback / CR-xxx — the "
+            "the next version vN+1 incorporating the client feedback uploaded to docs/inbox/ — the "
             "final agreed proposal will later be uploaded to docs/inbox/ as the "
             "source of truth for the post-approval docs.",
         ),
-        5: (
+        4: (
             "tsd-sad",
             "on",
             "Follow the tsd-sad skill and produce the FINAL agreed documentation "
@@ -149,7 +137,7 @@ def stage_recipe(stage_index: int) -> tuple:
             "plus the doc-sync impact map. If no proposal exists anywhere, stop "
             "and say the proposal stage must be finished first.",
         ),
-        6: (
+        5: (
             "epic-breakdown",
             "on",
             "Follow the epic-breakdown skill. From the FINAL docs/prd/prd.md, "
@@ -159,31 +147,36 @@ def stage_recipe(stage_index: int) -> tuple:
             "matrix PRD req → US-xx → SC-xx → component → test file — ready for "
             "the development phase.",
         ),
-        7: (
-            None,
-            "on",
-            "Development is tracked here. Use the docs/plan/backlog.md stories as "
-            "the source of truth for ongoing work; wire this stage to the team's "
-            "PM/CI later.",
-        ),
-        8: (
-            "deploy-checklist",
-            "on",
-            "Produce the monthly report for the client: docs/reports/monthly-<yyyy-mm>.md "
-            "summarizing work delivered (stories done from docs/plan/backlog.md), "
-            "demoable results, risks, and next-month plan. Cite US-xx IDs. Match the "
-            "client's language.",
-        ),
     }
     return recipes.get(stage_index)
 
 
-SCHEDULE_PROMPT = """You are the KabarBaik delivery lead. Client: {client} · Project: {project}.
+# What each stage must leave on disk — a run that produces none of these
+# is marked FAILED even if the AI exited 0 (guards against the model
+# "chatting done" while its file writes were declined).
+STAGE_ARTIFACTS = {
+    "discovery": ["docs/discovery/discovery.md"],
+    "brd_prd": ["docs/brd/brd.md", "docs/prd/prd.md"],
+    "prototype": ["docs/prototype/"],
+    "proposal": ["docs/proposal/"],
+    "post_approval": ["docs/tsd/tsd.md", "docs/sad/sad.md"],
+    "task_breakdown": ["docs/plan/backlog.md"],
+}
 
-Plan the full build out of the agreed docs (PRD v2, TSD, SAD, backlog). Produce a
-monthly schedule (month-by-month, {months} months) mapping epics/stories from
-docs/plan/backlog.md onto sprints/months, marking dependencies, and the demoable
-milestone that ends each month. Write it as docs/reports/schedule.md."""
+
+def _artifact_sig(root: Path, stage_name: str) -> set:
+    """(path, mtime, size) fingerprints of the stage's expected artifacts."""
+    sig = set()
+    for rel in STAGE_ARTIFACTS.get(stage_name, []):
+        target = root / rel
+        if rel.endswith("/"):                      # whole folder
+            if target.is_dir():
+                for f in target.rglob("*"):
+                    if f.is_file():
+                        sig.add((str(f), f.stat().st_mtime, f.stat().st_size))
+        elif target.is_file():
+            sig.add((str(target), target.stat().st_mtime, target.stat().st_size))
+    return sig
 
 
 def _stage_gate(stage_name: str, root: Path) -> str | None:
@@ -234,6 +227,7 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
         return gate
 
     db.start_stage(project["id"], stage_name)
+    sig_before = _artifact_sig(root, stage_name)
     output = None
     last_err = None
     for attempt in (1, 2):   # one transparent retry: free-tier gateways 429
@@ -254,7 +248,23 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     if output is None:
         db.finish_stage(project["id"], stage_name, False, str(last_err))
         raise last_err
-    db.finish_stage(project["id"], stage_name, True)
+    # The run "succeeded" only if it produced or updated its artifacts.
+    sig_after = _artifact_sig(root, stage_name)
+    if stage_name in STAGE_ARTIFACTS and sig_after == sig_before:
+        if sig_before:
+            # Artifacts already existed and the model changed nothing — a
+            # legitimate "already complete" re-run, not a phantom.
+            db.finish_stage(project["id"], stage_name, True,
+                            "No changes — artifacts were already present and "
+                            "complete. Delete them first to force a rebuild.")
+        else:
+            msg = ("Stage reported success but produced NO artifacts "
+                   f"({', '.join(STAGE_ARTIFACTS[stage_name])}). The AI likely "
+                   "could not write files — re-run the stage.")
+            db.finish_stage(project["id"], stage_name, False, msg)
+            return msg
+    else:
+        db.finish_stage(project["id"], stage_name, True)
     # The project advances to the next stage once artifacts exist.
     refreshed = refresh_artifact_state(project)
     if refreshed["stage"] > project["stage"]:
@@ -278,29 +288,3 @@ def _scaffold_docs(root: Path) -> None:
         target = root / dst
         if kit_src.is_file() and not target.exists():
             target.write_text(kit_src.read_text())
-
-
-async def generate_monthly_report(project: dict) -> str:
-    """Generate the current month's client report into docs/reports/."""
-    from datetime import date
-
-    stamp = date.today().isoformat()[:7]
-    root = db.project_dir(project)
-    _scaffold_docs(root)
-    prompt = (
-        "Produce the monthly report for the client: docs/reports/"
-        f"monthly-{stamp}.md summarizing work delivered (stories done from "
-        "docs/plan/backlog.md), demoable results, risks, next-month plan. "
-        "Cite US-xx IDs. Match the client's language."
-    )
-    output = await ai_runner.run(
-        prompt, project_dir=root, skill="deploy-checklist", tools="on"
-    )
-    db.start_stage(project["id"], "monthly_report", target=f"monthly-{stamp}.md")
-    db.finish_stage(project["id"], "monthly_report", True)
-    return output
-
-
-def build_schedule_prompt(client: str, project: str, months: int) -> str:
-    """Return the delivery-schedule prompt from the SCHEDULE_PROMPT template."""
-    return SCHEDULE_PROMPT.format(client=client, project=project, months=months)

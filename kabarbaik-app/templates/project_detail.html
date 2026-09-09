@@ -39,11 +39,11 @@
       </div>
       {% if stage_idx[name] >= fresh_stage %}
       <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
-        <button type="submit" class="btn-small" {% if name == 'development' %}data-relay{% endif %}>
-          {% if name == 'development' %}Run / track{% elif name == 'monthly_report' %}Generate report{% else %}Run stage{% endif %}
+        <button type="submit" class="btn-small">
+          Run stage
         </button>
       </form>
-      {% elif name not in ('development', 'monthly_report') %}
+      {% else %}
       <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
         <button type="submit" class="btn-small ghost" title="Re-run this stage (loop until solid)">↻ Re-run</button>
       </form>

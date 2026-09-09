@@ -22,12 +22,9 @@ STAGES = [
     ("discovery", "Discovery & Requirement Gathering"),
     ("brd_prd", "Initial BRD + PRD"),
     ("prototype", "Prototype"),
-    ("feedback", "Present to Client & Gather Feedback"),
     ("proposal", "Proposal"),
     ("post_approval", "Update BRD/PRD + TSD + SAD"),
     ("task_breakdown", "Break Down Development Tasks"),
-    ("development", "Development"),
-    ("monthly_report", "Monthly Report"),
 ]
 
 STAGE_IDX = {name: i for i, (name, _) in enumerate(STAGES)}

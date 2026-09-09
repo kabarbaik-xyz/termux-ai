@@ -103,7 +103,12 @@ async def run(
         text = stdout.decode("utf-8", errors="replace")
         raise AiError(f"ai exited with code {proc.returncode}: {text[:200]}")
 
-    return _strip_ansi(stdout.decode("utf-8", errors="replace"))
+    out = _strip_ansi(stdout.decode("utf-8", errors="replace"))
+    if not out.strip():
+        # Gateways sometimes return an empty 200 after a long hang — treat as
+        # a failure so callers can retry instead of recording a phantom "ok".
+        raise AiError("ai produced no output (empty response from the gateway).")
+    return out
 
 
 def _strip_ansi(text: str) -> str:

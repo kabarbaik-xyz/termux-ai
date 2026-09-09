@@ -181,133 +181,20 @@ async def run_stage(project_request: Request, pid: int, stage_index: int):
     return templates.TemplateResponse(project_request, "project_detail.html", ctx)
 
 
-@app.post("/projects/{pid}/monthly", response_class=HTMLResponse)
-async def monthly(project_request: Request, pid: int):
-    _auth(project_request)
-    project = _project_or_404(pid)
-    output = await workflow.generate_monthly_report(project)
-    ctx = _common(project_request)
-    ctx["project"] = db.get_project(pid)
-    ctx["output"] = output
-    ctx["ran_stage"] = len(db.STAGES) - 1  # monthly_report
-    ctx["client"] = db.get_client(project["client_id"])
-    ctx["artifacts"] = db.index_artifacts(pid)
-    ctx["feedback"] = db.list_feedback(pid)
-    ctx["stage_runs"] = _stage_runs_map(pid)
-    ctx["stage_idx"] = db.STAGE_IDX
-    ctx["fresh_stage"] = workflow.refresh_artifact_state(db.get_project(pid))["stage"]
-    return templates.TemplateResponse(project_request, "project_detail.html", ctx)
-
-
-def _all_stage_runs(pid: int) -> list:
-    with db.get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM stage_runs WHERE project_id=? ORDER BY started", (pid,)
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def _stage_runs_map(pid: int) -> dict:
     """{stage_name: {status, log, ...}} with a default entry for EVERY stage,
-    so templates never hit a missing key (Jinja raises on missing dict attrs)."""
+    so templates never hit a missing key (Jinja raises on missing dict attrs).
+    Historical rows for removed stages (feedback/development/monthly_report)
+    are kept but simply not rendered."""
     m = {name: {"status": "", "log": "", "started": "", "finished": "", "target": ""}
          for name, _ in db.STAGES}
-    for r in _all_stage_runs(pid):
-        m.setdefault(r["stage"], {"status": "", "log": ""}).update(r)
+    with db.get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM stage_runs WHERE project_id=? ORDER BY id", (pid,)
+        ).fetchall()
+    for r in rows:
+        m.setdefault(r["stage"], {"status": "", "log": ""}).update(dict(r))
     return m
-
-
-# ----------------------------------------------------------------------------
-# Inbox uploads (doc-ingest feedstock) + WYSIWYG input
-# ----------------------------------------------------------------------------
-
-def _ingest_sidecar(path: Path) -> Path | None:
-    """Write ``<name>.extracted.md`` next to formats the AI can't read raw.
-
-    - .rtf/.eml/.url: plain-text-ish → parse/strip in python (no deps).
-    - .doc/.ppt/.xls/.odt: try any installed converter (soffice/pandoc/
-      antiword/catdoc); if none, write a stub so doc-ingest still sees the
-      source exists and can ask the client for a docx/pdf export.
-    Native AI formats (md/txt/csv/json/html/pdf/docx/pptx/xlsx) need nothing.
-    """
-    ext = path.suffix.lower()
-    if ext in settings.NATIVE_AI_EXTS:
-        return None
-    out = path.with_suffix(path.suffix + ".extracted.md")
-    try:
-        if ext == ".eml":
-            from email import policy
-            from email.parser import BytesParser
-            msg = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
-            parts = [f"From: {msg.get('From','')}  To: {msg.get('To','')}  "
-                     f"Subject: {msg.get('Subject','')}  Date: {msg.get('Date','')}"]
-            body = msg.get_body(preferencelist=("plain", "html"))
-            if body:
-                parts.append(body.get_content() if not body.get_content_maintype()
-                             == "multipart" else str(body))
-            text = "\n\n".join(parts)
-        elif ext == ".rtf":
-            import re as _re
-            raw = path.read_text(errors="ignore")
-            text = _re.sub(r"\\'([0-9a-f]{2})", lambda m: chr(int(m.group(1), 16)), raw)
-            text = text.replace("\\par", "\n")
-            text = _re.sub(r"\\[a-z]+-?\d* ?|[{}]", "", text)
-        elif ext == ".url":
-            text = path.read_text(errors="ignore")
-        else:  # legacy office / odf
-            text = ""
-            if shutil.which("soffice"):
-                r = subprocess.run(["soffice", "--headless", "--convert-to", "txt",
-                                    "--outdir", path.parent, str(path)],
-                                   capture_output=True, timeout=120)
-                txt = path.with_suffix(".txt")
-                if r.returncode == 0 and txt.exists():
-                    text = txt.read_text(errors="ignore")
-                    txt.unlink(missing_ok=True)
-            for tool, cmd in (("antiword", ["antiword", str(path)]),
-                              ("catdoc", ["catdoc", str(path)])):
-                if not text and shutil.which(tool):
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                    if r.returncode == 0:
-                        text = r.stdout
-            if not text:
-                text = (f"[BINARY SOURCE — not machine-readable on this device]\n"
-                        f"File: {path.name}\n"
-                        f"Format: {ext}\n"
-                        f"Ask the client to export it as .docx or .pdf and "
-                        f"re-upload; the original is kept in docs/inbox/.")
-        out.write_text(f"<!-- extracted from {path.name} -->\n{text}\n")
-        return out
-    except Exception as e:
-        out.unlink(missing_ok=True)
-        return None
-
-
-def _slugify(text: str) -> str:
-    import re as _re
-    return _re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60] or "source"
-
-
-_GDOC_PATTERNS = (
-    ("document", "docs.google.com/document/d/", "docx"),
-    ("spreadsheet", "docs.google.com/spreadsheets/d/", "xlsx"),
-    ("presentation", "docs.google.com/presentation/d/", "pptx"),
-    ("drive", "drive.google.com/file/d/", None),
-)
-
-
-def _gdoc_target(url: str) -> tuple[str, str] | None:
-    """(download_url, ext) for a Google Docs/Sheets/Slides/Drive link."""
-    for kind, marker, ext in _GDOC_PATTERNS:
-        if marker in url:
-            doc_id = url.split(marker, 1)[1].split("/")[0].split("?")[0]
-            if not doc_id:
-                return None
-            if kind == "drive":
-                return (f"https://drive.google.com/uc?export=download&id={doc_id}", "")
-            return (f"https://docs.google.com/{'spreadsheets' if kind=='spreadsheet' else kind}"
-                    f"/d/{doc_id}/export?format={ext}", ext)
-    return None
 
 
 @app.post("/projects/{pid}/upload", response_class=HTMLResponse)
