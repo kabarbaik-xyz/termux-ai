@@ -89,13 +89,17 @@ def stage_recipe(stage_index: int) -> tuple:
         1: (
             "discovery",
             "on",
-            "Follow the discovery skill. From the sources already in docs/inbox/ "
-            "and docs/discovery/, produce docs/discovery/discovery.md if missing, "
-            "then FILL docs/brd/TEMPLATE.md content into docs/brd/brd.md and "
-            "docs/prd/TEMPLATE.md content into docs/prd/prd.md — every section "
-            "populated from the sources, NONE left as template placeholder. Every "
-            "claim cites [SRC-n]; scope OUT is as binding as IN; number OPEN "
-            "QUESTIONS that drive the next client meeting.",
+            "Generate the INITIAL BRD and PRD. Follow the discovery skill. "
+            "Input: docs/discovery/discovery.md plus the SRC files it cites "
+            "(docs/<phase>/*.md). Output: docs/brd/brd.md and docs/prd/prd.md — "
+            "follow the STRUCTURE of docs/brd/TEMPLATE.md and docs/prd/TEMPLATE.md "
+            "exactly (same sections, same order) but with every section FILLED "
+            "with real content from the sources — these are finished DOCUMENTS, "
+            "not template copies; NONE of the template's placeholder text may "
+            "remain. PRD: assign US-xxx IDs with acceptance criteria. BRD: "
+            "business objectives BO-x. Both: header version=v1.0 sources=[SRC-n], "
+            "scope OUT as binding as IN, numbered OPEN QUESTIONS for the next "
+            "client meeting. Do not invent content — gaps become open questions.",
         ),
         2: (
             "webapp",
@@ -119,27 +123,41 @@ def stage_recipe(stage_index: int) -> tuple:
         4: (
             "proposal",
             "on",
-            "Follow the proposal skill. From docs/prd/ (v2+), docs/prototype/, "
-            "docs/discovery/ and any RFP [SRC-n], write docs/proposal/proposal-v1.md "
-            "with the full structure (executive summary, understanding, solution "
-            "overview with Mermaid, RFP compliance matrix, scope, delivery phases, "
-            "team & allocation, risks, why-us). Keep pricing as a "
-            "[PRICING — HUMAN OWNED] placeholder.",
+            "Follow the proposal skill. From docs/prd/ (latest v), docs/prototype/, "
+            "docs/discovery/ and any RFP [SRC-n], write "
+            "docs/proposal/proposal-v1.md with the skill's full structure "
+            "(executive summary, understanding, solution overview with Mermaid, "
+            "RFP compliance matrix, scope, delivery phases, team & allocation, "
+            "risks, why-us). Keep pricing as a [PRICING — HUMAN OWNED] "
+            "placeholder. If a proposal already exists (proposal-vN.md), write "
+            "the next version vN+1 incorporating client feedback / CR-xxx — the "
+            "final agreed proposal will later be uploaded to docs/inbox/ as the "
+            "source of truth for the post-approval docs.",
         ),
         5: (
             "tsd-sad",
             "on",
-            "Follow the tsd-sad skill. From the agreed proposal, PRD v2 and "
-            "prototype, produce docs/tsd/tsd.md and docs/sad/sad.md (with ADRs in "
-            "docs/sad/ADR-xxx.md, one per decision) plus the doc-sync impact map.",
+            "Follow the tsd-sad skill and produce the FINAL agreed documentation "
+            "from the signed-off proposal. Source of truth: the FINAL proposal — "
+            "look in docs/inbox/ first (the client-approved proposal was uploaded "
+            "there — treat it as the newest [SRC-n] and cite it) and "
+            "docs/proposal/proposal-vN.md (highest N). Step 1: update "
+            "docs/brd/brd.md and docs/prd/prd.md to their FINAL versions — merge "
+            "everything the final proposal commits to, bump the version header, "
+            "add a CHANGELOG entry. Step 2: produce docs/tsd/tsd.md and "
+            "docs/sad/sad.md (ADRs in docs/sad/ADR-xxx.md, one per decision) "
+            "plus the doc-sync impact map. If no proposal exists anywhere, stop "
+            "and say the proposal stage must be finished first.",
         ),
         6: (
             "epic-breakdown",
             "on",
-            "Follow the epic-breakdown skill. From PRD v2, TSD and SAD, produce "
-            "docs/plan/backlog.md with epics (E-xx), stories (US-xxx with AC, DoD, "
-            "screens SC-xx, dependencies, estimate range, suggested role) and the "
-            "traceability matrix PRD req → US-xx → SC-xx → component → test file.",
+            "Follow the epic-breakdown skill. From the FINAL docs/prd/prd.md, "
+            "docs/brd/brd.md, TSD and SAD, produce docs/plan/backlog.md with "
+            "epics (E-xx), stories (US-xxx with AC, DoD, screens SC-xx, "
+            "dependencies, estimate range, suggested role) and the traceability "
+            "matrix PRD req → US-xx → SC-xx → component → test file — ready for "
+            "the development phase.",
         ),
         7: (
             None,
@@ -168,6 +186,30 @@ docs/plan/backlog.md onto sprints/months, marking dependencies, and the demoable
 milestone that ends each month. Write it as docs/reports/schedule.md."""
 
 
+def _stage_gate(stage_name: str, root: Path) -> str | None:
+    """Return a blocking message when a stage's inputs don't exist yet.
+
+    Post-approval docs must derive from the FINAL proposal: either an
+    uploaded/signed proposal in docs/inbox/ or a generated
+    docs/proposal/proposal-vN.md. Keeps the SDLC order honest instead of
+    letting the model improvise TSD/SAD from the PRD alone.
+    """
+    if stage_name != "post_approval":
+        return None
+    docs = root / "docs"
+    has_proposal = any((docs / "proposal").glob("proposal-v*.md"))
+    if not has_proposal:
+        inbox = docs / "inbox"
+        has_proposal = inbox.is_dir() and any(
+            "proposal" in f.name.lower() for f in inbox.iterdir()
+            if f.is_file() and not f.name.startswith("."))
+    if not has_proposal:
+        return ("Blocked: no proposal found. Run the Proposal stage first (or "
+                "upload the client-approved final proposal into docs/inbox/) — "
+                "the final BRD/PRD/TSD/SAD must derive from the agreed proposal.")
+    return None
+
+
 async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> str:
     """Execute one SDLC stage for a project; returns the full AI output.
 
@@ -183,6 +225,13 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     root = db.project_dir(project)
     root.mkdir(parents=True, exist_ok=True)
     _scaffold_docs(root)
+
+    # Hard preconditions — prompt-level guards are advisory; enforce in code.
+    gate = _stage_gate(stage_name, root)
+    if gate:
+        db.start_stage(project["id"], stage_name)
+        db.finish_stage(project["id"], stage_name, False, gate)
+        return gate
 
     db.start_stage(project["id"], stage_name)
     output = None

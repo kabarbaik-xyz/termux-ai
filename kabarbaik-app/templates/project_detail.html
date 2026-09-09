@@ -43,6 +43,10 @@
           {% if name == 'development' %}Run / track{% elif name == 'monthly_report' %}Generate report{% else %}Run stage{% endif %}
         </button>
       </form>
+      {% elif name not in ('development', 'monthly_report') %}
+      <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
+        <button type="submit" class="btn-small ghost" title="Re-run this stage (loop until solid)">↻ Re-run</button>
+      </form>
       {% endif %}
       {% if stage_runs[name].log %}<details class="run-log"><summary>last run</summary><pre>{{ stage_runs[name].log }}</pre></details>{% endif %}
     </li>

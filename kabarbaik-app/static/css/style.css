@@ -140,3 +140,10 @@ ol.flow { list-style: none; padding: 0; margin: 0; counter-reset: step; }
 
 /* WYSIWYG (documentMode = no toolbar, but keep a clean box) */
 .rte { min-height: 120px; }
+.btn-small.ghost {
+  background: transparent;
+  color: var(--muted, #888);
+  border: 1px dashed currentColor;
+  opacity: .8;
+}
+.btn-small.ghost:hover { opacity: 1; }
