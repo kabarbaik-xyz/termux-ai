@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Avg Point per E-Voucher — Bakmi GM BI Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="header-brand">
+      <div class="logo">B</div>
+      <h1>Avg Point per E-Voucher</h1>
+    </div>
+    <div class="header-meta">Data as of 2026-07-09 08:00 WIB · <a href="index.html">Modules</a></div>
+  </div>
+  <main class="container">
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Time Period</label>
+        <select><option>Monthly</option><option>Quarter</option><option>Year</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Tier</label>
+        <select><option>All</option><option>Silver</option><option>Gold</option><option>Platinum</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Voucher Type</label>
+        <select><option>All</option><option>Discount</option><option>Free Item</option><option>Bundle</option></select>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('empty')">Demo: Empty</button>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('error')">Demo: Error</button>
+      <button class="btn btn-sm" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Demo: Loading</button>
+    </div>
+
+    <div id="avg-loading" class="state-loading">
+      <div class="spinner"></div>
+      <p>Loading avg point data…</p>
+    </div>
+    <div id="avg-empty" class="state-empty">
+      <div class="empty-icon">📭</div>
+      <p>No avg point data for selected filters.</p>
+      <button class="btn mt-4" onclick="App.toggleState('populated')">Reset filters</button>
+    </div>
+    <div id="avg-error" class="state-error">
+      <div class="error-icon">⚠️</div>
+      <p>Unable to load avg point data. Please try again later.</p>
+      <button class="btn mt-4" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Retry</button>
+    </div>
+
+    <div id="avg-populated" class="state-populated">
+      <div class="kpi-row">
+        <div class="kpi-card"><div class="kpi-label">Avg Points (Redeemed)</div><div class="kpi-value">1,250</div></div>
+        <div class="kpi-card"><div class="kpi-label">Avg Points (Used)</div><div class="kpi-value">1,180</div></div>
+        <div class="kpi-card"><div class="kpi-label">Redemption Rate</div><div class="kpi-value">74.9%</div></div>
+        <div class="kpi-card"><div class="kpi-label">Vouchers Analyzed</div><div class="kpi-value">8,420</div></div>
+        <div class="kpi-card"><div class="kpi-label">Total Points at Risk</div><div class="kpi-value">1.05M</div></div>
+      </div>
+
+      <div class="card section">
+        <div class="card-title">Avg Point per E-Voucher — Redeemed vs Used</div>
+        <div class="chart">
+          <div class="bar chart1" style="height:70%"><span class="bar-value">1,250</span><span class="bar-label">Redeemed</span></div>
+          <div class="bar chart2" style="height:65%"><span class="bar-value">1,180</span><span class="bar-label">Used</span></div>
+        </div>
+        <div style="height:36px"></div>
+      </div>
+
+      <div class="card section">
+        <div class="card-title">Tier Breakdown</div>
+        <div class="chart">
+          <div class="bar chart1" style="height:60%"><span class="bar-value">980</span><span class="bar-label">Silver</span></div>
+          <div class="bar chart2" style="height:75%"><span class="bar-value">1,420</span><span class="bar-label">Gold</span></div>
+          <div class="bar chart3" style="height:85%"><span class="bar-value">1,680</span><span class="bar-label">Platinum</span></div>
+        </div>
+        <div style="height:36px"></div>
+      </div>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

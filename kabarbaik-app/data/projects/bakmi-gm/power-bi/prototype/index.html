@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bakmi GM BI Dashboard — Prototype</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="header-brand">
+      <div class="logo">B</div>
+      <h1>Bakmi GM BI Dashboard</h1>
+    </div>
+    <div class="header-meta">Prototype v1.0 · Desktop-first</div>
+  </div>
+  <main class="container">
+    <p class="text-secondary">Select a module to explore the clickable prototype. Each screen includes loading, empty, error, and populated states where specified.</p>
+    <div class="nav-grid">
+      <a class="nav-card" data-nav="login.html" href="login.html">
+        <h3>🔐 Login / SSO Entry</h3>
+        <p>Authenticate via Bakmi GM SSO. Includes no-permission state.</p>
+      </a>
+      <a class="nav-card" data-nav="sales.html" href="sales.html">
+        <h3>📊 Sales Report</h3>
+        <p>Volume, value, ATV, basket size, transaction count with drill-down.</p>
+      </a>
+      <a class="nav-card" data-nav="member.html" href="member.html">
+        <h3>👥 Member & Profile Report</h3>
+        <p>Activations, demographics, tier distribution, conversion rate.</p>
+      </a>
+      <a class="nav-card" data-nav="engagement.html" href="engagement.html">
+        <h3>📣 Engagement Report</h3>
+        <p>Banner & push metrics, CTR, campaign drill-down.</p>
+      </a>
+      <a class="nav-card" data-nav="loyalty-point.html" href="loyalty-point.html">
+        <h3>🎁 Loyalty Point Report</h3>
+        <p>Outstanding, top-up, redeemed, used, expired points by tier.</p>
+      </a>
+      <a class="nav-card" data-nav="loyalty-voucher.html" href="loyalty-voucher.html">
+        <h3>🎟️ Loyalty E-Voucher Report</h3>
+        <p>Redeemed, used, expired, active vouchers and cost ratio.</p>
+      </a>
+      <a class="nav-card" data-nav="sales-frequency.html" href="sales-frequency.html">
+        <h3>📈 Purchase Frequency & Avg Spending</h3>
+        <p>Backlog — frequency histogram and avg spending panel.</p>
+      </a>
+      <a class="nav-card" data-nav="avg-point-voucher.html" href="avg-point-voucher.html">
+        <h3>🏅 Avg Point per E-Voucher</h3>
+        <p>Backlog — redeemed vs used comparison by tier.</p>
+      </a>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

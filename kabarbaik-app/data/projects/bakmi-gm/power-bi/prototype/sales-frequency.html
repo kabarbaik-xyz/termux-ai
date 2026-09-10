@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Purchase Frequency & Avg Spending — Bakmi GM BI Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="header-brand">
+      <div class="logo">B</div>
+      <h1>Purchase Frequency & Avg Spending</h1>
+    </div>
+    <div class="header-meta">Data as of 2026-07-09 08:00 WIB · <a href="index.html">Modules</a></div>
+  </div>
+  <main class="container">
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Time Period</label>
+        <select><option>Monthly</option><option>Quarter</option><option>Semester</option><option>Year</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Tier</label>
+        <select><option>All</option><option>Silver</option><option>Gold</option><option>Platinum</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Store Area</label>
+        <select><option>All Areas</option><option>Jakarta Utara</option><option>Jakarta Selatan</option><option>Jakarta Pusat</option><option>Jakarta Timur</option><option>Tangerang</option></select>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('empty')">Demo: Empty</button>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('error')">Demo: Error</button>
+      <button class="btn btn-sm" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Demo: Loading</button>
+    </div>
+
+    <div id="freq-loading" class="state-loading">
+      <div class="spinner"></div>
+      <p>Loading frequency data…</p>
+    </div>
+    <div id="freq-empty" class="state-empty">
+      <div class="empty-icon">📭</div>
+      <p>No frequency data for selected filters.</p>
+      <button class="btn mt-4" onclick="App.toggleState('populated')">Reset filters</button>
+    </div>
+    <div id="freq-error" class="state-error">
+      <div class="error-icon">⚠️</div>
+      <p>Unable to load frequency data. Please try again later.</p>
+      <button class="btn mt-4" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Retry</button>
+    </div>
+
+    <div id="freq-populated" class="state-populated">
+      <div class="kpi-row">
+        <div class="kpi-card"><div class="kpi-label">Avg Frequency</div><div class="kpi-value">2.1x</div><div class="kpi-sub">per month</div></div>
+        <div class="kpi-card"><div class="kpi-label">Avg Spending</div><div class="kpi-value">Rp 78.4K</div><div class="kpi-sub">per unique member</div></div>
+        <div class="kpi-card"><div class="kpi-label">High-Value Segment</div><div class="kpi-value">12.4%</div><div class="kpi-sub">> Rp 150K/mo</div></div>
+        <div class="kpi-card"><div class="kpi-label">Churn Risk</div><div class="kpi-value">8.2%</div><div class="kpi-sub">&lt;1x/month</div></div>
+        <div class="kpi-card"><div class="kpi-label">Members Analyzed</div><div class="kpi-value">18,432</div></div>
+      </div>
+
+      <div class="grid-2 section">
+        <div class="card">
+          <div class="card-title">Purchase Frequency Distribution</div>
+          <div class="chart">
+            <div class="bar chart1" style="height:25%"><span class="bar-value">2,100</span><span class="bar-label">&lt;1x</span></div>
+            <div class="bar chart2" style="height:55%"><span class="bar-value">6,800</span><span class="bar-label">1x</span></div>
+            <div class="bar chart3" style="height:70%"><span class="bar-value">8,200</span><span class="bar-label">2x</span></div>
+            <div class="bar chart4" style="height:45%"><span class="bar-value">4,100</span><span class="bar-label">3x</span></div>
+            <div class="bar chart5" style="height:20%"><span class="bar-value">1,232</span><span class="bar-label">Nx</span></div>
+          </div>
+          <div style="height:36px"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Avg Spending by Segment</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Segment</th><th>Members</th><th>Avg Spend/mo</th></tr></thead>
+              <tbody>
+                <tr><td>Platinum</td><td>5,200</td><td>Rp 142K</td></tr>
+                <tr><td>Gold</td><td>14,200</td><td>Rp 89K</td></tr>
+                <tr><td>Silver</td><td>28,900</td><td>Rp 54K</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Engagement Report — Bakmi GM BI Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="header-brand">
+      <div class="logo">B</div>
+      <h1>Engagement Report</h1>
+    </div>
+    <div class="header-meta">Data as of 2026-07-09 08:00 WIB · <a href="index.html">Modules</a></div>
+  </div>
+  <main class="container">
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Time Period</label>
+        <select><option>Weekly</option><option>Today</option><option>MTD</option><option>Month</option><option>Quarter</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Store Area</label>
+        <select><option>All Areas</option><option>Jakarta Utara</option><option>Jakarta Selatan</option><option>Jakarta Pusat</option><option>Jakarta Timur</option><option>Tangerang</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Channel</label>
+        <select><option>Both</option><option>Banner</option><option>Push Notification</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Campaign Category</label>
+        <select><option>All</option><option>New Menu Launch</option><option>Loyalty Bonus</option><option>Seasonal Promo</option></select>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('empty')">Demo: Empty</button>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('error')">Demo: Error</button>
+      <button class="btn btn-sm" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Demo: Loading</button>
+    </div>
+
+    <div id="eng-loading" class="state-loading">
+      <div class="spinner"></div>
+      <p>Loading engagement data…</p>
+    </div>
+    <div id="eng-empty" class="state-empty">
+      <div class="empty-icon">📭</div>
+      <p>No engagement data for selected period.</p>
+      <button class="btn mt-4" onclick="App.toggleState('populated')">Reset filters</button>
+    </div>
+    <div id="eng-error" class="state-error">
+      <div class="error-icon">⚠️</div>
+      <p>Unable to load engagement data. Please try again later.</p>
+      <button class="btn mt-4" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Retry</button>
+    </div>
+
+    <div id="eng-populated" class="state-populated">
+      <div class="tabs">
+        <button class="tab active" data-tab="banner" data-panel="panel-banner">Banner</button>
+        <button class="tab" data-tab="push" data-panel="panel-push">Push Notification</button>
+        <button class="tab" data-tab="both" data-panel="panel-both">Both</button>
+      </div>
+
+      <div data-panel="panel-banner">
+        <div class="kpi-row">
+          <div class="kpi-card"><div class="kpi-label">Banner Views</div><div class="kpi-value">284,100</div></div>
+          <div class="kpi-card"><div class="kpi-label">Banner Clicks</div><div class="kpi-value">11,364</div></div>
+          <div class="kpi-card"><div class="kpi-label">CTR</div><div class="kpi-value">4.0%</div></div>
+          <div class="kpi-card"><div class="kpi-label">Sales from Conversion</div><div class="kpi-value">Rp 42.1M</div><div class="kpi-sub text-warning">illustrative / not attributed</div></div>
+        </div>
+        <div class="card section">
+          <div class="card-title">Banner Performance by Campaign</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Campaign</th><th>Views</th><th>Clicks</th><th>CTR</th><th>Sales (IDR)</th></tr></thead>
+              <tbody>
+                <tr><td>New Menu Launch — Dim Sum</td><td>98,200</td><td>4,104</td><td>4.2%</td><td>Rp 18.3M</td></tr>
+                <tr><td>Loyalty Bonus Weekend</td><td>112,400</td><td>4,496</td><td>4.0%</td><td>Rp 15.7M</td></tr>
+                <tr><td>Seasonal Promo — Ramadhan</td><td>73,500</td><td>2,764</td><td>3.8%</td><td>Rp 8.1M</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div data-panel="panel-push" style="display:none">
+        <div class="kpi-row">
+          <div class="kpi-card"><div class="kpi-label">Push Sent</div><div class="kpi-value">156,800</div></div>
+          <div class="kpi-card"><div class="kpi-label">Push Read</div><div class="kpi-value">94,080</div></div>
+          <div class="kpi-card"><div class="kpi-label">Push Click</div><div class="kpi-value">18,816</div></div>
+          <div class="kpi-card"><div class="kpi-label">Push Conversion</div><div class="kpi-value">12.0%</div></div>
+          <div class="kpi-card"><div class="kpi-label">Sales from Push</div><div class="kpi-value">Rp 38.4M</div></div>
+        </div>
+        <div class="card section">
+          <div class="card-title">Push Performance by Campaign</div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Campaign</th><th>Sent</th><th>Read</th><th>Click</th><th>Conversion</th></tr></thead>
+              <tbody>
+                <tr><td>Loyalty Bonus Weekend</td><td>82,100</td><td>49,260</td><td>9,852</td><td>12.0%</td></tr>
+                <tr><td>New Menu Launch — Noodles</td><td>48,200</td><td>28,920</td><td>5,784</td><td>11.9%</td></tr>
+                <tr><td>Seasonal Promo — Ramadhan</td><td>26,500</td><td>15,900</td><td>3,180</td><td>12.1%</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div data-panel="panel-both" style="display:none">
+        <div class="card section">
+          <div class="card-title">Side-by-side Comparison</div>
+          <div class="chart">
+            <div class="bar chart1" style="height:80%"><span class="bar-value">284K</span><span class="bar-label">Banner Views</span></div>
+            <div class="bar chart2" style="height:55%"><span class="bar-value">157K</span><span class="bar-label">Push Sent</span></div>
+            <div class="bar chart3" style="height:40%"><span class="bar-value">11.4K</span><span class="bar-label">Banner Clicks</span></div>
+            <div class="bar chart4" style="height:35%"><span class="bar-value">18.8K</span><span class="bar-label">Push Clicks</span></div>
+          </div>
+          <div style="height:36px"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

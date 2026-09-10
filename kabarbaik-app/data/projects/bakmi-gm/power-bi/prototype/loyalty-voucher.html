@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Loyalty E-Voucher Report — Bakmi GM BI Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="header-brand">
+      <div class="logo">B</div>
+      <h1>Loyalty E-Voucher Report</h1>
+    </div>
+    <div class="header-meta">Data as of 2026-07-09 08:00 WIB · <a href="index.html">Modules</a></div>
+  </div>
+  <main class="container">
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Time Period</label>
+        <select><option>Monthly</option><option>Today</option><option>MTD</option><option>Quarter</option><option>Year</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Loyalty Tier</label>
+        <select><option>All</option><option>Silver</option><option>Gold</option><option>Platinum</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Voucher / Offer</label>
+        <select><option>All</option><option>Voucher A — Rp 20K off</option><option>Voucher B — Free Drink</option><option>Voucher C — 15% Off</option></select>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('empty')">Demo: Empty</button>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('error')">Demo: Error</button>
+      <button class="btn btn-sm" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Demo: Loading</button>
+    </div>
+
+    <div id="voucher-loading" class="state-loading">
+      <div class="spinner"></div>
+      <p>Loading voucher data…</p>
+    </div>
+    <div id="voucher-empty" class="state-empty">
+      <div class="empty-icon">📭</div>
+      <p>No voucher data for selected filters.</p>
+      <button class="btn mt-4" onclick="App.toggleState('populated')">Reset filters</button>
+    </div>
+    <div id="voucher-error" class="state-error">
+      <div class="error-icon">⚠️</div>
+      <p>Unable to load voucher data. Please try again later.</p>
+      <button class="btn mt-4" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Retry</button>
+    </div>
+
+    <div id="voucher-populated" class="state-populated">
+      <div class="kpi-row">
+        <div class="kpi-card"><div class="kpi-label">Vouchers Redeemed</div><div class="kpi-value">8,420</div></div>
+        <div class="kpi-card"><div class="kpi-label">Vouchers Used</div><div class="kpi-value">6,310</div></div>
+        <div class="kpi-card"><div class="kpi-label">Vouchers Expired</div><div class="kpi-value">1,205</div></div>
+        <div class="kpi-card"><div class="kpi-label">Active Vouchers</div><div class="kpi-value">905</div></div>
+        <div class="kpi-card"><div class="kpi-label">Cost Ratio</div><div class="kpi-value">18.4%</div><div class="kpi-sub">face value basis</div></div>
+      </div>
+
+      <div class="grid-2 section">
+        <div class="card">
+          <div class="card-title">Cost of Vouchers vs Sales</div>
+          <div class="chart">
+            <div class="bar chart1" style="height:45%"><span class="bar-value">Rp 168K</span><span class="bar-label">Cost</span></div>
+            <div class="bar chart3" style="height:85%"><span class="bar-value">Rp 912K</span><span class="bar-label">Sales</span></div>
+          </div>
+          <div style="height:36px"></div>
+          <p class="text-secondary" style="font-size:var(--caption);">Active cost basis: <strong>face value</strong> (configurable per OQ-6).</p>
+        </div>
+        <div class="card">
+          <div class="card-title">Voucher Status Breakdown</div>
+          <div class="chart">
+            <div class="bar chart1" style="height:70%"><span class="bar-value">8.4K</span><span class="bar-label">Redeemed</span></div>
+            <div class="bar chart2" style="height:55%"><span class="bar-value">6.3K</span><span class="bar-label">Used</span></div>
+            <div class="bar chart4" style="height:20%"><span class="bar-value">1.2K</span><span class="bar-label">Expired</span></div>
+            <div class="bar chart5" style="height:15%"><span class="bar-value">905</span><span class="bar-label">Active</span></div>
+          </div>
+          <div style="height:36px"></div>
+        </div>
+      </div>
+
+      <div class="card section">
+        <div class="section-header">
+          <div class="card-title">Voucher Detail Drill-down</div>
+          <div class="breadcrumb"><a href="loyalty-voucher.html">E-Voucher Report</a> / <span>Voucher A — Rp 20K off</span></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>Redemption Count</td><td>3,210</td></tr>
+              <tr><td>Usage Count</td><td>2,480</td></tr>
+              <tr><td>Cost (IDR)</td><td>Rp 64.2M</td></tr>
+              <tr><td>Expiry Count</td><td>420</td></tr>
+              <tr><td>Cost Basis</td><td><span class="badge">face value</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

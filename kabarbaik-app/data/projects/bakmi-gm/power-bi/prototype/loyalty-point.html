@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Loyalty Point Report — Bakmi GM BI Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="header-brand">
+      <div class="logo">B</div>
+      <h1>Loyalty Point Report</h1>
+    </div>
+    <div class="header-meta">Data as of 2026-07-09 08:00 WIB · <a href="index.html">Modules</a></div>
+  </div>
+  <main class="container">
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Time Period</label>
+        <select><option>Monthly</option><option>Quarterly</option><option>Annual</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Loyalty Tier</label>
+        <select><option>All</option><option>Silver</option><option>Gold</option><option>Platinum</option></select>
+      </div>
+      <div class="filter-group">
+        <label>Point Source</label>
+        <select><option>All</option><option>Sales</option><option>Sign-Up</option><option>Referral</option></select>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('empty')">Demo: Empty</button>
+      <button class="btn btn-sm btn-secondary" onclick="App.toggleState('error')">Demo: Error</button>
+      <button class="btn btn-sm" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Demo: Loading</button>
+    </div>
+
+    <div id="point-loading" class="state-loading">
+      <div class="spinner"></div>
+      <p>Loading point data…</p>
+    </div>
+    <div id="point-empty" class="state-empty">
+      <div class="empty-icon">📭</div>
+      <p>No point data for selected filters.</p>
+      <button class="btn mt-4" onclick="App.toggleState('populated')">Reset filters</button>
+    </div>
+    <div id="point-error" class="state-error">
+      <div class="error-icon">⚠️</div>
+      <p>Unable to load point data. Please try again later.</p>
+      <button class="btn mt-4" onclick="App.toggleState('loading'); setTimeout(()=>App.toggleState('populated'),900)">Retry</button>
+    </div>
+
+    <div id="point-populated" class="state-populated">
+      <div class="kpi-row">
+        <div class="kpi-card"><div class="kpi-label">Outstanding Points</div><div class="kpi-value">2.41M</div></div>
+        <div class="kpi-card"><div class="kpi-label">Top-Up Points</div><div class="kpi-value">1.85M</div></div>
+        <div class="kpi-card"><div class="kpi-label">Redeemed Points</div><div class="kpi-value">320K</div></div>
+        <div class="kpi-card"><div class="kpi-label">Used Points</div><div class="kpi-value">180K</div></div>
+        <div class="kpi-card"><div class="kpi-label">Expired Points</div><div class="kpi-value">60K</div></div>
+      </div>
+
+      <div class="grid-2 section">
+        <div class="card">
+          <div class="card-title">Top-Up Points by Source</div>
+          <div class="donut"></div>
+          <div class="donut-legend mt-4">
+            <div><span style="background:var(--color-chart1)"></span>Sales — 62%</div>
+            <div><span style="background:var(--color-chart2)"></span>Sign-Up — 23%</div>
+            <div><span style="background:var(--color-chart3)"></span>Referral — 15%</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Point Balance by Tier (Monthly)</div>
+          <div class="chart">
+            <div class="bar chart1" style="height:65%"><span class="bar-value">1.57M</span><span class="bar-label">Silver</span></div>
+            <div class="bar chart2" style="height:50%"><span class="bar-value">0.92M</span><span class="bar-label">Gold</span></div>
+            <div class="bar chart3" style="height:30%"><span class="bar-value">0.42M</span><span class="bar-label">Platinum</span></div>
+          </div>
+          <div style="height:36px"></div>
+        </div>
+      </div>
+
+      <div class="card section">
+        <div class="card-title">Members with Expired Points</div>
+        <p class="text-secondary mb-4" style="font-size:var(--caption);">Registered/Pending split carries an inline "definition pending" flag per OQ-5.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Tier</th><th>Registered</th><th>Pending <span class="badge warning">definition pending</span></th><th>Total</th></tr></thead>
+            <tbody>
+              <tr><td>Silver</td><td>1,240</td><td>320</td><td>1,560</td></tr>
+              <tr><td>Gold</td><td>680</td><td>150</td><td>830</td></tr>
+              <tr><td>Platinum</td><td>210</td><td>40</td><td>250</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
