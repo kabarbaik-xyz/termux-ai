@@ -21,6 +21,7 @@ import settings
 STAGES = [
     ("discovery", "Discovery & Requirement Gathering"),
     ("brd_prd", "Initial BRD + PRD"),
+    ("ux_design", "UX Design (Spec + Tokens)"),
     ("prototype", "Prototype"),
     ("proposal", "Proposal"),
     ("post_approval", "Update BRD/PRD + TSD + SAD"),

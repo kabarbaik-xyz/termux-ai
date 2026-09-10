@@ -6,7 +6,8 @@ heavy lifting (document structure, citations, QA gates) lives in the team-kit
 skills themselves — the web app only orchestrates.
 
 Flow (client feedback arrives via docs/inbox/ uploads, not a stage):
-  doc-ingest → discovery → BRD+PRD → prototype → proposal
+  doc-ingest → discovery → BRD+PRD → UX spec+tokens (ux-design skill)
+  → prototype (spec-driven, prototype skill) → proposal
   → final BRD/PRD/TSD/SAD → task breakdown
 """
 from __future__ import annotations
@@ -41,14 +42,16 @@ def refresh_artifact_state(project: dict) -> dict:
         stage = 1
     if has["brd"] and has["prd"]:
         stage = 2
-    if has["prototype"]:
+    if (docs / "03-ux-spec.md").is_file():
         stage = 3
+    if has["prototype"] or _folder_has_files(root / "prototype"):
+        stage = 4
     if has["proposal"]:
-        stage = 4
-    if has["tsd"] and has["sad"]:
-        stage = 4
-    if has["plan"]:
         stage = 5
+    if has["tsd"] and has["sad"]:
+        stage = 5
+    if has["plan"]:
+        stage = 6
     return {"stage": stage, "has": has}
 
 
@@ -98,20 +101,38 @@ def stage_recipe(stage_index: int) -> tuple:
             "client meeting. Do not invent content — gaps become open questions.",
         ),
         2: (
-            "webapp",
+            "ux-design",
             "on",
-            "Follow the webapp skill in PROTOTYPE mode. Read docs/prd/prd.md, "
-            "then build a MINIMAL clickable prototype in docs/prototype/: a single "
-            "index.html (clean tokens-style CSS, seeded realistic fake data for the "
-            "PRD's modules, all screens reachable by link, mobile-responsive) is "
-            "ENOUGH for the client demo. Then write docs/prototype/handoff.md: "
-            "what's fake, what's real, known gaps. Do NOT scaffold a full build "
-            "chain (no npm install) at this stage.",
+            "Follow the ux-design skill. Inputs: the PRD at docs/prd/prd.md "
+            "(this project's equivalent of docs/02-PRD.md — required) and "
+            "discovery notes at docs/discovery/discovery.md. Produce "
+            "docs/03-ux-spec.md with ALL 6 sections of the skill (scope & "
+            "assumptions, Mermaid user flows, screen inventory traced to PRD "
+            "requirements, per-screen wireframes with states, design tokens, "
+            "client open questions) and design-tokens.json at the project root. "
+            "SPEC ONLY — no code. If docs/03-ux-spec.md already exists, lead "
+            "with what changed this round.",
         ),
         3: (
+            "prototype",
+            "on",
+            "Follow the prototype skill — build the clickable demo FROM the "
+            "spec: docs/03-ux-spec.md is your build spec and "
+            "design-tokens.json your only styling source (never invent "
+            "tokens). Functional detail the spec references but doesn't "
+            "spell out comes from docs/prd/prd.md. Output to prototype/ at "
+            "the project root: index.html linking every inventory screen, "
+            "one file per screen, shared styles.css from token custom "
+            "properties, app.js only if needed — vanilla, self-contained, "
+            "no build step, no CDN, realistic content, spec'd states "
+            "(empty/loading/error) reachable. Finish with the skill's "
+            "self-check + prototype/README.md.",
+        ),
+        4: (
             "proposal",
             "on",
-            "Follow the proposal skill. From docs/prd/ (latest v), docs/prototype/, "
+            "Follow the proposal skill. From docs/prd/ (latest v), docs/prototype/ "
+            "(or prototype/ at the project root), "
             "docs/discovery/ and any RFP [SRC-n], write "
             "docs/proposal/proposal-v1.md with the skill's full structure "
             "(executive summary, understanding, solution overview with Mermaid, "
@@ -122,7 +143,7 @@ def stage_recipe(stage_index: int) -> tuple:
             "final agreed proposal will later be uploaded to docs/inbox/ as the "
             "source of truth for the post-approval docs.",
         ),
-        4: (
+        5: (
             "tsd-sad",
             "on",
             "Follow the tsd-sad skill and produce the FINAL agreed documentation "
@@ -137,7 +158,7 @@ def stage_recipe(stage_index: int) -> tuple:
             "plus the doc-sync impact map. If no proposal exists anywhere, stop "
             "and say the proposal stage must be finished first.",
         ),
-        5: (
+        6: (
             "epic-breakdown",
             "on",
             "Follow the epic-breakdown skill. From the FINAL docs/prd/prd.md, "
@@ -157,7 +178,9 @@ def stage_recipe(stage_index: int) -> tuple:
 STAGE_ARTIFACTS = {
     "discovery": ["docs/discovery/discovery.md"],
     "brd_prd": ["docs/brd/brd.md", "docs/prd/prd.md"],
-    "prototype": ["docs/prototype/"],
+    "ux_design": ["docs/03-ux-spec.md", "design-tokens.json"],
+    # prototype: new skill writes prototype/ at root; legacy runs wrote docs/prototype/
+    "prototype": ["prototype/", "docs/prototype/"],
     "proposal": ["docs/proposal/"],
     "post_approval": ["docs/tsd/tsd.md", "docs/sad/sad.md"],
     "task_breakdown": ["docs/plan/backlog.md"],
@@ -187,9 +210,20 @@ def _stage_gate(stage_name: str, root: Path) -> str | None:
     docs/proposal/proposal-vN.md. Keeps the SDLC order honest instead of
     letting the model improvise TSD/SAD from the PRD alone.
     """
+    docs = root / "docs"
+    if stage_name == "ux_design":
+        if not (docs / "prd" / "prd.md").is_file():
+            return ("Blocked: no PRD yet — run 'Initial BRD + PRD' first "
+                    "(the UX spec must trace every screen to PRD requirements).")
+        return None
+    if stage_name == "prototype":
+        if not (docs / "03-ux-spec.md").is_file():
+            return ("Blocked: no UX spec — run 'UX Design' first. It produces "
+                    "docs/03-ux-spec.md + design-tokens.json, which the "
+                    "prototype skill requires (it will not invent a design).")
+        return None
     if stage_name != "post_approval":
         return None
-    docs = root / "docs"
     has_proposal = any((docs / "proposal").glob("proposal-v*.md"))
     if not has_proposal:
         inbox = docs / "inbox"
