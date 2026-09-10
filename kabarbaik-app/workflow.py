@@ -8,7 +8,7 @@ skills themselves — the web app only orchestrates.
 Flow (client feedback arrives via docs/inbox/ uploads, not a stage):
   doc-ingest → discovery → BRD+PRD → UX spec+tokens (ux-design skill)
   → prototype (spec-driven, prototype skill) → proposal
-  → final BRD/PRD/TSD/SAD → task breakdown
+  → final BRD/PRD/TSD/SAD → QA package (qa-spec skill) → task breakdown
 """
 from __future__ import annotations
 
@@ -50,8 +50,11 @@ def refresh_artifact_state(project: dict) -> dict:
         stage = 5
     if has["tsd"] and has["sad"]:
         stage = 5
-    if has["plan"]:
+    if (_folder_has_files(docs, "08-test-cases.md")
+            and _folder_has_files(docs, "10-corner-cases.md")):
         stage = 6
+    if has["plan"]:
+        stage = 7
     return {"stage": stage, "has": has}
 
 
@@ -159,14 +162,36 @@ def stage_recipe(stage_index: int) -> tuple:
             "and say the proposal stage must be finished first.",
         ),
         6: (
+            "qa-spec",
+            "on",
+            "Follow the qa-spec skill. Inputs (read all before writing): the "
+            "final PRD at docs/prd/prd.md, the UX spec at docs/03-ux-spec.md, "
+            "the prototype in prototype/ or docs/prototype/ (its README.md or "
+            "handoff.md — carry anything marked unresolved into corner cases), "
+            "docs/tsd/tsd.md + docs/sad/sad.md (architecture-implied failure "
+            "modes), and docs/proposal/proposal-vN.md (highest N — respect "
+            "scope boundaries). Produce the three linked docs per the skill: "
+            "docs/08-test-cases.md (TC-xxx grouped by screen/flow, positive "
+            "AND negative side by side, PRD refs, P0/P1/P2), "
+            "docs/09-acceptance-criteria.md (Given/When/Then per Epic + "
+            "checkable DoD — use the same Epic grouping Task Breakdown will "
+            "use next so they line up 1:1), docs/10-corner-cases.md (risk "
+            "heat map + corner-case catalog + known deferred risk). Trace "
+            "everything to a source; flag ambiguity, never guess.",
+        ),
+        7: (
             "epic-breakdown",
             "on",
             "Follow the epic-breakdown skill. From the FINAL docs/prd/prd.md, "
             "docs/brd/brd.md, TSD and SAD, produce docs/plan/backlog.md with "
             "epics (E-xx), stories (US-xxx with AC, DoD, screens SC-xx, "
             "dependencies, estimate range, suggested role) and the traceability "
-            "matrix PRD req → US-xx → SC-xx → component → test file — ready for "
-            "the development phase.",
+            "matrix PRD req → US-xx → SC-xx → component → test file. CONSUME "
+            "the QA package: attach TC-xxx IDs to stories from "
+            "docs/08-test-cases.md, use the Given/When/Then AC verbatim from "
+            "docs/09-acceptance-criteria.md (same Epic grouping), and carry "
+            "P0/P1 items from docs/10-corner-cases.md into story DoD / risk "
+            "notes — ready for the development phase.",
         ),
     }
     return recipes.get(stage_index)
@@ -183,6 +208,8 @@ STAGE_ARTIFACTS = {
     "prototype": ["prototype/", "docs/prototype/"],
     "proposal": ["docs/proposal/"],
     "post_approval": ["docs/tsd/tsd.md", "docs/sad/sad.md"],
+    "qa_spec": ["docs/08-test-cases.md", "docs/09-acceptance-criteria.md",
+                "docs/10-corner-cases.md"],
     "task_breakdown": ["docs/plan/backlog.md"],
 }
 
@@ -221,6 +248,13 @@ def _stage_gate(stage_name: str, root: Path) -> str | None:
             return ("Blocked: no UX spec — run 'UX Design' first. It produces "
                     "docs/03-ux-spec.md + design-tokens.json, which the "
                     "prototype skill requires (it will not invent a design).")
+        return None
+    if stage_name == "qa_spec":
+        if not ((docs / "tsd" / "tsd.md").is_file()
+                and (docs / "sad" / "sad.md").is_file()):
+            return ("Blocked: no TSD/SAD yet — run 'Update BRD/PRD + TSD + "
+                    "SAD' first. The QA package must sweep architecture-"
+                    "implied failure modes, not just PRD requirements.")
         return None
     if stage_name != "post_approval":
         return None

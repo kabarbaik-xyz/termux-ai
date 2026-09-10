@@ -25,6 +25,7 @@ STAGES = [
     ("prototype", "Prototype"),
     ("proposal", "Proposal"),
     ("post_approval", "Update BRD/PRD + TSD + SAD"),
+    ("qa_spec", "QA Package (TC + AC + Risks)"),
     ("task_breakdown", "Break Down Development Tasks"),
 ]
 
