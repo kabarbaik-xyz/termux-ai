@@ -278,7 +278,62 @@ def _stage_gate(stage_name: str, root: Path) -> str | None:
     return None
 
 
-_ACTIVE_RUNS: dict[int, str] = {}   # project_id -> stage_name (one at a time)
+# Run registry: one live run per project, DECOUPLED from any browser
+# connection. The runner is a background task; SSE clients attach to the
+# event buffer (replay + live poll), so browser disconnects / EventSource
+# auto-reconnects never kill a run or start duplicates.
+_RUN_STATE: dict[int, dict] = {}   # pid -> {"events": [ev…], "done": bool, "task"}
+
+
+def get_run_state(pid: int) -> dict | None:
+    """Peek at the project's run state without starting anything."""
+    return _RUN_STATE.get(pid)
+
+
+def running_stage(pid: int) -> str | None:
+    """Stage name currently running for a project (or None)."""
+    st = _RUN_STATE.get(pid)
+    return None if not st or st["done"] else st.get("stage")
+
+
+def start_stage_run(project: dict, stage_index: int, timeout: float = 900.0) -> dict:
+    """Get (or start) the live run state for a project.
+
+    - No active run → start one as a background task, return its state.
+    - Active run for the SAME stage → return it (reconnect/replay).
+    - Active run for a DIFFERENT stage → return the active one with a
+      note appended (the pressed stage did not start — one run at a time).
+    """
+    pid = project["id"]
+    st = _RUN_STATE.get(pid)
+    if st and not st["done"]:
+        if st.get("stage_index") != stage_index:
+            st["events"].append({"type": "status",
+                                 "text": f"ℹ {st.get('stage')} is currently "
+                                         "running — showing its live output. "
+                                         "(One stage at a time; your stage did "
+                                         "not start.)"})
+        return st
+    # finished (or crashed) run state is replaced: the next press = a fresh
+    # run. Live replay happens naturally while !done; the client reloads
+    # after `done`, so nothing needs the stale buffer afterward.
+    st = {"events": [], "done": False, "stage": db.STAGES[stage_index][0],
+          "stage_index": stage_index, "task": None}
+
+    async def _runner():
+        try:
+            async for ev in run_stage_stream(project, stage_index, timeout):
+                st["events"].append(ev)
+        except Exception as e:   # runner-level crash: still conclude the run
+            st["events"].append({"type": "done", "ok": False,
+                                 "message": f"run error: {e}"})
+        finally:
+            st["done"] = True
+
+    import asyncio as _aio
+    st["task"] = _aio.create_task(_runner())
+    _RUN_STATE[pid] = st
+    return st
 
 
 async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900.0):
@@ -302,12 +357,11 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
     stage_name = db.STAGES[stage_index][0]
     pid = project["id"]
 
-    if _ACTIVE_RUNS.get(pid):
+    if running_stage(pid) not in (None, stage_name):
         yield {"type": "done", "ok": False,
-               "message": f"Another stage ({_ACTIVE_RUNS[pid]}) is already "
+               "message": f"Another stage ({running_stage(pid)}) is already "
                           "running for this project."}
         return
-    _ACTIVE_RUNS[pid] = stage_name
     console: list[str] = []
     concluded = False   # did this generator record a finish (ok or failed)?
     started_run = False
@@ -407,7 +461,6 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
         concluded = True
         yield {"type": "done", "ok": True, "message": "Stage completed."}
     finally:
-        _ACTIVE_RUNS.pop(pid, None)
         if started_run and not concluded:
             # generator cancelled (browser/tab closed, server stopped) — the
             # ai subprocess was terminated in run_stream's handler; never
@@ -421,13 +474,14 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
 
 
 async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> str:
-    """Synchronous-POST path: consume the stream, return the AI output text."""
+    """Synchronous-POST path: consume the run state, return the AI output text."""
+    st = start_stage_run(project, stage_index, timeout)
+    await st["task"]
     output = []
-    async for ev in run_stage_stream(project, stage_index, timeout):
+    for ev in st["events"]:
         if ev["type"] == "line":
             output.append(ev["text"])
         elif ev["type"] == "done" and not ev.get("ok", False):
-            # surface failures as text (POST page shows it in the output panel)
             output.append(f"\n[{ev.get('message', 'failed')}]")
     return "\n".join(output)
 

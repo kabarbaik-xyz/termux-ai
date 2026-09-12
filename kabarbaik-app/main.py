@@ -186,6 +186,7 @@ async def project_detail(request: Request, pid: int):
     fresh = workflow.refresh_artifact_state(project)
     ctx["fresh_stage"] = fresh["stage"]
     ctx["tokens"] = db.project_token_usage(pid)
+    ctx["running_stage"] = workflow.running_stage(pid)
     return templates.TemplateResponse(request, "project_detail.html", ctx)
 
 
@@ -193,19 +194,41 @@ async def project_detail(request: Request, pid: int):
 async def stage_stream(request: Request, pid: int, stage_index: int):
     """Server-Sent Events: live console of a stage run.
 
-    Event JSON: {type: status|line|done, ...}. One active run per project
-    (the stream handler enforces it via workflow._ACTIVE_RUNS)."""
+    Attaches to the project's live run (starting one if none) and replays
+    buffered events from Last-Event-ID, so browser refreshes / EventSource
+    auto-reconnects never duplicate or kill runs. Heartbeat comments keep
+    the connection alive through long AI silences."""
     import json as _json
+    import time as _time
     _auth(request)
     project = _project_or_404(pid)
     stage_index = min(max(stage_index, 0), len(db.STAGES) - 1)
+    # A connection carrying Last-Event-ID is a RECONNECT (stale tab,
+    # refresh) — if the run already finished, replay it instead of
+    # starting a duplicate. A fresh press (no header) starts a new run.
+    st = workflow.get_run_state(pid)
+    if not (st and st["done"] and request.headers.get("last-event-id") is not None):
+        st = workflow.start_stage_run(project, stage_index)
+    try:
+        i = max(0, int(request.headers.get("last-event-id", "-1")) + 1)
+    except ValueError:
+        i = 0
 
     async def gen():
-        try:
-            async for ev in workflow.run_stage_stream(project, stage_index):
-                yield f"data: {_json.dumps(ev)}\n\n"
-        except Exception as e:   # stream-level failure (not stage failure)
-            yield f"data: {_json.dumps({'type': 'done', 'ok': False, 'message': f'stream error: {e}'})}\n\n"
+        nonlocal i
+        last_beat = _time.monotonic()
+        while True:
+            if i < len(st["events"]):
+                yield f"id: {i}\ndata: {_json.dumps(st['events'][i])}\n\n"
+                i += 1
+                last_beat = _time.monotonic()
+            elif st["done"]:
+                break
+            else:
+                if _time.monotonic() - last_beat > 12:
+                    yield ": ping\n\n"          # keep-alive through silences
+                    last_beat = _time.monotonic()
+                await asyncio.sleep(0.4)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -229,6 +252,7 @@ async def run_stage(project_request: Request, pid: int, stage_index: int):
     ctx["stage_idx"] = db.STAGE_IDX
     ctx["fresh_stage"] = workflow.refresh_artifact_state(db.get_project(pid))["stage"]
     ctx["tokens"] = db.project_token_usage(pid)
+    ctx["running_stage"] = workflow.running_stage(pid)
     return templates.TemplateResponse(project_request, "project_detail.html", ctx)
 
 

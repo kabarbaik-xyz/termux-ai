@@ -23,6 +23,9 @@
   <a href="#tokens">Tokens</a>
 </nav>
 
+{% if running_stage is defined and running_stage is not none %}
+<div id="live-run" data-stage="{{ running_stage }}"></div>
+{% endif %}
 {% if ran_stage is defined %}
 <div data-ran-stage="{{ stages[ran_stage][1] }}" data-ran-ok="{{ 1 if stage_runs[stages[ran_stage][0]].status == 'ok' else 0 }}"></div>
 <section class="card output">
@@ -91,7 +94,7 @@
 
 <section id="console" class="card" hidden>
   <h2>Console <span class="hint" id="console-state"></span></h2>
-  <pre id="console" class="console" aria-live="polite">— idle · press Run on any stage to watch the AI work here —</pre>
+  <pre id="console-log" class="console" aria-live="polite">— idle · press Run on any stage to watch the AI work here —</pre>
 </section>
 
 <section id="inbox" class="card" hidden>
