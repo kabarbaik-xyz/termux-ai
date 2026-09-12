@@ -46,6 +46,13 @@ app = FastAPI(title="KabarBaik SDLC")
 app.mount("/static", StaticFiles(directory=settings.PROJECT_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(settings.PROJECT_DIR / "templates"))
 
+# Auto-seed team-kit skills into the live `ai` skills dir on every start —
+# without this, a fresh machine (git pull) has recipes referencing skills the
+# `ai` binary can't resolve, and stages fall back to template copies.
+_seeded_skills = ai_runner.install_team_kit_skills()
+if _seeded_skills:
+    print(f"[kit] skills seeded/updated: {', '.join(_seeded_skills)}")
+
 
 def _active() -> dict:
     try:

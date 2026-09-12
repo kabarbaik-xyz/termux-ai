@@ -7,6 +7,7 @@ Raises AiError when the process fails or times out.
 import asyncio
 import os
 import re
+import shutil
 from pathlib import Path
 
 import settings
@@ -15,6 +16,32 @@ from settings import AI_BINARY, PROJECTS_ROOT
 
 class AiError(Exception):
     """Raised when the AI subprocess fails or times out."""
+
+
+def install_team_kit_skills() -> list:
+    """Sync team-kit skills into the live termux-ai skills dir.
+
+    The `ai` binary loads skills ONLY from its config-dir skills folder, so
+    ``--skill <name>`` resolves only what is staged there. Copies every
+    team-kit/skills/*.md whose content differs from the live copy — new AND
+    updated kit skills propagate automatically on every app start (a fresh
+    machine just needs git pull + run). Returns the names installed/updated.
+    """
+    settings.ensure_dirs()
+    src = settings.TEAM_KIT_DIR / "skills"
+    installed = []
+    if not src.is_dir():
+        return installed
+    for f in sorted(src.glob("*.md")):
+        dst = settings.AI_SKILLS_DIR / f.name
+        try:
+            if (not dst.exists()
+                    or dst.read_text(errors="ignore") != f.read_text(errors="ignore")):
+                shutil.copyfile(f, dst)
+                installed.append(f.stem)
+        except OSError:
+            continue
+    return installed
 
 
 def active_backend() -> dict:

@@ -286,6 +286,8 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     root = db.project_dir(project)
     root.mkdir(parents=True, exist_ok=True)
     _scaffold_docs(root)
+    if stage_name == "brd_prd":
+        _seed_templates(root)
 
     # Hard preconditions — prompt-level guards are advisory; enforce in code.
     gate = _stage_gate(stage_name, root)
@@ -332,6 +334,13 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
             db.finish_stage(project["id"], stage_name, False, msg)
             return msg
     else:
+        if stage_name == "brd_prd" and (_looks_unfilled(root / "docs" / "brd" / "brd.md")
+                                       or _looks_unfilled(root / "docs" / "prd" / "prd.md")):
+            msg = ("BRD/PRD came out as an unfilled template copy — the "
+                   "discovery skill likely wasn't available to the AI. Re-run "
+                   "the stage (skills auto-seed at app start).")
+            db.finish_stage(project["id"], stage_name, False, msg)
+            return msg
         db.finish_stage(project["id"], stage_name, True)
     # The project advances to the next stage once artifacts exist.
     refreshed = refresh_artifact_state(project)
@@ -343,12 +352,19 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
 _KIT = Path(__file__).resolve().parent.parent / "team-kit"
 
 def _scaffold_docs(root: Path) -> None:
-    """Create the team-kit docs/ folder tree if missing, seeding BRD/PRD
-    templates from the kit so stage recipes reference files that exist in
-    the PROJECT (the model can't see the kit from the project dir)."""
+    """Create the team-kit docs/ folder tree if missing. ONLY folder creation —
+    document templates are seeded by the stage that consumes them (see
+    _seed_templates), so e.g. running Discovery never drops BRD/PRD files
+    that look like an auto-triggered stage 2."""
     for folder in ("inbox", "discovery", "brd", "prd", "prototype",
                    "proposal", "tsd", "sad", "plan", "reports"):
         (root / "docs" / folder).mkdir(parents=True, exist_ok=True)
+
+
+def _seed_templates(root: Path) -> None:
+    """Seed BRD/PRD templates into the project — called only by the brd_prd
+    stage right before its run, so the recipe's 'follow the structure of
+    docs/<x>/TEMPLATE.md' refers to files the model can actually read."""
     seeds = {"docs/brd/TEMPLATE.md": "templates/brd.md",
              "docs/prd/TEMPLATE.md": "templates/prd.md"}
     for dst, src in seeds.items():
@@ -356,3 +372,20 @@ def _scaffold_docs(root: Path) -> None:
         target = root / dst
         if kit_src.is_file() and not target.exists():
             target.write_text(kit_src.read_text())
+
+
+def _looks_unfilled(path: Path) -> bool:
+    """True when a 'generated' BRD/PRD is really just the template. The kit
+    templates carry placeholder markers in their header/title
+    (version=v__, date=__, <Client / Project>, <EN/ID…>) — a real document
+    has a concrete version and title, so any surviving marker means the
+    stage copied instead of generated."""
+    if not path.is_file():
+        return True
+    lines = [l for l in path.read_text(errors="ignore").splitlines() if l.strip()]
+    if not lines:
+        return True
+    head = "\n".join(lines[:3])
+    return any(marker in head for marker in
+               ("v__", "date=___", "date=__", "<Client", "<Project>",
+                "<EN/ID", "<yyyy"))
