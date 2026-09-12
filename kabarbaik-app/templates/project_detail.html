@@ -95,61 +95,93 @@
 </section>
 
 <section id="inbox" class="card" hidden>
-  <h2>Inputs (Discovery / Meeting notes / Requirements)</h2>
-  <div class="grid-2">
-    <div>
-      <h3>Upload reference file</h3>
+  <h2>Inputs</h2>
+  <p class="card-sub">Everything the AI reads during doc-ingest. Feed the inbox with files,
+    links, or notes — then (re-)run Discovery.</p>
+
+  <div class="input-grid">
+    <div class="input-panel">
+      <h3>📎 Upload file</h3>
       <form method="post" action="/projects/{{ project.id }}/upload" enctype="multipart/form-data" class="stacked">
         <input type="file" name="file" required
                accept=".md,.txt,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.eml,.csv,.json,.html,.htm,.rtf,.url">
-        <button type="submit">Upload to inbox</button>
+        <button type="submit" class="primary">Upload to inbox</button>
       </form>
-      <p class="hint">Accepted: md, txt, pdf, doc/docx, ppt/pptx, xls/xlsx, odt,
-        eml, csv, json, html, rtf — pdf/docx/pptx/xlsx are read directly by the AI;
-        legacy formats get an extracted-text sidecar.</p>
+      <p class="hint">pdf · docx · pptx · xlsx read directly by the AI ·
+        rtf/eml/legacy get an extracted-text sidecar</p>
     </div>
-    <div>
-      <h3>Paste a link (Google Docs / Drive)</h3>
+
+    <div class="input-panel">
+      <h3>🔗 Paste link</h3>
       <form method="post" action="/projects/{{ project.id }}/link" class="stacked">
         <label>URL <input name="url" type="url" required placeholder="https://docs.google.com/document/d/…"></label>
-        <button type="submit">Ingest link to inbox</button>
+        <button type="submit" class="primary">Ingest link</button>
       </form>
-      <p class="hint">Link-shared Google Docs/Sheets/Slides export to docx/xlsx/pptx
-        automatically; private docs are kept as a link note to export manually.</p>
+      <p class="hint">Link-shared Google Docs/Sheets/Slides export to
+        docx/xlsx/pptx automatically</p>
     </div>
-    <div style="grid-column: 1 / -1;">
-      <h3>Add a note (WYSIWYG)</h3>
+
+    <div class="input-panel">
+      <h3>✍️ Write note</h3>
       <form method="post" action="/projects/{{ project.id }}/note" class="stacked">
         <label>Title <input name="title" required placeholder="Meeting notes — 2026-09-05"></label>
-        <textarea name="body" class="rte" data-editor rows="8" placeholder="Type or paste meeting notes / requirements…"></textarea>
-        <button type="submit">Save note to inbox</button>
+        <label>Body <textarea name="body" class="rte" data-editor rows="5" placeholder="Type or paste meeting notes / requirements…"></textarea></label>
+        <button type="submit" class="primary">Save note</button>
       </form>
+      <p class="hint">Rich text — lands in the inbox as a citable SRC</p>
     </div>
   </div>
 
   {% if artifacts.get('inbox') %}
-  <h3>Inbox files</h3>
-  <ul class="plain">
+  <h3 class="mt">Inbox <span class="count-chip">{{ artifacts['inbox']|length }}</span></h3>
+  <ul class="file-list">
     {% for f in artifacts['inbox'] %}
-      <li><a class="doc-link" data-path="inbox/{{ f }}" href="#docs">{{ f }}</a></li>
+      {% if not f.endswith('.extracted.md') %}
+      <li class="file-item">
+        <a class="doc-link" data-path="inbox/{{ f }}" href="#docs">{{ f }}</a>
+        {% if (f ~ '.extracted.md') in artifacts['inbox'] %}
+        <a class="sidecar doc-link" data-path="inbox/{{ f }}.extracted.md" href="#docs" title="pre-extracted text sidecar">↳ extracted</a>
+        {% endif %}
+      </li>
+      {% endif %}
     {% endfor %}
   </ul>
+  {% else %}
+  <div class="empty small"><p>The inbox is empty — upload the client brief to get started.</p></div>
   {% endif %}
 </section>
 
 <section id="docs" class="card" hidden>
   <h2>Documents</h2>
-  {% set folders = ['inbox','discovery','brd','prd','prototype','proposal','tsd','sad','plan','reports'] %}
-  {% for folder in folders %}
+  <p class="card-sub">Generated artifacts, grouped by stage. Click any file to view or edit it.</p>
+  {% set folders = [('discovery','Discovery'),('brd','BRD'),('prd','PRD'),('ux','UX'),
+                    ('prototype','Prototype'),('proposal','Proposal'),('tsd','TSD'),
+                    ('sad','SAD'),('plan','Plan'),('reports','Reports'),('inbox','Inbox')] %}
+  {% set ns = namespace(any=false) %}
+  <div class="folder-grid">
+  {% for folder, folder_label in folders %}
     {% if artifacts.get(folder) %}
-    <h3>{{ folder }}</h3>
-    <ul class="plain">
-      {% for f in artifacts[folder] %}
-        <li><a class="doc-link" data-path="{{ folder }}/{{ f }}" href="#docs">{{ f }}</a></li>
-      {% endfor %}
-    </ul>
+    {% set ns.any = true %}
+    <div class="folder-card">
+      <div class="folder-head">
+        <strong>{{ folder_label }}</strong>
+        <span class="count-chip">{{ artifacts[folder]|length }}</span>
+      </div>
+      <ul class="file-list">
+        {% for f in artifacts[folder] %}
+          {% if not (folder != 'inbox' and f.endswith('.extracted.md')) %}
+          <li class="file-item"><a class="doc-link" data-path="{{ folder }}/{{ f }}" href="#docs">{{ f }}</a></li>
+          {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
     {% endif %}
   {% endfor %}
+  </div>
+  {% if not ns.any %}
+  <div class="empty small"><p>No documents yet — run <a href="#flow">Discovery</a> to generate the first ones.</p></div>
+  {% endif %}
+
   <div id="doc-viewer" class="doc-viewer hidden">
     <div class="doc-viewer-head">
       <h3 id="doc-title"></h3>

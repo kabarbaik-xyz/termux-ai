@@ -221,3 +221,29 @@ pre.template-preview { background: var(--surface-alt); border: 1px solid var(--b
 .console .err { color: #f87171; }
 .console .done { color: #4ade80; }
 section[hidden] { display: none; }
+
+/* ══ Inputs tab ══ */
+.input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-4); margin: var(--sp-3) 0; }
+.input-panel { background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }
+.input-panel h3 { margin: 0; }
+.input-panel form.stacked { max-width: none; flex: 1; }
+.input-panel .hint { margin-top: auto; }
+h3.mt { margin-top: var(--sp-6); }
+
+/* ══ File / folder lists ══ */
+.file-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.file-item { display: flex; align-items: baseline; gap: var(--sp-2); padding: 4px 8px; border-radius: var(--r-sm); }
+.file-item:hover { background: var(--surface-alt); }
+.file-item > a:first-child { color: var(--primary); text-decoration: none; font-size: .86rem; overflow-wrap: anywhere; }
+.file-item > a:first-child:hover { text-decoration: underline; }
+.file-item .sidecar { font-size: .72rem; color: var(--muted); text-decoration: none; border: 1px dashed var(--border-strong); padding: 0 7px; border-radius: var(--r-pill); }
+.file-item .sidecar:hover { color: var(--text); }
+
+.folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--sp-4); margin: var(--sp-3) 0; }
+.folder-card { background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-3) var(--sp-2); min-width: 0; }
+.folder-card:hover { border-color: var(--border-strong); }
+.folder-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-2); }
+.folder-head strong { font-size: .84rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.count-chip { background: var(--primary-soft); color: var(--primary-hover); font-size: .7rem; font-weight: 700; border-radius: var(--r-pill); padding: 1px 8px; }
+
+.empty.small { padding: var(--sp-6) var(--sp-4); font-size: .88rem; }
