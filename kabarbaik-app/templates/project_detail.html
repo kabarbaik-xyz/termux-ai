@@ -25,6 +25,28 @@
 </section>
 {% endif %}
 
+<section id="tokens" class="card">
+  <h2>Token usage</h2>
+  {% if tokens and tokens.total %}
+  <p><strong>Total: {{ '{:,}'.format(tokens.total) }} tokens</strong>
+     (in {{ '{:,}'.format(tokens.total_in) }} · out {{ '{:,}'.format(tokens.total_out) }})</p>
+  <table>
+    <thead><tr><th>Stage</th><th>Tokens (last run recorded)</th></tr></thead>
+    <tbody>
+    {% for name, label in stages %}
+      {% if tokens.by_stage.get(name) %}
+      <tr><td>{{ label }}</td><td>{{ '{:,}'.format(tokens.by_stage[name]) }}</td></tr>
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">Per-request usage is read from termux-ai's usage log — real
+  backend-reported tokens where the gateway provides them, estimates otherwise.</p>
+  {% else %}
+  <p class="hint">No token usage recorded yet — totals appear after the first stage run.</p>
+  {% endif %}
+</section>
+
 <section id="flow" class="card">
   <h2>SDLC Flow</h2>
   <ol class="flow">
@@ -49,6 +71,7 @@
       </form>
       {% endif %}
       {% if stage_runs[name].log %}<details class="run-log"><summary>last run</summary><pre>{{ stage_runs[name].log }}</pre></details>{% endif %}
+      {% if stage_runs[name].tok_total %}<span class="hint">tokens: {{ '{:,}'.format(stage_runs[name].tok_total) }} (in {{ '{:,}'.format(stage_runs[name].tok_in) }} · out {{ '{:,}'.format(stage_runs[name].tok_out) }})</span>{% endif %}
     </li>
     {% endfor %}
   </ol>

@@ -18,6 +18,38 @@ class AiError(Exception):
     """Raised when the AI subprocess fails or times out."""
 
 
+def max_usage_id() -> int:
+    """Highest row id in termux-ai's usage_log — a checkpoint to measure
+    exactly the requests a stage run makes (-1 when unavailable)."""
+    import sqlite3
+    hist = settings.TERMUX_AI_CONFIG_DIR / "ai_history.db"
+    try:
+        conn = sqlite3.connect(f"file:{hist}?mode=ro", uri=True, timeout=5)
+        row = conn.execute("SELECT COALESCE(MAX(id), -1) FROM usage_log").fetchone()
+        conn.close()
+        return int(row[0])
+    except Exception:
+        return -1
+
+
+def usage_after(checkpoint: int) -> tuple:
+    """(tin, tout) summed over usage_log rows with id > checkpoint — i.e. the
+    tokens consumed by the requests made since the checkpoint. Real backend-
+    reported usage; estimation fallback rows are included (they're what the
+    gateway gave us)."""
+    import sqlite3
+    hist = settings.TERMUX_AI_CONFIG_DIR / "ai_history.db"
+    try:
+        conn = sqlite3.connect(f"file:{hist}?mode=ro", uri=True, timeout=5)
+        row = conn.execute(
+            "SELECT COALESCE(SUM(tin),0), COALESCE(SUM(tout),0) "
+            "FROM usage_log WHERE id > ?", (checkpoint,)).fetchone()
+        conn.close()
+        return int(row[0]), int(row[1])
+    except Exception:
+        return 0, 0
+
+
 def install_team_kit_skills() -> list:
     """Sync team-kit skills into the live termux-ai skills dir.
 

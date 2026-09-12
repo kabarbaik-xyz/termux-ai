@@ -305,6 +305,7 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
 
     db.start_stage(project["id"], stage_name)
     sig_before = _artifact_sig(root, stage_name)
+    usage_cp = ai_runner.max_usage_id()   # measure exactly this run's requests
     output = None
     last_err = None
     for attempt in (1, 2):   # one transparent retry: free-tier gateways 429
@@ -322,8 +323,10 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
             if attempt == 1:
                 import asyncio as _aio
                 await _aio.sleep(30)   # let the rate-limit window pass
+    tok_in, tok_out = ai_runner.usage_after(usage_cp)
     if output is None:
-        db.finish_stage(project["id"], stage_name, False, str(last_err))
+        db.finish_stage(project["id"], stage_name, False, str(last_err),
+                        tok_in, tok_out)
         raise last_err
     # The run "succeeded" only if it produced or updated its artifacts.
     sig_after = _artifact_sig(root, stage_name)
@@ -333,7 +336,8 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
             # legitimate "already complete" re-run, not a phantom.
             db.finish_stage(project["id"], stage_name, True,
                             "No changes — artifacts were already present and "
-                            "complete. Delete them first to force a rebuild.")
+                            "complete. Delete them first to force a rebuild.",
+                            tok_in, tok_out)
         else:
             msg = ("Stage reported success but produced NO artifacts "
                    f"({', '.join(STAGE_ARTIFACTS[stage_name])}). The AI likely "
@@ -346,9 +350,10 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
             msg = (f"{', '.join(unfilled)} came out as an unfilled template "
                    "copy — a skill or template likely wasn't available to the "
                    "AI. Re-run the stage (skills auto-seed at app start).")
-            db.finish_stage(project["id"], stage_name, False, msg)
+            db.finish_stage(project["id"], stage_name, False, msg,
+                            tok_in, tok_out)
             return msg
-        db.finish_stage(project["id"], stage_name, True)
+        db.finish_stage(project["id"], stage_name, True, "", tok_in, tok_out)
     # The project advances to the next stage once artifacts exist.
     refreshed = refresh_artifact_state(project)
     if refreshed["stage"] > project["stage"]:

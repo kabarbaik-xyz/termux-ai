@@ -44,8 +44,18 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def _add_column(db, table: str, column: str, decl: str) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN (sqlite has no IF NOT EXISTS for it)."""
+    cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init() -> None:
     with get_db() as db:
+        _add_column(db, "stage_runs", "tok_in", "INTEGER DEFAULT 0")
+        _add_column(db, "stage_runs", "tok_out", "INTEGER DEFAULT 0")
+        _add_column(db, "stage_runs", "tok_total", "INTEGER DEFAULT 0")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS clients (
@@ -189,12 +199,29 @@ def start_stage(project_id: int, stage: str, target: str = "") -> None:
         )
 
 
-def finish_stage(project_id: int, stage: str, ok: bool, log: str = "") -> None:
+def finish_stage(project_id: int, stage: str, ok: bool, log: str = "",
+                  tok_in: int = 0, tok_out: int = 0) -> None:
     with get_db() as db:
         db.execute(
-            "UPDATE stage_runs SET finished=?, status=?, log=? WHERE project_id=? AND stage=?",
-            (_utcnow(), "ok" if ok else "failed", log, project_id, stage),
+            "UPDATE stage_runs SET finished=?, status=?, log=?, tok_in=?, tok_out=?, "
+            "tok_total=? WHERE project_id=? AND stage=?",
+            (_utcnow(), "ok" if ok else "failed", log,
+             int(tok_in or 0), int(tok_out or 0),
+             int(tok_in or 0) + int(tok_out or 0), project_id, stage),
         )
+
+
+def project_token_usage(pid: int) -> dict:
+    """{total_in, total_out, total, by_stage: {stage: total}} for a project."""
+    with get_db() as db:
+        by = {r["stage"]: r["t"] for r in db.execute(
+            "SELECT stage, SUM(tok_total) t FROM stage_runs "
+            "WHERE project_id=? GROUP BY stage", (pid,))}
+        row = db.execute(
+            "SELECT COALESCE(SUM(tok_in),0) i, COALESCE(SUM(tok_out),0) o "
+            "FROM stage_runs WHERE project_id=?", (pid,)).fetchone()
+    return {"total_in": row["i"], "total_out": row["o"],
+            "total": row["i"] + row["o"], "by_stage": by}
 
 
 def get_stage_run(project_id: int, stage: str) -> Optional[dict]:
