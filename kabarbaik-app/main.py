@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +46,8 @@ db.init()
 app = FastAPI(title="KabarBaik SDLC")
 app.mount("/static", StaticFiles(directory=settings.PROJECT_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(settings.PROJECT_DIR / "templates"))
+
+templates.env.filters["markdown"] = lambda text: md_lib.markdown(text or "")
 
 # Auto-seed team-kit skills into the live `ai` skills dir on every start —
 # without this, a fresh machine (git pull) has recipes referencing skills the
@@ -186,6 +189,82 @@ async def run_stage(project_request: Request, pid: int, stage_index: int):
     ctx["stage_idx"] = db.STAGE_IDX
     ctx["fresh_stage"] = workflow.refresh_artifact_state(db.get_project(pid))["stage"]
     return templates.TemplateResponse(project_request, "project_detail.html", ctx)
+
+
+# ----------------------------------------------------------------------------
+# Stage template management (team-kit/templates/*.md)
+# ----------------------------------------------------------------------------
+
+_TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.md$")
+
+
+def _template_stage_map() -> dict:
+    """{template filename: stage label} — inverse of workflow.STAGE_TEMPLATES."""
+    m = {}
+    for stage, pairs in workflow.STAGE_TEMPLATES.items():
+        label = dict(db.STAGES).get(stage, stage)
+        for kit_name, _dst in pairs:
+            m.setdefault(kit_name, []).append(label)
+    return m
+
+
+def _template_dir() -> Path:
+    d = settings.TEAM_KIT_DIR / "templates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _template_or_404(name: str) -> Path:
+    if not _TEMPLATE_NAME_RE.match(name or ""):
+        raise HTTPException(400, "Invalid template name")
+    path = (_template_dir() / name).resolve()
+    if not str(path).startswith(str(_template_dir().resolve())):
+        raise HTTPException(400, "Invalid template name")
+    if not path.is_file():
+        raise HTTPException(404, "Template not found")
+    return path
+
+
+@app.get("/templates", response_class=HTMLResponse)
+def templates_list(request: Request):
+    _auth(request)
+    stage_of = _template_stage_map()
+    items = []
+    for f in sorted(_template_dir().glob("*.md")):
+        rel = workflow.STAGE_TEMPLATES and stage_of.get(f.name)
+        items.append({
+            "name": f.name,
+            "stages": " · ".join(rel) if rel else "reference (not auto-seeded)",
+            "size": f.stat().st_size,
+            "mtime": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "dest": next((dst for pairs in workflow.STAGE_TEMPLATES.values()
+                          for n, dst in pairs if n == f.name), ""),
+        })
+    ctx = _common(request)
+    ctx["templates"] = items
+    return templates.TemplateResponse(request, "templates_list.html", ctx)
+
+
+@app.get("/templates/edit", response_class=HTMLResponse)
+def template_edit(request: Request, name: str):
+    _auth(request)
+    path = _template_or_404(name)
+    ctx = _common(request)
+    ctx["tname"] = name
+    ctx["stages"] = " · ".join(_template_stage_map().get(name, [])) or "reference"
+    ctx["content"] = path.read_text(encoding="utf-8")
+    ctx["mtime"] = path.stat().st_mtime
+    return templates.TemplateResponse(request, "template_edit.html", ctx)
+
+
+@app.post("/templates/save")
+async def template_save(request: Request, name: str = Form(...), content: str = Form(...)):
+    _auth(request)
+    if not _TEMPLATE_NAME_RE.match(name or ""):
+        raise HTTPException(400, "Invalid template name")
+    path = _template_dir() / name
+    path.write_text(content, encoding="utf-8")
+    return RedirectResponse(f"/templates/edit?name={name}", status_code=303)
 
 
 def _stage_runs_map(pid: int) -> dict:

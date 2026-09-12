@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Stage Templates — KabarBaik SDLC{% endblock %}
+
+{% block content %}
+<h1>Stage Templates</h1>
+
+<section class="card">
+  <p class="hint">Templates define the <strong>structure</strong> each stage's documents must
+  follow. Editing here updates <code>team-kit/templates/</code> — the source of truth,
+  versioned in git and auto-seeded to other machines. Changes apply to
+  <strong>new stage runs</strong> (seeding never overwrites a project's existing files).</p>
+  <table>
+    <thead>
+      <tr><th>Template</th><th>Used by stage</th><th>Seeded into project as</th><th>Size</th><th>Updated</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for t in templates %}
+      <tr>
+        <td><code>{{ t.name }}</code></td>
+        <td>{{ t.stages }}</td>
+        <td>{% if t.dest %}<code>{{ t.dest }}</code>{% else %}—{% endif %}</td>
+        <td>{{ (t.size / 1024) | round(1) }} KB</td>
+        <td>{{ t.mtime }}</td>
+        <td><a class="btn-small" href="/templates/edit?name={{ t.name }}">Edit</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

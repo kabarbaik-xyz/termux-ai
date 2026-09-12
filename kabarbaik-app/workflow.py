@@ -134,7 +134,9 @@ def stage_recipe(stage_index: int) -> tuple:
         4: (
             "proposal",
             "on",
-            "Follow the proposal skill. From docs/prd/ (latest v), docs/prototype/ "
+            "Follow the proposal skill, using the STRUCTURE of "
+            "docs/proposal/TEMPLATE.md exactly (same sections/order, every "
+            "section filled). From docs/prd/ (latest v), docs/prototype/ "
             "(or prototype/ at the project root), "
             "docs/discovery/ and any RFP [SRC-n], write "
             "docs/proposal/proposal-v1.md with the skill's full structure "
@@ -149,8 +151,11 @@ def stage_recipe(stage_index: int) -> tuple:
         5: (
             "tsd-sad",
             "on",
-            "Follow the tsd-sad skill and produce the FINAL agreed documentation "
-            "from the signed-off proposal. Source of truth: the FINAL proposal — "
+            "Follow the tsd-sad skill, using the STRUCTURES of "
+            "docs/tsd/TEMPLATE.md and docs/sad/TEMPLATE.md exactly (same "
+            "sections/order, every section filled). Produce the FINAL agreed "
+            "documentation from the signed-off proposal. Source of truth: "
+            "the FINAL proposal — "
             "look in docs/inbox/ first (the client-approved proposal was uploaded "
             "there — treat it as the newest [SRC-n] and cite it) and "
             "docs/proposal/proposal-vN.md (highest N). Step 1: update "
@@ -182,7 +187,9 @@ def stage_recipe(stage_index: int) -> tuple:
         7: (
             "epic-breakdown",
             "on",
-            "Follow the epic-breakdown skill. From the FINAL docs/prd/prd.md, "
+            "Follow the epic-breakdown skill, using the STRUCTURE of "
+            "docs/plan/TEMPLATE.md exactly (same sections/order, every "
+            "section filled). From the FINAL docs/prd/prd.md, "
             "docs/brd/brd.md, TSD and SAD, produce docs/plan/backlog.md with "
             "epics (E-xx), stories (US-xxx with AC, DoD, screens SC-xx, "
             "dependencies, estimate range, suggested role) and the traceability "
@@ -286,8 +293,8 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     root = db.project_dir(project)
     root.mkdir(parents=True, exist_ok=True)
     _scaffold_docs(root)
-    if stage_name == "brd_prd":
-        _seed_templates(root)
+    if stage_name in STAGE_TEMPLATES:
+        _seed_templates(root, stage_name)
 
     # Hard preconditions — prompt-level guards are advisory; enforce in code.
     gate = _stage_gate(stage_name, root)
@@ -334,11 +341,11 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
             db.finish_stage(project["id"], stage_name, False, msg)
             return msg
     else:
-        if stage_name == "brd_prd" and (_looks_unfilled(root / "docs" / "brd" / "brd.md")
-                                       or _looks_unfilled(root / "docs" / "prd" / "prd.md")):
-            msg = ("BRD/PRD came out as an unfilled template copy — the "
-                   "discovery skill likely wasn't available to the AI. Re-run "
-                   "the stage (skills auto-seed at app start).")
+        unfilled = _unfilled_outputs(root, stage_name)
+        if unfilled:
+            msg = (f"{', '.join(unfilled)} came out as an unfilled template "
+                   "copy — a skill or template likely wasn't available to the "
+                   "AI. Re-run the stage (skills auto-seed at app start).")
             db.finish_stage(project["id"], stage_name, False, msg)
             return msg
         db.finish_stage(project["id"], stage_name, True)
@@ -361,17 +368,45 @@ def _scaffold_docs(root: Path) -> None:
         (root / "docs" / folder).mkdir(parents=True, exist_ok=True)
 
 
-def _seed_templates(root: Path) -> None:
-    """Seed BRD/PRD templates into the project — called only by the brd_prd
-    stage right before its run, so the recipe's 'follow the structure of
+# kit template filename → where it lands inside a project. Managed via the
+# /templates page (edits go to team-kit/templates/, seeding is non-destructive:
+# a project keeps whatever it already has).
+STAGE_TEMPLATES = {
+    "brd_prd": [("brd.md", "docs/brd/TEMPLATE.md"),
+                ("prd.md", "docs/prd/TEMPLATE.md")],
+    "proposal": [("proposal.md", "docs/proposal/TEMPLATE.md")],
+    "post_approval": [("tsd.md", "docs/tsd/TEMPLATE.md"),
+                      ("sad.md", "docs/sad/TEMPLATE.md")],
+    "task_breakdown": [("backlog.md", "docs/plan/TEMPLATE.md")],
+}
+
+
+def _seed_templates(root: Path, stage_name: str = "") -> None:
+    """Seed this stage's kit templates into the project — called right
+    before the stage's run, so the recipe's 'follow the structure of
     docs/<x>/TEMPLATE.md' refers to files the model can actually read."""
-    seeds = {"docs/brd/TEMPLATE.md": "templates/brd.md",
-             "docs/prd/TEMPLATE.md": "templates/prd.md"}
-    for dst, src in seeds.items():
-        kit_src = _KIT / src
+    pairs = STAGE_TEMPLATES.get(stage_name, [])
+    for kit_name, dst in pairs:
+        kit_src = _KIT / "templates" / kit_name
         target = root / dst
         if kit_src.is_file() and not target.exists():
             target.write_text(kit_src.read_text())
+
+
+def _unfilled_outputs(root: Path, stage_name: str) -> list:
+    """Artifact paths for the stage whose content still smells like the
+    template (placeholder markers survived). proposal checks its newest vN."""
+    checks = {
+        "brd_prd": ["docs/brd/brd.md", "docs/prd/prd.md"],
+        "proposal": [],   # filled below: newest proposal-v*.md
+        "post_approval": ["docs/tsd/tsd.md", "docs/sad/sad.md"],
+        "task_breakdown": ["docs/plan/backlog.md"],
+    }
+    if stage_name == "proposal":
+        versions = sorted((root / "docs" / "proposal").glob("proposal-v*.md"))
+        checks["proposal"] = [f"docs/proposal/{v.name}" for v in versions[-1:]]
+    return [rel for rel in checks.get(stage_name, [])
+            if _looks_unfilled(root / rel)]
 
 
 def _looks_unfilled(path: Path) -> bool:

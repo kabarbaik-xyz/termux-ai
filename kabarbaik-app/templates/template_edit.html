@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ tname }} — Stage Templates{% endblock %}
+
+{% block content %}
+<h1>Edit template <code>{{ tname }}</code></h1>
+
+<section class="card stacked">
+  <p class="hint">Stage: <strong>{{ stages }}</strong> · Changes apply to new runs of that
+  stage; existing project documents are never overwritten. Keep the
+  <code>version=v__</code>-style placeholder markers — they are how the app detects
+  a run that copied the template instead of filling it. Commit the change in git
+  to propagate it to other machines.</p>
+
+  <form method="post" action="/templates/save" class="stacked">
+    <input type="hidden" name="name" value="{{ tname }}">
+    <textarea name="content" rows="30" class="mono" spellcheck="false">{{ content }}</textarea>
+    <div>
+      <button type="submit">Save template</button>
+      <a href="/templates" class="btn-small">Back to list</a>
+    </div>
+  </form>
+
+  <details>
+    <summary>Preview (rendered markdown)</summary>
+    <div class="doc-preview">{{ content | markdown }}</div>
+  </details>
+</section>
+{% endblock %}
