@@ -53,6 +53,15 @@ templates.env.filters["markdown"] = lambda text: md_lib.markdown(text or "")
 # Auto-seed team-kit skills into the live `ai` skills dir on every start —
 # without this, a fresh machine (git pull) has recipes referencing skills the
 # `ai` binary can't resolve, and stages fall back to template copies.
+# Any 'running' stage rows at boot are stale by definition — the process that
+# could finish them is gone (server stopped / device rebooted mid-run).
+with db.get_db() as _conn:
+    _conn.execute(
+        "UPDATE stage_runs SET finished=?, status='failed', "
+        "log=COALESCE(log,'') || ? WHERE status='running'",
+        ("", "\n[interrupted: server restarted while this stage was running — re-run it.]"))
+    _conn.commit()
+
 _seeded_skills = ai_runner.install_team_kit_skills()
 if _seeded_skills:
     print(f"[kit] skills seeded/updated: {', '.join(_seeded_skills)}")

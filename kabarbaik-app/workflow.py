@@ -293,6 +293,7 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
     """
     recipe = stage_recipe(stage_index)
     if recipe is None or recipe[0] is None:
+        concluded = True
         yield {"type": "done", "ok": False,
                "message": "Stage has no automated recipe (tracked externally)."}
         return
@@ -308,6 +309,8 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
         return
     _ACTIVE_RUNS[pid] = stage_name
     console: list[str] = []
+    concluded = False   # did this generator record a finish (ok or failed)?
+    started_run = False
     try:
         root = db.project_dir(project)
         root.mkdir(parents=True, exist_ok=True)
@@ -320,10 +323,12 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
             db.start_stage(pid, stage_name)
             db.finish_stage(pid, stage_name, False, gate)
             yield {"type": "status", "text": "⛔ " + gate}
+            concluded = True
             yield {"type": "done", "ok": False, "message": gate}
             return
 
         db.start_stage(pid, stage_name)
+        started_run = True
         sig_before = _artifact_sig(root, stage_name)
         usage_cp = ai_runner.max_usage_id()
         yield {"type": "status", "text": f"▶ {stage_name} started — skill: {skill}"}
@@ -358,6 +363,7 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
         if not output_lines:
             db.finish_stage(pid, stage_name, False, f"{last_err}\n{log_text()}",
                             tok_in, tok_out)
+            concluded = True
             yield {"type": "done", "ok": False, "message": str(last_err)}
             return
 
@@ -368,6 +374,7 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
                        "complete. Delete them first to force a rebuild.")
                 db.finish_stage(pid, stage_name, True, msg + "\n" + log_text(),
                                 tok_in, tok_out)
+                concluded = True
                 yield {"type": "done", "ok": True, "message": msg}
                 return
             msg = ("Stage reported success but produced NO artifacts "
@@ -375,6 +382,7 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
                    "could not write files — re-run the stage.")
             db.finish_stage(pid, stage_name, False, msg + "\n" + log_text(),
                             tok_in, tok_out)
+            concluded = True
             yield {"type": "done", "ok": False, "message": msg}
             return
 
@@ -385,6 +393,7 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
                    "AI. Re-run the stage (skills auto-seed at app start).")
             db.finish_stage(pid, stage_name, False, msg + "\n" + log_text(),
                             tok_in, tok_out)
+            concluded = True
             yield {"type": "done", "ok": False, "message": msg}
             return
 
@@ -395,9 +404,20 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
         refreshed = refresh_artifact_state(project)
         if refreshed["stage"] > project["stage"]:
             db.set_stage(pid, min(refreshed["stage"], len(db.STAGES) - 1))
+        concluded = True
         yield {"type": "done", "ok": True, "message": "Stage completed."}
     finally:
         _ACTIVE_RUNS.pop(pid, None)
+        if started_run and not concluded:
+            # generator cancelled (browser/tab closed, server stopped) — the
+            # ai subprocess was terminated in run_stream's handler; never
+            # leave the badge stuck on 'running'.
+            try:
+                db.finish_stage(pid, stage_name, False,
+                                "run interrupted — connection closed or "
+                                "server stopped. Re-run the stage.")
+            except Exception:
+                pass
 
 
 async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> str:
