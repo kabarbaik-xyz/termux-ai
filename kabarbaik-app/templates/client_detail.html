@@ -17,8 +17,9 @@
 
 <section class="card">
   <h2>Projects for {{ client.name }}</h2>
+  <div class="table-wrap">
   <table>
-    <thead><tr><th>Project</th><th>Stage</th><th>Status</th><th>Created</th></tr></thead>
+    <thead><tr><th>Project</th><th>Stage</th><th>Created</th></tr></thead>
     <tbody>
     {% for p in projects %}
       <tr>
@@ -28,13 +29,13 @@
             {% if loop.index0 == p.stage %}{{ label }}{% endif %}
           {% endfor %}
         </td>
-        <td>{{ p.status }}</td>
         <td>{{ p.created[:10] }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="4" class="muted">No projects yet.</td></tr>
+      <tr><td colspan="3" class="muted">No projects yet — create the first one above.</td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {% endblock %}

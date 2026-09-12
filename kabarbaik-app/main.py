@@ -91,6 +91,12 @@ async def dashboard(request: Request):
     ctx = _common(request)
     ctx["clients"] = db.list_clients()
     ctx["projects"] = db.list_projects()
+    # dashboard stats: completed stage runs + total tokens across all projects
+    with db.get_db() as conn:
+        ctx["stages_done"] = conn.execute(
+            "SELECT COUNT(*) FROM stage_runs WHERE status='ok'").fetchone()[0]
+        ctx["tokens_total"] = conn.execute(
+            "SELECT COALESCE(SUM(tok_total),0) FROM stage_runs").fetchone()[0]
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
@@ -142,7 +148,7 @@ async def create_project(
                    "docs/prototype", "docs/proposal", "docs/tsd", "docs/sad",
                    "docs/plan", "docs/reports"):
         (root / folder).mkdir(parents=True, exist_ok=True)
-    return RedirectResponse(f"/clients/{cid}", status_code=303)
+    return RedirectResponse(f"/clients/{cid}?msg=Project+created", status_code=303)
 
 
 # ----------------------------------------------------------------------------
@@ -266,7 +272,7 @@ async def template_save(request: Request, name: str = Form(...), content: str = 
         raise HTTPException(400, "Invalid template name")
     path = _template_dir() / name
     path.write_text(content, encoding="utf-8")
-    return RedirectResponse(f"/templates/edit?name={name}", status_code=303)
+    return RedirectResponse(f"/templates/edit?name={name}&msg=Template+saved", status_code=303)
 
 
 def _stage_runs_map(pid: int) -> dict:
@@ -393,7 +399,7 @@ async def upload_inbox(project_request: Request, pid: int, file: UploadFile):
         raise HTTPException(413, "File too large")
     (inbox / name).write_bytes(data)
     _ingest_sidecar(inbox / name)
-    return RedirectResponse(f"/projects/{pid}", status_code=303)
+    return RedirectResponse(f"/projects/{pid}?msg=Uploaded+{name}+to+inbox&kind=ok#inbox", status_code=303)
 
 
 @app.post("/projects/{pid}/link", response_class=HTMLResponse)
@@ -415,7 +421,7 @@ async def ingest_link(project_request: Request, pid: int, url: str = Form(...)):
         note.write_text(f"<!-- link source -->\nSource URL: {url}\n\n"
                         f"[LINK SOURCE]\nFetch/read this URL during doc-ingest "
                         f"(ask the delivery lead if it needs credentials).\n")
-        return RedirectResponse(f"/projects/{pid}", status_code=303)
+        return RedirectResponse(f"/projects/{pid}?msg=Link+saved+as+a+source+note&kind=ok#inbox", status_code=303)
 
     dl, ext = target
     slug = _slugify(url.split("/d/", 1)[-1][:40] or "gdoc")
@@ -441,7 +447,7 @@ async def ingest_link(project_request: Request, pid: int, url: str = Form(...)):
             f"<!-- link source -->\nSource URL: {url}\n\n[PRIVATE GOOGLE DOC — "
             f"export manually]\nThis document is not link-shared. Open the URL, "
             f"export as {ext or 'docx'} and upload it.\n")
-    return RedirectResponse(f"/projects/{pid}", status_code=303)
+    return RedirectResponse(f"/projects/{pid}?msg=Google+doc+ingested&kind=ok#inbox", status_code=303)
 
 
 def _looks_like_file(path: str, ext: str) -> bool:
@@ -470,7 +476,7 @@ async def add_note(
     slug = re.sub(r"[^a-z0-9]+", "-", (title or "note").lower()).strip("-") or "note"
     path = inbox / f"{slug}-{len(list(inbox.iterdir())) + 1:02d}.md"
     path.write_text(f"<!-- SRC note: {title} -->\n\n{body}\n", encoding="utf-8")
-    return RedirectResponse(f"/projects/{pid}", status_code=303)
+    return RedirectResponse(f"/projects/{pid}?msg=Note+saved+to+inbox&kind=ok#inbox", status_code=303)
 
 
 # ----------------------------------------------------------------------------

@@ -12,15 +12,15 @@
     <div class="topbar-inner">
       <a class="brand" href="/">KabarBaik <span>SDLC</span></a>
       <nav>
-        <a href="/">Dashboard</a>
-        <a href="/clients">Clients</a>
-        <a href="/templates">Templates</a>
+        <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}">Dashboard</a>
+        <a href="/clients" class="{{ 'active' if request.url.path.startswith('/clients') else '' }}">Clients</a>
+        <a href="/templates" class="{{ 'active' if request.url.path.startswith('/templates') else '' }}">Templates</a>
       </nav>
-      <div class="backend">
+      <div class="backend {{ '' if active.available else 'unavailable' }}" title="termux-ai active backend — change with /backend">
         <span class="dot"></span>
-        <span class="bk-label">backend</span>
+        <span class="bk-label">{{ 'backend' if active.available else 'unconfigured' }}</span>
         <strong>{{ active.backend }}</strong>
-        {% if active.model %}<code class="model">{{ active.model }}</code>{% endif %}
+        {% if active.model and active.available %}<code class="model">{{ active.model }}</code>{% endif %}
       </div>
     </div>
   </header>
@@ -32,6 +32,9 @@
   <footer class="footer">
     <span>KabarBaik SDLC · thin layer over termux-ai · local-only</span>
   </footer>
+
+  <div class="toasts" id="toasts"></div>
   {% block scripts %}{% endblock %}
+  <script src="/static/js/app.js"></script>
 </body>
 </html>

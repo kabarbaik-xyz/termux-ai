@@ -17,6 +17,7 @@
 
 <section class="card">
   <h2>All clients</h2>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Name</th><th>Org</th><th>Contact</th></tr></thead>
     <tbody>
@@ -27,9 +28,10 @@
         <td>{{ c.contact }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="3" class="muted">No clients yet.</td></tr>
+      <tr><td colspan="3" class="muted">No clients yet — add the first one above.</td></tr>
     {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 {% endblock %}

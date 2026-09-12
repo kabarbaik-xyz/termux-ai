@@ -2,7 +2,48 @@
 {% block title %}Dashboard — KabarBaik SDLC{% endblock %}
 
 {% block content %}
-<h1>Dashboard</h1>
+<div class="page-head">
+  <h1>Dashboard</h1>
+</div>
+
+<section class="stats">
+  <div class="stat"><div class="num">{{ clients|length }}</div><div class="lbl">Clients</div></div>
+  <div class="stat"><div class="num">{{ projects|length }}</div><div class="lbl">Projects</div></div>
+  <div class="stat"><div class="num">{{ stages_done|default(0) }}</div><div class="lbl">Stages completed</div></div>
+  <div class="stat"><div class="num">{{ tokens_total|default(0) }}</div><div class="lbl">Tokens used</div></div>
+</section>
+
+<section class="card">
+  <h2>Projects</h2>
+  {% if projects %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Project</th><th>Client</th><th>Stage</th><th>Progress</th><th>Created</th></tr></thead>
+    <tbody>
+    {% for p in projects %}
+      <tr>
+        <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
+        <td>{{ p.client_name }}</td>
+        <td><span class="stage-pill" style="font-size:.75rem; padding:3px 10px;">{{ p.stage_name }}</span></td>
+        <td style="min-width:120px;">
+          <div class="progress" style="margin:0;"><span style="width: {{ ((p.stage + 1) / (stages|length) * 100)|round|int }}%"></span></div>
+          <span class="hint">{{ p.stage + 1 }} / {{ stages|length }}</span>
+        </td>
+        <td class="muted">{{ p.created[:10] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <div class="big">🗂️</div>
+    <p><strong>No projects yet.</strong><br>
+      Start your first delivery: <a href="/clients">add a client</a>, create a project,
+      upload the brief to its inbox, then run <em>Discovery</em>.</p>
+  </div>
+  {% endif %}
+</section>
 
 <section class="card">
   <h2>Active AI backend</h2>
@@ -12,34 +53,7 @@
     To change it, use termux-ai's <code>/backend</code> or the setup wizard — this
     app follows whatever termux-ai has active.</p>
   {% else %}
-    <p class="warn">{{ active.backend }}. Configure termux-ai first (<code>ai</code> → setup).</p>
-  {% endif %}
-</section>
-
-<section class="card">
-  <h2>Projects</h2>
-  {% if projects %}
-  <table>
-    <thead><tr><th>Project</th><th>Client</th><th>Stage</th><th>Status</th><th>Created</th></tr></thead>
-    <tbody>
-    {% for p in projects %}
-      <tr>
-        <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
-        <td>{{ p.client_name }}</td>
-        <td>
-          {% set stage = p.stage %}
-          {% for name, label in stages %}
-            {% if loop.index0 == stage %}{{ label }}{% endif %}
-          {% endfor %}
-        </td>
-        <td>{{ p.status }}</td>
-        <td>{{ p.created[:10] }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-    <p>No projects yet. <a href="/clients">Add a client</a>, then create a project.</p>
+    <p class="warn">⚠ {{ active.backend }}. Configure termux-ai first (<code>ai</code> → setup).</p>
   {% endif %}
 </section>
 
@@ -49,8 +63,19 @@
     {% for c in clients %}
       <li><a href="/clients/{{ c.id }}">{{ c.name }}</a>{% if c.org %} <span class="muted">· {{ c.org }}</span>{% endif %}</li>
     {% else %}
-      <li class="muted">No clients added yet.</li>
+    <li class="muted">No clients added yet — <a href="/clients">add the first one</a>.</li>
     {% endfor %}
   </ul>
+</section>
+
+<section class="card">
+  <details class="danger-zone">
+    <summary>⚠ Danger zone — reset everything</summary>
+    <form method="post" action="/admin/reset" data-confirm="This deletes ALL clients, projects, runs and artifacts. Type the confirmation to proceed.">
+      <label class="hint">Type <code>reset everything</code> to confirm
+        <input name="confirm" placeholder="reset everything" required></label>
+      <button type="submit" class="danger">Wipe all data</button>
+    </form>
+  </details>
 </section>
 {% endblock %}

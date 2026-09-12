@@ -1,0 +1,29 @@
+{
+  "colors": {
+    "primary": "#4f46e5",
+    "primaryHover": "#4338ca",
+    "primarySoft": "#eef2ff",
+    "ok": "#15803d",
+    "okSoft": "#dcfce7",
+    "fail": "#b91c1c",
+    "failSoft": "#fee2e2",
+    "run": "#b45309",
+    "runSoft": "#fef3c7",
+    "bg": "#f6f7f9",
+    "surface": "#ffffff",
+    "surfaceAlt": "#f8fafc",
+    "border": "#e5e7eb",
+    "borderStrong": "#d1d5db",
+    "text": "#111827",
+    "textMuted": "#6b7280",
+    "ink": "#0f172a"
+  },
+  "typography": {
+    "fontFamily": "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif",
+    "monoFamily": "ui-monospace, SFMono-Regular, Menlo, monospace",
+    "scale": { "h1": "1.5rem", "h2": "1.05rem", "h3": "0.95rem", "body": "0.95rem", "caption": "0.78rem" }
+  },
+  "spacing": { "unit": "4px", "scale": [4, 8, 12, 16, 24, 32, 48] },
+  "radius": { "sm": "6px", "md": "10px", "lg": "14px", "pill": "999px" },
+  "shadow": { "sm": "0 1px 2px rgba(15,23,42,.06)", "md": "0 4px 12px rgba(15,23,42,.08)" }
+}

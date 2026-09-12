@@ -10,6 +10,9 @@
   </div>
   <div class="stage-pill">Stage {{ project.stage + 1 }} / {{ stages|length }} · {{ project.stage_name }}</div>
 </div>
+<div class="progress"><span style="width: {{ ((fresh_stage + 1) / (stages|length) * 100)|round|int }}%"></span></div>
+<div class="progress-legend"><span>{{ fresh_stage }} of {{ stages|length }} stages complete</span>
+  <span>{{ '{:,}'.format(tokens.total) if tokens and tokens.total else '0' }} tokens used</span></div>
 
 <nav class="tabs">
   <a href="#flow" class="active">Flow</a>
@@ -19,8 +22,11 @@
 </nav>
 
 {% if ran_stage is defined %}
+<div data-ran-stage="{{ stages[ran_stage][1] }}" data-ran-ok="{{ 1 if stage_runs[stages[ran_stage][0]].status == 'ok' else 0 }}"></div>
 <section class="card output">
-  <h2>Output — {{ stages[ran_stage][1] }}</h2>
+  <h2>Output — {{ stages[ran_stage][1] }}
+    {% if stage_runs[stages[ran_stage][0]].status == 'ok' %}<span class="badge ok">done</span>
+    {% else %}<span class="badge fail">{{ stage_runs[stages[ran_stage][0]].status }}</span>{% endif %}</h2>
   <pre class="ai-output">{{ output }}</pre>
 </section>
 {% endif %}
@@ -58,20 +64,24 @@
         {% if stage_runs[name].status == 'ok' %}<span class="badge ok">done</span>
         {% elif stage_runs[name].status == 'running' %}<span class="badge run">running</span>
         {% elif stage_runs[name].status == 'failed' %}<span class="badge fail">failed</span>{% endif %}
+        <div class="step-actions">
+        {% if stage_idx[name] == fresh_stage %}
+        <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
+          <button type="submit" class="btn-small primary">Run stage →</button>
+        </form>
+        {% elif stage_idx[name] > fresh_stage %}
+        <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
+          <button type="submit" class="btn-small">Run stage</button>
+        </form>
+        {% else %}
+        <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
+          <button type="submit" class="btn-small ghost" title="Re-run this stage (loop until solid)">↻ Re-run</button>
+        </form>
+        {% endif %}
+        </div>
       </div>
-      {% if stage_idx[name] >= fresh_stage %}
-      <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
-        <button type="submit" class="btn-small">
-          Run stage
-        </button>
-      </form>
-      {% else %}
-      <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
-        <button type="submit" class="btn-small ghost" title="Re-run this stage (loop until solid)">↻ Re-run</button>
-      </form>
-      {% endif %}
       {% if stage_runs[name].log %}<details class="run-log"><summary>last run</summary><pre>{{ stage_runs[name].log }}</pre></details>{% endif %}
-      {% if stage_runs[name].tok_total %}<span class="hint">tokens: {{ '{:,}'.format(stage_runs[name].tok_total) }} (in {{ '{:,}'.format(stage_runs[name].tok_in) }} · out {{ '{:,}'.format(stage_runs[name].tok_out) }})</span>{% endif %}
+      {% if stage_runs[name].tok_total %}<span class="tok-line">tokens: {{ '{:,}'.format(stage_runs[name].tok_total) }} (in {{ '{:,}'.format(stage_runs[name].tok_in) }} · out {{ '{:,}'.format(stage_runs[name].tok_out) }})</span>{% endif %}
     </li>
     {% endfor %}
   </ol>
@@ -156,6 +166,7 @@
     <button type="submit">Record feedback</button>
   </form>
   {% if feedback %}
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Source</th><th>Quote</th><th>Notes</th><th>Status</th><th>Created</th></tr></thead>
     <tbody>
@@ -170,6 +181,7 @@
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% endif %}
 </section>
 {% endblock %}

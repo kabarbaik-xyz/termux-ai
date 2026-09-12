@@ -162,7 +162,12 @@ def list_projects(client_id: Optional[int] = None) -> list[dict]:
     q += " ORDER BY p.created DESC"
     with get_db() as db:
         rows = db.execute(q, args).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["stage_name"] = STAGES[d["stage"]][1] if 0 <= d["stage"] < len(STAGES) else "archived"
+        out.append(d)
+    return out
 
 
 def get_project(project_id: int) -> Optional[dict]:
