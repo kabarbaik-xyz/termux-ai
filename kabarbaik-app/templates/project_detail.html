@@ -14,11 +14,13 @@
 <div class="progress-legend"><span>{{ fresh_stage }} of {{ stages|length }} stages complete</span>
   <span>{{ '{:,}'.format(tokens.total) if tokens and tokens.total else '0' }} tokens used</span></div>
 
-<nav class="tabs">
-  <a href="#flow" class="active">Flow</a>
+<nav class="tabs" data-tabs>
+  <a href="#flow" class="active">▶ Flow</a>
+  <a href="#console">▤ Console</a>
   <a href="#docs">Documents</a>
   <a href="#inbox">Inputs</a>
   <a href="#feedback">Feedback</a>
+  <a href="#tokens">Tokens</a>
 </nav>
 
 {% if ran_stage is defined %}
@@ -31,7 +33,7 @@
 </section>
 {% endif %}
 
-<section id="tokens" class="card">
+<section id="tokens" class="card" hidden>
   <h2>Token usage</h2>
   {% if tokens and tokens.total %}
   <p><strong>Total: {{ '{:,}'.format(tokens.total) }} tokens</strong>
@@ -53,7 +55,7 @@
   {% endif %}
 </section>
 
-<section id="flow" class="card">
+<section id="flow" class="card" data-tab-section>
   <h2>SDLC Flow</h2>
   <ol class="flow">
     {% for name, label in stages %}
@@ -87,7 +89,12 @@
   </ol>
 </section>
 
-<section id="inbox" class="card">
+<section id="console" class="card" hidden>
+  <h2>Console <span class="hint" id="console-state"></span></h2>
+  <pre id="console" class="console" aria-live="polite">— idle · press Run on any stage to watch the AI work here —</pre>
+</section>
+
+<section id="inbox" class="card" hidden>
   <h2>Inputs (Discovery / Meeting notes / Requirements)</h2>
   <div class="grid-2">
     <div>
@@ -130,7 +137,7 @@
   {% endif %}
 </section>
 
-<section id="docs" class="card">
+<section id="docs" class="card" hidden>
   <h2>Documents</h2>
   {% set folders = ['inbox','discovery','brd','prd','prototype','proposal','tsd','sad','plan','reports'] %}
   {% for folder in folders %}
@@ -157,7 +164,7 @@
   </div>
 </section>
 
-<section id="feedback" class="card">
+<section id="feedback" class="card" hidden>
   <h2>Client Feedback</h2>
   <form method="post" action="/projects/{{ project.id }}/feedback" class="stacked">
     <label>Source <input name="source" value="web" placeholder="web / meeting / email"></label>

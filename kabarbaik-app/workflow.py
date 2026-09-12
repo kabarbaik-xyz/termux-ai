@@ -278,87 +278,138 @@ def _stage_gate(stage_name: str, root: Path) -> str | None:
     return None
 
 
-async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> str:
-    """Execute one SDLC stage for a project; returns the full AI output.
+_ACTIVE_RUNS: dict[int, str] = {}   # project_id -> stage_name (one at a time)
 
-    Creates the docs/ scaffold if missing, records the stage run, streams the
-    `ai` output into the run log, and flips the project's stage on success.
+
+async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900.0):
+    """Execute one SDLC stage, YIELDING live events for the browser console.
+
+    Event dicts: {"type": "status"|"line"|"done", ...}
+      status — human-readable stage lifecycle ("gate", "start", "retry", ...)
+      line   — one line of live `ai` output (what the AI is doing right now)
+      done   — final: {"ok": bool, "message": str}
+    On completion the run log keeps a console tail (last 8 KB) so the UI's
+    'last run' details show what happened even after a reload.
     """
     recipe = stage_recipe(stage_index)
     if recipe is None or recipe[0] is None:
-        return f"Stage {stage_index} has no automated recipe (development is tracked externally)."
+        yield {"type": "done", "ok": False,
+               "message": "Stage has no automated recipe (tracked externally)."}
+        return
 
     skill, tools, prompt_template = recipe[0], recipe[1], recipe[2]
     stage_name = db.STAGES[stage_index][0]
-    root = db.project_dir(project)
-    root.mkdir(parents=True, exist_ok=True)
-    _scaffold_docs(root)
-    if stage_name in STAGE_TEMPLATES:
-        _seed_templates(root, stage_name)
+    pid = project["id"]
 
-    # Hard preconditions — prompt-level guards are advisory; enforce in code.
-    gate = _stage_gate(stage_name, root)
-    if gate:
-        db.start_stage(project["id"], stage_name)
-        db.finish_stage(project["id"], stage_name, False, gate)
-        return gate
+    if _ACTIVE_RUNS.get(pid):
+        yield {"type": "done", "ok": False,
+               "message": f"Another stage ({_ACTIVE_RUNS[pid]}) is already "
+                          "running for this project."}
+        return
+    _ACTIVE_RUNS[pid] = stage_name
+    console: list[str] = []
+    try:
+        root = db.project_dir(project)
+        root.mkdir(parents=True, exist_ok=True)
+        _scaffold_docs(root)
+        if stage_name in STAGE_TEMPLATES:
+            _seed_templates(root, stage_name)
 
-    db.start_stage(project["id"], stage_name)
-    sig_before = _artifact_sig(root, stage_name)
-    usage_cp = ai_runner.max_usage_id()   # measure exactly this run's requests
-    output = None
-    last_err = None
-    for attempt in (1, 2):   # one transparent retry: free-tier gateways 429
-        try:
-            output = await ai_runner.run(
-                prompt_template,
-                project_dir=root,
-                skill=skill,
-                tools=tools,
-                timeout=timeout,
-            )
-            break
-        except ai_runner.AiError as e:
-            last_err = e
-            if attempt == 1:
-                import asyncio as _aio
-                await _aio.sleep(30)   # let the rate-limit window pass
-    tok_in, tok_out = ai_runner.usage_after(usage_cp)
-    if output is None:
-        db.finish_stage(project["id"], stage_name, False, str(last_err),
-                        tok_in, tok_out)
-        raise last_err
-    # The run "succeeded" only if it produced or updated its artifacts.
-    sig_after = _artifact_sig(root, stage_name)
-    if stage_name in STAGE_ARTIFACTS and sig_after == sig_before:
-        if sig_before:
-            # Artifacts already existed and the model changed nothing — a
-            # legitimate "already complete" re-run, not a phantom.
-            db.finish_stage(project["id"], stage_name, True,
-                            "No changes — artifacts were already present and "
-                            "complete. Delete them first to force a rebuild.",
+        gate = _stage_gate(stage_name, root)
+        if gate:
+            db.start_stage(pid, stage_name)
+            db.finish_stage(pid, stage_name, False, gate)
+            yield {"type": "status", "text": "⛔ " + gate}
+            yield {"type": "done", "ok": False, "message": gate}
+            return
+
+        db.start_stage(pid, stage_name)
+        sig_before = _artifact_sig(root, stage_name)
+        usage_cp = ai_runner.max_usage_id()
+        yield {"type": "status", "text": f"▶ {stage_name} started — skill: {skill}"}
+
+        output_lines: list[str] = []
+        last_err = None
+        for attempt in (1, 2):   # one transparent retry: gateways 429
+            try:
+                async for line in ai_runner.run_stream(
+                    prompt_template, project_dir=root, skill=skill,
+                    tools=tools, timeout=timeout,
+                ):
+                    output_lines.append(line)
+                    console.append(line)
+                    yield {"type": "line", "text": line}
+                break
+            except ai_runner.AiError as e:
+                last_err = e
+                if attempt == 1:
+                    yield {"type": "status",
+                           "text": f"⚠ {e} — retrying once in 30s (rate-limit window)…"}
+                    console.append(f"[retry] {e}")
+                    import asyncio as _aio
+                    await _aio.sleep(30)
+
+        tok_in, tok_out = ai_runner.usage_after(usage_cp)
+
+        def log_text():
+            tail_txt = "\n".join(console[-120:])[-8000:]
+            return tail_txt if tail_txt else "(no output)"
+
+        if not output_lines:
+            db.finish_stage(pid, stage_name, False, f"{last_err}\n{log_text()}",
                             tok_in, tok_out)
-        else:
+            yield {"type": "done", "ok": False, "message": str(last_err)}
+            return
+
+        sig_after = _artifact_sig(root, stage_name)
+        if stage_name in STAGE_ARTIFACTS and sig_after == sig_before:
+            if sig_before:
+                msg = ("No changes — artifacts were already present and "
+                       "complete. Delete them first to force a rebuild.")
+                db.finish_stage(pid, stage_name, True, msg + "\n" + log_text(),
+                                tok_in, tok_out)
+                yield {"type": "done", "ok": True, "message": msg}
+                return
             msg = ("Stage reported success but produced NO artifacts "
                    f"({', '.join(STAGE_ARTIFACTS[stage_name])}). The AI likely "
                    "could not write files — re-run the stage.")
-            db.finish_stage(project["id"], stage_name, False, msg)
-            return msg
-    else:
+            db.finish_stage(pid, stage_name, False, msg + "\n" + log_text(),
+                            tok_in, tok_out)
+            yield {"type": "done", "ok": False, "message": msg}
+            return
+
         unfilled = _unfilled_outputs(root, stage_name)
         if unfilled:
             msg = (f"{', '.join(unfilled)} came out as an unfilled template "
                    "copy — a skill or template likely wasn't available to the "
                    "AI. Re-run the stage (skills auto-seed at app start).")
-            db.finish_stage(project["id"], stage_name, False, msg,
+            db.finish_stage(pid, stage_name, False, msg + "\n" + log_text(),
                             tok_in, tok_out)
-            return msg
-        db.finish_stage(project["id"], stage_name, True, "", tok_in, tok_out)
-    # The project advances to the next stage once artifacts exist.
-    refreshed = refresh_artifact_state(project)
-    if refreshed["stage"] > project["stage"]:
-        db.set_stage(project["id"], min(refreshed["stage"], len(db.STAGES) - 1))
-    return output
+            yield {"type": "done", "ok": False, "message": msg}
+            return
+
+        db.finish_stage(pid, stage_name, True, log_text(), tok_in, tok_out)
+        yield {"type": "status",
+               "text": f"✓ artifacts verified · tokens {tok_in + tok_out:,} "
+                       f"(in {tok_in:,} · out {tok_out:,})"}
+        refreshed = refresh_artifact_state(project)
+        if refreshed["stage"] > project["stage"]:
+            db.set_stage(pid, min(refreshed["stage"], len(db.STAGES) - 1))
+        yield {"type": "done", "ok": True, "message": "Stage completed."}
+    finally:
+        _ACTIVE_RUNS.pop(pid, None)
+
+
+async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> str:
+    """Synchronous-POST path: consume the stream, return the AI output text."""
+    output = []
+    async for ev in run_stage_stream(project, stage_index, timeout):
+        if ev["type"] == "line":
+            output.append(ev["text"])
+        elif ev["type"] == "done" and not ev.get("ok", False):
+            # surface failures as text (POST page shows it in the output panel)
+            output.append(f"\n[{ev.get('message', 'failed')}]")
+    return "\n".join(output)
 
 
 _KIT = Path(__file__).resolve().parent.parent / "team-kit"

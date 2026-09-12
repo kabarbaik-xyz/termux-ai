@@ -31,7 +31,8 @@ _ensure_venv()
 
 import markdown as md_lib
 from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                                   RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -177,6 +178,29 @@ async def project_detail(request: Request, pid: int):
     ctx["fresh_stage"] = fresh["stage"]
     ctx["tokens"] = db.project_token_usage(pid)
     return templates.TemplateResponse(request, "project_detail.html", ctx)
+
+
+@app.get("/projects/{pid}/stage/{stage_index}/stream")
+async def stage_stream(request: Request, pid: int, stage_index: int):
+    """Server-Sent Events: live console of a stage run.
+
+    Event JSON: {type: status|line|done, ...}. One active run per project
+    (the stream handler enforces it via workflow._ACTIVE_RUNS)."""
+    import json as _json
+    _auth(request)
+    project = _project_or_404(pid)
+    stage_index = min(max(stage_index, 0), len(db.STAGES) - 1)
+
+    async def gen():
+        try:
+            async for ev in workflow.run_stage_stream(project, stage_index):
+                yield f"data: {_json.dumps(ev)}\n\n"
+        except Exception as e:   # stream-level failure (not stage failure)
+            yield f"data: {_json.dumps({'type': 'done', 'ok': False, 'message': f'stream error: {e}'})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 @app.post("/projects/{pid}/stage/{stage_index}", response_class=HTMLResponse)

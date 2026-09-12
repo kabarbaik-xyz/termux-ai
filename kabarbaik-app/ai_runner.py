@@ -18,6 +18,75 @@ class AiError(Exception):
     """Raised when the AI subprocess fails or times out."""
 
 
+async def run_stream(
+    prompt: str,
+    project_dir: Path | None = None,
+    skill: str | None = None,
+    tools: str = "on",
+    timeout: float = 900.0,
+):
+    """Stream `ai` output line-by-line (async generator).
+
+    Same invocation contract as run(), but yields each stdout line as it is
+    emitted (ANSI-stripped) so the UI can show what the AI is doing while a
+    stage runs. Raises AiError on failure/timeout like run() does; on generator
+    close/cancel the subprocess is terminated so runs never orphan.
+    """
+    cmd = [AI_BINARY, "--yes"]
+    if skill:
+        cmd += ["--skill", skill]
+    cmd += ["--tools", tools]
+    cmd += [prompt]
+
+    cwd = str(project_dir) if project_dir else str(PROJECTS_ROOT)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=cwd,
+        env=os.environ.copy(),
+    )
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    buf = []
+    try:
+        while True:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            if not line:
+                break
+            text = _strip_ansi(line.decode("utf-8", errors="replace")).rstrip()
+            if text:
+                buf.append(text)
+                yield text
+        rc = await asyncio.wait_for(proc.wait(), timeout=max(remaining, 5))
+        if rc != 0:
+            raise AiError(f"ai exited with code {rc}: {' '.join(buf[-3:])[:200]}")
+        if not any(b.strip() for b in buf):
+            raise AiError("ai produced no output (empty response from the gateway).")
+    except asyncio.TimeoutError:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+        raise AiError("termux-ai call timed out.")
+    except BaseException:
+        # client disconnected / generator cancelled — don't orphan the process
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        raise
+
+
 def max_usage_id() -> int:
     """Highest row id in termux-ai's usage_log — a checkpoint to measure
     exactly the requests a stage run makes (-1 when unavailable)."""

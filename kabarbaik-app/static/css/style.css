@@ -209,3 +209,15 @@ pre.template-preview { background: var(--surface-alt); border: 1px solid var(--b
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ══ Console (live stage log) ══ */
+.console {
+  background: var(--ink); color: #d1e3f8; border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-4); font-family: var(--mono); font-size: .78rem;
+  line-height: 1.5; height: 420px; overflow-y: auto; white-space: pre-wrap;
+  word-break: break-word; margin: 0;
+}
+.console .st { color: #a5b4fc; font-weight: 700; }
+.console .err { color: #f87171; }
+.console .done { color: #4ade80; }
+section[hidden] { display: none; }
