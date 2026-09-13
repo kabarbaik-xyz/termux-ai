@@ -256,3 +256,10 @@ h3.mt { margin-top: var(--sp-6); }
 }
 .flow-step.running .badge.run { background: var(--run-soft); color: var(--run); }
 button:disabled { opacity: .45; }
+
+/* ══ Flow colors: ok=green · failed=red · never-run=blue ══ */
+.flow-step.failed { border-left-color: var(--fail); }
+.flow-step.failed .step-idx { background: var(--fail); color: #fff; }
+.flow-step.pending { border-left-color: var(--border-strong); }
+.flow-step.pending .step-label { color: var(--muted); }
+.flow-step.pending .step-idx { border: 2px solid var(--primary); background: transparent; color: var(--primary); }

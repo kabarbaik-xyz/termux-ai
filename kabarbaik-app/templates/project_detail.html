@@ -62,7 +62,8 @@
   <h2>SDLC Flow</h2>
   <ol class="flow">
     {% for name, label in stages %}
-    <li class="flow-step {{ 'done' if stage_idx[name] < fresh_stage else ('current' if stage_idx[name] == fresh_stage else '') }}{{ ' running' if running_stage_idx is defined and running_stage_idx == stage_idx[name] else '' }}">
+    {% set run_status = stage_runs[name].status %}
+    <li class="flow-step {{ 'done' if run_status == 'ok' else ('failed' if run_status == 'failed' else ('current' if stage_idx[name] == fresh_stage else 'pending')) }}{{ ' running' if running_stage_idx is defined and running_stage_idx == stage_idx[name] else '' }}">
       <div class="step-head">
         {% if running_stage_idx is defined and running_stage_idx == stage_idx[name] %}
         <span class="step-idx spinner" aria-label="running"></span>
