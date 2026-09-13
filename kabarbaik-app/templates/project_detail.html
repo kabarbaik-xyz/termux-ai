@@ -41,18 +41,30 @@
   {% if tokens and tokens.total %}
   <p><strong>Total: {{ '{:,}'.format(tokens.total) }} tokens</strong>
      (in {{ '{:,}'.format(tokens.total_in) }} · out {{ '{:,}'.format(tokens.total_out) }})</p>
+  <div class="table-wrap">
   <table>
-    <thead><tr><th>Stage</th><th>Tokens (last run recorded)</th></tr></thead>
+    <thead><tr><th>Stage</th><th class="num">In</th><th class="num">Out</th>
+      <th class="num">Total</th><th>Duration</th><th>Finished</th></tr></thead>
     <tbody>
     {% for name, label in stages %}
-      {% if tokens.by_stage.get(name) %}
-      <tr><td>{{ label }}</td><td>{{ '{:,}'.format(tokens.by_stage[name]) }}</td></tr>
+      {% set row = tokens.by_stage.get(name) %}
+      {% if row %}
+      <tr>
+        <td>{{ label }}</td>
+        <td class="num">{{ '{:,}'.format(row['in']) }}</td>
+        <td class="num">{{ '{:,}'.format(row['out']) }}</td>
+        <td class="num"><strong>{{ '{:,}'.format(row.total) }}</strong></td>
+        <td>{{ row.dur }}</td>
+        <td class="muted">{{ row.finished or '—' }}</td>
+      </tr>
       {% endif %}
     {% endfor %}
     </tbody>
   </table>
-  <p class="hint">Per-request usage is read from termux-ai's usage log — real
-  backend-reported tokens where the gateway provides them, estimates otherwise.</p>
+  </div>
+  <p class="hint">Per stage: the LAST run recorded — tokens in/out and how long
+  the execution took. Usage is read from termux-ai's per-request log (real
+  backend-reported where the gateway provides it, estimates otherwise).</p>
   {% else %}
   <p class="hint">No token usage recorded yet — totals appear after the first stage run.</p>
   {% endif %}

@@ -278,3 +278,5 @@ button:disabled { opacity: .45; }
 
 .mermaid-error { background: var(--fail-soft); color: var(--fail); border: 1px dashed var(--fail);
   border-radius: var(--r-md); padding: 10px 14px; font-size: .82rem; margin: var(--sp-2) 0; }
+
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }

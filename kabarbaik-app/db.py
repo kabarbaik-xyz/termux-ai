@@ -216,12 +216,43 @@ def finish_stage(project_id: int, stage: str, ok: bool, log: str = "",
         )
 
 
+def _fmt_duration(seconds) -> str:
+    """Humanize a run duration: 58s · 3m 12s · 1h 04m."""
+    try:
+        s = int(seconds)
+    except (TypeError, ValueError):
+        return "—"
+    if s < 0:
+        return "—"
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {(s % 3600) // 60:02d}m"
+
+
 def project_token_usage(pid: int) -> dict:
-    """{total_in, total_out, total, by_stage: {stage: total}} for a project."""
+    """{total_in, total_out, total, by_stage: {stage: {in,out,total,dur,…}}}
+    for a project. by_stage rows are the LAST run recorded per stage
+    (stage_runs is one-row-per-stage), including its execution duration."""
+    from datetime import datetime
     with get_db() as db:
-        by = {r["stage"]: r["t"] for r in db.execute(
-            "SELECT stage, SUM(tok_total) t FROM stage_runs "
-            "WHERE project_id=? GROUP BY stage", (pid,))}
+        by = {}
+        for r in db.execute(
+                "SELECT stage, tok_in, tok_out, tok_total, started, finished, status "
+                "FROM stage_runs WHERE project_id=?", (pid,)):
+            dur = "—"
+            try:
+                if r["finished"] and r["started"]:
+                    t0 = datetime.fromisoformat(r["started"])
+                    t1 = datetime.fromisoformat(r["finished"])
+                    dur = _fmt_duration((t1 - t0).total_seconds())
+            except (ValueError, TypeError):
+                pass
+            by[r["stage"]] = {"in": r["tok_in"] or 0, "out": r["tok_out"] or 0,
+                              "total": r["tok_total"] or 0, "dur": dur,
+                              "status": r["status"],
+                              "finished": (r["finished"] or "")[:16].replace("T", " ")}
         row = db.execute(
             "SELECT COALESCE(SUM(tok_in),0) i, COALESCE(SUM(tok_out),0) o "
             "FROM stage_runs WHERE project_id=?", (pid,)).fetchone()
