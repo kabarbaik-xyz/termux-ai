@@ -1,13 +1,14 @@
-<!-- DOC: ux-spec | feature=<name> | version=v__ | sources=[PRD v__ §x] -->
-# UX Spec — <Feature>
-## 1. Screen Inventory
-| SC | Screen | US-IDs | States complete? |
-|----|--------|-------|------------------|
-| SC-01 | Login | US-101 | ☐ |
-## 2. Flows (Mermaid flowchart per journey — from PRD use cases; incl. error/off-ramps)
-## 3. States Matrix
-| SC | Loading | Empty | Error | Success | No-perm |
-|----|---------|-------|-------|---------|---------|
-| SC-01 | skeleton | n/a (first screen) | inline: wrong password → retry | → dashboard route | n/a |
-## 4. Component Mapping (screen → inventory components; new components listed HERE first)
-## Golden rules: no screen without a PRD ID · no component without an entry here · wireframe fidelity — tokens + structure, not art.
+<!-- DOC: ux-spec | feature=<name> | version=v__ | date=__ | sources=[PRD v__] | upstream=docs/prd/prd.md -->
+# UX Spec — <Project / Feature>
+Language: <EN/ID — match client>
+
+## 1. Scope & Assumptions (one paragraph — which PRD version, what was assumed where it was silent)
+## 2. User Flows (one Mermaid per primary journey — decision points + error/edge paths, not just happy path)
+## 3. Screen Inventory
+| Screen | Purpose | PRD requirement(s) | Key components | Priority |
+|--------|---------|--------------------|----------------|----------|
+|        |         |                    |                | must/should/could |
+## 4. Per-Screen Wireframe Description (regions top-to-bottom; empty/loading/error/populated states; concrete enough for `prototype` to build without guessing)
+## 5. Design Tokens (uses existing design-tokens.json — do not restate; only note deviations)
+## 6. Open Questions for the Client (3–7 items — what the client presentation must resolve)
+Golden rules: no screen without a PRD requirement · diagrams over prose · spec only, no code.

@@ -106,10 +106,11 @@ def stage_recipe(stage_index: int) -> tuple:
         2: (
             "ux-design",
             "on",
-            "Follow the ux-design skill. Inputs: the PRD at docs/prd/prd.md "
-            "(this project's equivalent of docs/02-PRD.md — required) and "
-            "discovery notes at docs/discovery/discovery.md. Produce "
-            "docs/ux/ux-spec.md with ALL 6 sections of the skill (scope & "
+            "Follow the ux-design skill, using the STRUCTURE of "
+            "docs/ux/TEMPLATE.md exactly (same sections/order, every "
+            "section filled). Inputs: the PRD at docs/prd/prd.md "
+            "(required) and discovery notes at docs/discovery/discovery.md. "
+            "Produce docs/ux/ux-spec.md with ALL 6 sections of the skill (scope & "
             "assumptions, Mermaid user flows, screen inventory traced to PRD "
             "requirements, per-screen wireframes with states, design tokens, "
             "client open questions) and design-tokens.json at the project root. "
@@ -188,7 +189,9 @@ def stage_recipe(stage_index: int) -> tuple:
             "checkable DoD — use the same Epic grouping Task Breakdown will "
             "use next so they line up 1:1), docs/qa/corner-cases.md (risk "
             "heat map + corner-case catalog + known deferred risk). Trace "
-            "everything to a source; flag ambiguity, never guess.",
+            "everything to a source; flag ambiguity, never guess. The AC doc's "
+            "Definition of Done references docs/qa/REVIEW-CHECKLIST.md "
+            "(the human review gates).",
         ),
         7: (
             "epic-breakdown",
@@ -204,7 +207,9 @@ def stage_recipe(stage_index: int) -> tuple:
             "docs/qa/test-cases.md, use the Given/When/Then AC verbatim from "
             "docs/qa/acceptance-criteria.md (same Epic grouping), and carry "
             "P0/P1 items from docs/qa/corner-cases.md into story DoD / risk "
-            "notes — ready for the development phase.",
+            "notes — ready for the development phase. Every story follows "
+            "the format of docs/plan/PM-TASK-TEMPLATE.md (ID, story "
+            "phrasing, testable AC, screens, files hint, out-of-scope, DoD).",
         ),
     }
     return recipes.get(stage_index)
@@ -517,10 +522,13 @@ def _scaffold_docs(root: Path) -> None:
 STAGE_TEMPLATES = {
     "brd_prd": [("brd.md", "docs/brd/TEMPLATE.md"),
                 ("prd.md", "docs/prd/TEMPLATE.md")],
+    "ux_design": [("ux-spec.md", "docs/ux/TEMPLATE.md")],
     "proposal": [("proposal.md", "docs/proposal/TEMPLATE.md")],
     "post_approval": [("tsd.md", "docs/tsd/TEMPLATE.md"),
                       ("sad.md", "docs/sad/TEMPLATE.md")],
-    "task_breakdown": [("backlog.md", "docs/plan/TEMPLATE.md")],
+    "qa_spec": [("review-checklist.md", "docs/qa/REVIEW-CHECKLIST.md")],
+    "task_breakdown": [("backlog.md", "docs/plan/TEMPLATE.md"),
+                       ("pm-task-template.md", "docs/plan/PM-TASK-TEMPLATE.md")],
 }
 
 
@@ -541,6 +549,7 @@ def _unfilled_outputs(root: Path, stage_name: str) -> list:
     template (placeholder markers survived). proposal checks its newest vN."""
     checks = {
         "brd_prd": ["docs/brd/brd.md", "docs/prd/prd.md"],
+        "ux_design": ["docs/ux/ux-spec.md"],
         "proposal": [],   # filled below: newest proposal-v*.md
         "post_approval": ["docs/tsd/tsd.md", "docs/sad/sad.md"],
         "task_breakdown": ["docs/plan/backlog.md"],
