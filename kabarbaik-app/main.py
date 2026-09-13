@@ -48,7 +48,12 @@ app = FastAPI(title="KabarBaik SDLC")
 app.mount("/static", StaticFiles(directory=settings.PROJECT_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(settings.PROJECT_DIR / "templates"))
 
-templates.env.filters["markdown"] = lambda text: md_lib.markdown(text or "")
+def _md(text: str) -> str:
+    """Markdown → HTML with fenced code (```mermaid survives as a code
+    block the client upgrades to a rendered diagram) + tables."""
+    return md_lib.markdown(text or "", extensions=["fenced_code", "tables"])
+
+templates.env.filters["markdown"] = _md
 
 # Auto-seed team-kit skills into the live `ai` skills dir on every start —
 # without this, a fresh machine (git pull) has recipes referencing skills the
@@ -561,7 +566,7 @@ def doc_read(pid: int = 0, path: str = ""):
         raise HTTPException(404, "Document not found")
     text = safe.read_text(encoding="utf-8")
     return JSONResponse({"name": nice_name(safe), "path": path,
-                          "markdown": text, "html": md_lib.markdown(text)})
+                          "markdown": text, "html": _md(text)})
 
 
 @app.post("/docs/save")

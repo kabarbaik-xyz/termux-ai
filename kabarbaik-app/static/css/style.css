@@ -271,3 +271,7 @@ button:disabled { opacity: .45; }
 .flow-step.pending { border-left-color: var(--border-strong); }
 .flow-step.pending .step-label { color: var(--muted); }
 .flow-step.pending .step-idx { border: 2px solid var(--primary); background: transparent; color: var(--primary); }
+
+/* ══ Mermaid diagrams in the doc viewer ══ */
+.mermaid { text-align: center; margin: var(--sp-3) 0; overflow-x: auto; }
+.mermaid svg { max-width: 100%; height: auto; }

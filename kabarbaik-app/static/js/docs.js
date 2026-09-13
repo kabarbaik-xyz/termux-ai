@@ -28,8 +28,29 @@
     btnSave.classList.remove("hidden");
   }
 
+  /* Upgrade ```mermaid fenced blocks (rendered as <pre><code
+   * class="language-mermaid">) into live diagrams. Mermaid is vendored
+   * locally (no CDN) — if it failed to load, blocks stay as code. */
+  function renderMermaid(scope) {
+    if (!window.mermaid) return;
+    var blocks = (scope || bodyEl).querySelectorAll("pre > code.language-mermaid");
+    if (!blocks.length) return;
+    var nodes = [];
+    blocks.forEach(function (code) {
+      var div = document.createElement("div");
+      div.className = "mermaid";
+      div.textContent = code.textContent;   // raw source, entities intact
+      code.parentNode.replaceChild(div, code);
+      nodes.push(div);
+    });
+    try {
+      window.mermaid.run({ nodes: nodes })["catch"](function () {});
+    } catch (e) { /* leave source visible */ }
+  }
+
   function showView(html) {
     bodyEl.innerHTML = html;
+    renderMermaid();
     bodyEl.classList.remove("hidden");
     editorEl.classList.add("hidden");
     btnEdit.classList.remove("hidden");

@@ -234,7 +234,18 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/mermaid.min.js"></script>
+<script>
+  if (window.mermaid) mermaid.initialize({
+    startOnLoad: false, securityLevel: "loose",
+    theme: "base",
+    themeVariables: {
+      primaryColor: "#faeded", primaryBorderColor: "#a11c1c", primaryTextColor: "#1a1a2e",
+      lineColor: "#a11c1c", fontSize: "14px"
+    }
+  });
+</script>
 <script src="/static/js/editor.js"></script>
-<script src="/static/js/docs.js"></script>
+<script src="/static/js/docs.js?v=2"></script>
 <script src="/static/js/app.js"></script>
 {% endblock %}
