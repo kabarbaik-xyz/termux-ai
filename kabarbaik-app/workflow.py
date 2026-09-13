@@ -258,21 +258,21 @@ def _stage_gate(stage_name: str, root: Path) -> str | None:
     docs = root / "docs"
     if stage_name == "ux_design":
         if not (docs / "prd" / "prd.md").is_file():
-            return ("Blocked: no PRD yet — run 'Initial BRD + PRD' first "
+            return ("Blocked: no PRD yet — run 'Draft the BRD & PRD' first "
                     "(the UX spec must trace every screen to PRD requirements).")
         return None
     if stage_name == "prototype":
         if not ((docs / "ux" / "ux-spec.md").is_file()
                 or (docs / "03-ux-spec.md").is_file()):
-            return ("Blocked: no UX spec — run 'UX Design' first. It produces "
+            return ("Blocked: no UX spec — run 'Design Screens & Style (UX)' first. It produces "
                     "docs/ux/ux-spec.md + design-tokens.json, which the "
                     "prototype skill requires (it will not invent a design).")
         return None
     if stage_name == "qa_spec":
         if not ((docs / "tsd" / "tsd.md").is_file()
                 and (docs / "sad" / "sad.md").is_file()):
-            return ("Blocked: no TSD/SAD yet — run 'Update BRD/PRD + TSD + "
-                    "SAD' first. The QA package must sweep architecture-"
+            return ("Blocked: no TSD/SAD yet — run 'Finalize Docs After "
+                    "Approval' first. The QA package must sweep architecture-"
                     "implied failure modes, not just PRD requirements.")
         return None
     if stage_name != "post_approval":

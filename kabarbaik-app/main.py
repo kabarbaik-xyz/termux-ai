@@ -66,6 +66,17 @@ _seeded_skills = ai_runner.install_team_kit_skills()
 if _seeded_skills:
     print(f"[kit] skills seeded/updated: {', '.join(_seeded_skills)}")
 
+# Hard guarantee: every skill the SDLC flow invokes must resolve in the live
+# dir — a missing one silently degrades stages to template copies.
+for _i, (_stage_name, _label) in enumerate(db.STAGES):
+    _r = workflow.stage_recipe(_i)
+    if _r and _r[0]:
+        _skill_file = settings.AI_SKILLS_DIR / f"{_r[0]}.md"
+        if not _skill_file.is_file():
+            print(f"[kit] ✗ MISSING SKILL '{_r[0]}' (needed by stage "
+                  f"'{_label}') — stages will run WITHOUT it. "
+                  f"Copy team-kit/skills/{_r[0]}.md into {settings.AI_SKILLS_DIR}/")
+
 
 def _active() -> dict:
     try:

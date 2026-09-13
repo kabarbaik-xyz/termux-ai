@@ -4,8 +4,9 @@ A thin orchestration layer over the **termux-ai** `ai` binary that drives the
 **KabarBaik SDLC workflow** described by the team-kit:
 
 ```
-Discovery → Initial BRD + PRD → UX Design (spec + tokens) → Prototype
-→ Proposal → Update BRD/PRD + TSD + SAD → QA Package → Task Breakdown
+Gather Client Requirements → Draft BRD & PRD → Design Screens & Style (UX)
+→ Build the Clickable Prototype → Write the Proposal → Finalize Docs After
+Approval → Prepare the QA Plan → Plan the Development Backlog
 ```
 
 Client feedback arrives via **inbox uploads** (not a stage): upload meeting
@@ -22,14 +23,14 @@ follows — the dashboard shows the live backend/model.
 
 | # | Stage | Skill | Produces (verified) |
 |---|-------|-------|---------------------|
-| 1 | Discovery & Requirement Gathering | `doc-ingest` | `docs/discovery/discovery.md` + SRC files |
-| 2 | Initial BRD + PRD | `discovery` | `docs/brd/brd.md` + `docs/prd/prd.md` — **filled documents following the kit templates**, US-xxx/BO-x IDs |
-| 3 | UX Design (Spec + Tokens) | `ux-design` | `docs/03-ux-spec.md` + `design-tokens.json` |
-| 4 | Prototype | `prototype` | `prototype/` — spec-driven, tokens-only, self-contained HTML |
-| 5 | Proposal | `proposal` | `docs/proposal/proposal-vN.md` (versioned; pricing stays human) |
-| 6 | Update BRD/PRD + TSD + SAD | `tsd-sad` | final `brd.md`/`prd.md` + `docs/tsd/tsd.md` + `docs/sad/sad.md` + ADRs — derived from the **final proposal** (docs/inbox/ first, else proposal-vN) |
-| 7 | QA Package | `qa-spec` | `docs/08-test-cases.md` + `docs/09-acceptance-criteria.md` + `docs/10-corner-cases.md` |
-| 8 | Break Down Development Tasks | `epic-breakdown` | `docs/plan/backlog.md` — consumes the QA package (TC IDs, AC verbatim, P0/P1 risks in DoD) |
+| 1 | Gather Client Requirements | `doc-ingest` | `docs/discovery/discovery.md` + SRC files |
+| 2 | Draft the BRD & PRD | `discovery` | `docs/brd/brd.md` + `docs/prd/prd.md` — **filled documents following the kit templates**, US-xxx/BO-x IDs |
+| 3 | Design Screens & Style (UX) | `ux-design` | `docs/03-ux-spec.md` + `design-tokens.json` |
+| 4 | Build the Clickable Prototype | `prototype` | `prototype/` — spec-driven, tokens-only, self-contained HTML |
+| 5 | Write the Proposal | `proposal` | `docs/proposal/proposal-vN.md` (versioned; pricing stays human) |
+| 6 | Finalize Docs After Approval | `tsd-sad` | final `brd.md`/`prd.md` + `docs/tsd/tsd.md` + `docs/sad/sad.md` + ADRs — derived from the **final proposal** (docs/inbox/ first, else proposal-vN) |
+| 7 | Prepare the QA Plan | `qa-spec` | `docs/08-test-cases.md` + `docs/09-acceptance-criteria.md` + `docs/10-corner-cases.md` |
+| 8 | Plan the Development Backlog | `epic-breakdown` | `docs/plan/backlog.md` — consumes the QA package (TC IDs, AC verbatim, P0/P1 risks in DoD) |
 
 ### What keeps the flow honest
 

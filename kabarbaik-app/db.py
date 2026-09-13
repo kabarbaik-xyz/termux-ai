@@ -19,14 +19,14 @@ import settings
 # prompt recipe in workflow.py. Each stage is started once and flips to "done"
 # when its artifact(s) exist.
 STAGES = [
-    ("discovery", "Discovery & Requirement Gathering"),
-    ("brd_prd", "Initial BRD + PRD"),
-    ("ux_design", "UX Design (Spec + Tokens)"),
-    ("prototype", "Prototype"),
-    ("proposal", "Proposal"),
-    ("post_approval", "Update BRD/PRD + TSD + SAD"),
-    ("qa_spec", "QA Package (TC + AC + Risks)"),
-    ("task_breakdown", "Break Down Development Tasks"),
+    ("discovery", "Gather Client Requirements"),
+    ("brd_prd", "Draft the BRD & PRD"),
+    ("ux_design", "Design Screens & Style (UX)"),
+    ("prototype", "Build the Clickable Prototype"),
+    ("proposal", "Write the Proposal"),
+    ("post_approval", "Finalize Docs After Approval"),
+    ("qa_spec", "Prepare the QA Plan"),
+    ("task_breakdown", "Plan the Development Backlog"),
 ]
 
 STAGE_IDX = {name: i for i, (name, _) in enumerate(STAGES)}
