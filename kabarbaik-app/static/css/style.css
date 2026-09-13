@@ -275,3 +275,6 @@ button:disabled { opacity: .45; }
 /* ══ Mermaid diagrams in the doc viewer ══ */
 .mermaid { text-align: center; margin: var(--sp-3) 0; overflow-x: auto; }
 .mermaid svg { max-width: 100%; height: auto; }
+
+.mermaid-error { background: var(--fail-soft); color: var(--fail); border: 1px dashed var(--fail);
+  border-radius: var(--r-md); padding: 10px 14px; font-size: .82rem; margin: var(--sp-2) 0; }

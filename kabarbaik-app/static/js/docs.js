@@ -29,23 +29,49 @@
   }
 
   /* Upgrade ```mermaid fenced blocks (rendered as <pre><code
-   * class="language-mermaid">) into live diagrams. Mermaid is vendored
-   * locally (no CDN) — if it failed to load, blocks stay as code. */
+   * class="language-mermaid">) into live diagrams. Mermaid 11 is vendored
+   * locally (no CDN) — if it failed to load, blocks stay as code.
+   * Each block is VALIDATED first (mermaid.parse): invalid syntax gets a
+   * readable error card + the source stays visible/copyable, never
+   * mermaid's cryptic 'Syntax error in text' svg. */
+  function diagramSource(raw) {
+    var src = (raw || "").trim();
+    // strip --- frontmatter (title: …) — supported in v11 but a common
+    // cause of confusing failures when copy-pasted into older renderers
+    var fm = src.match(/^---[\s\S]*?---\s*/);
+    if (fm && fm[0].length < 400) src = src.slice(fm[0].length);
+    return src.trim();
+  }
+
   function renderMermaid(scope) {
     if (!window.mermaid) return;
     var blocks = (scope || bodyEl).querySelectorAll("pre > code.language-mermaid");
     if (!blocks.length) return;
     var nodes = [];
     blocks.forEach(function (code) {
+      var src = diagramSource(code.textContent);
+      if (!src) return;
+      var ok = false;
+      try { ok = window.mermaid.parse(src); } catch (e) { ok = false; }
       var div = document.createElement("div");
-      div.className = "mermaid";
-      div.textContent = code.textContent;   // raw source, entities intact
-      code.parentNode.replaceChild(div, code);
-      nodes.push(div);
+      if (ok) {
+        div.className = "mermaid";
+        div.textContent = src;
+        code.parentNode.replaceChild(div, code);
+        nodes.push(div);
+      } else {
+        // keep the source block; add a readable error card above it
+        div.className = "mermaid-error";
+        div.textContent = "⚠ Mermaid could not parse this diagram — the source " +
+          "below is shown as-is. Common fixes: check node labels containing " +
+          "brackets/quotes (wrap in quotes), or simplify the syntax.";
+        code.parentNode.insertBefore(div, code);
+      }
     });
-    try {
-      window.mermaid.run({ nodes: nodes })["catch"](function () {});
-    } catch (e) { /* leave source visible */ }
+    if (nodes.length) {
+      try { window.mermaid.run({ nodes: nodes })["catch"](function () {}); }
+      catch (e) { /* diagrams stay as source */ }
+    }
   }
 
   function showView(html) {
