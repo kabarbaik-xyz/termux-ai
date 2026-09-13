@@ -268,3 +268,11 @@ button:disabled { opacity: .45; }
 .flow-step.pending { border-left-color: var(--border-strong); }
 .flow-step.pending .step-label { color: var(--muted); }
 .flow-step.pending .step-idx { border: 2px solid var(--primary); background: transparent; color: var(--primary); }
+
+/* ══ Inline input rows (Inputs tab) ══ */
+.inline-form { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.inline-form > input { flex: 1 1 180px; min-width: 0; }
+.inline-form > button { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 560px) {
+  .inline-form > button { flex: 1 1 100%; }
+}
