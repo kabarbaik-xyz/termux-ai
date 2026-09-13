@@ -288,3 +288,14 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   gap: var(--sp-2); align-items: center; }
 .binary-card .binary-icon { font-size: 2rem; }
 .binary-card p { margin: 0; }
+
+/* ══ Themed modal (confirm dialogs — never system popups) ══ */
+.modal-overlay { position: fixed; inset: 0; background: rgba(26,26,46,.55);
+  z-index: 80; display: flex; align-items: center; justify-content: center;
+  padding: var(--sp-4); }
+.modal-card { background: var(--surface); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md); max-width: 420px; width: 100%;
+  padding: var(--sp-6); animation: toast-in .18s ease; }
+.modal-card h3 { margin: 0 0 var(--sp-2); }
+.modal-card p { margin: 0 0 var(--sp-4); color: var(--muted); font-size: .9rem; }
+.modal-actions { display: flex; gap: var(--sp-2); justify-content: flex-end; }

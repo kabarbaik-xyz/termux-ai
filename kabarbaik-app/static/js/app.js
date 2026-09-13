@@ -144,13 +144,61 @@
     }
   }
 
-  /* ── Confirm destructive actions ────────────────────────────────── */
+  /* ── Themed confirm dialog (no system modals anywhere) ─────────── */
+  function esc(t) {
+    var d = document.createElement("div");
+    d.textContent = t == null ? "" : String(t);
+    return d.innerHTML;
+  }
+  function kbConfirm(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var ov = document.createElement("div");
+      ov.className = "modal-overlay";
+      ov.innerHTML =
+        '<div class="modal-card" role="dialog" aria-modal="true">' +
+        "<h3>" + esc(opts.title || "Please confirm") + "</h3>" +
+        "<p>" + esc(opts.message || "This cannot be undone.") + "</p>" +
+        '<div class="modal-actions">' +
+        '<button type="button" class="btn" data-act="cancel">Cancel</button>' +
+        '<button type="button" class="' + (opts.danger ? "danger" : "primary") +
+        '" data-act="ok">' + esc(opts.okLabel || "Confirm") + "</button>" +
+        "</div></div>";
+      function close(val) {
+        ov.remove();
+        document.removeEventListener("keydown", onKey);
+        resolve(val);
+      }
+      function onKey(e) { if (e.key === "Escape") close(false); }
+      ov.addEventListener("click", function (e) {
+        if (e.target === ov) return close(false);
+        var b = e.target.closest("[data-act]");
+        if (b) close(b.dataset.act === "ok");
+      });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(ov);
+      ov.querySelector('[data-act="ok"]').focus();
+    });
+  }
+  window.kbConfirm = kbConfirm;
+
   document.addEventListener("submit", function (ev) {
     var form = ev.target;
-    if (form.matches('form[action*="/admin/reset"]') || form.matches("form[data-confirm]")) {
-      var msg = form.dataset.confirm || "This cannot be undone. Continue?";
-      if (!window.confirm(msg)) ev.preventDefault();
-    }
+    if (!(form.matches('form[action*="/admin/reset"]') || form.matches("form[data-confirm]"))) return;
+    if (form.dataset.confirmed === "1") { form.dataset.confirmed = ""; return; }  // re-submitted by us
+    ev.preventDefault();
+    var msg = form.dataset.confirm || "This cannot be undone. Continue.";
+    var isReset = form.matches('form[action*="/admin/reset"]');
+    kbConfirm({
+      title: isReset ? "Wipe ALL data?" : "Please confirm",
+      message: msg,
+      okLabel: isReset ? "Yes, wipe everything" : "Confirm",
+      danger: isReset
+    }).then(function (ok) {
+      if (!ok) return;
+      form.dataset.confirmed = "1";
+      if (form.requestSubmit) form.requestSubmit(); else form.submit();
+    });
   });
 
   var done = document.querySelector("[data-ran-stage]");
