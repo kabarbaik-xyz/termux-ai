@@ -13,4 +13,4 @@ Language: <EN/ID — match client>
 IN: / OUT: (equally binding)
 ## 6. Assumptions & Constraints (budget/timeline/compliance — each ASSUMED or [SRC-n])
 ## 7. Risks (business-level)
-## 8. Open Questions (from discovery — resolved/carry-forward status)
+## 8. Assumptions & Decisions (numbered — what was assumed, the decision, one-line rationale; no open questions)

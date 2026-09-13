@@ -10,5 +10,5 @@ Language: <EN/ID — match client>
 |        |         |                    |                | must/should/could |
 ## 4. Per-Screen Wireframe Description (regions top-to-bottom; empty/loading/error/populated states; concrete enough for `prototype` to build without guessing)
 ## 5. Design Tokens (uses existing design-tokens.json — do not restate; only note deviations)
-## 6. Open Questions for the Client (3–7 items — what the client presentation must resolve)
+## 6. Assumptions & Decisions (3–7 numbered — what was assumed, the decision, one-line rationale; no open questions)
 Golden rules: no screen without a PRD requirement · diagrams over prose · spec only, no code.

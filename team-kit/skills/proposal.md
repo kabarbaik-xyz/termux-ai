@@ -40,3 +40,16 @@ tables + Mermaid). Obey exactly:
   Fence counts must balance — every opening ``` has a closing ```.
 - Lists start with `- `; emphasis `**bold**` / `*italic*`; no tab indentation
   anywhere (spaces only).
+
+## Non-interactive mode (mandatory)
+
+This skill runs inside an automated SDLC pipeline — **no user is present**.
+Never ask questions, never end a document with unresolved items, never wait
+for clarification. When references are ambiguous or silent:
+1. **Decide** — pick the most reasonable interpretation, consistent with the
+   other documents, templates and skills.
+2. **Record it** — as a numbered entry in the doc's *Assumptions & Decisions*
+   section: what was assumed, the decision made, one line of rationale.
+3. **Deliver complete** — the stage output must be final: no "TBD", no
+   "to be confirmed", no open questions. Assumptions are how you stay honest
+   without stalling the pipeline.

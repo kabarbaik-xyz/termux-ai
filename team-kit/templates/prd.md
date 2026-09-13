@@ -12,5 +12,5 @@ Language: <EN/ID>
 - Given … When … Then …
 ## 4. Non-functional (perf, a11y baseline, browser matrix, uptime)
 ## 5. Scope IN/OUT (delta vs BRD, if any)
-## 6. Open Questions
+## 6. Assumptions & Decisions (numbered — what was assumed, the decision, one-line rationale; no open questions)
 ## CHANGELOG (one line per CR: date · CR-xxx · accepted/deferred)

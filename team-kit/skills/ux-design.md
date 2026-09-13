@@ -13,8 +13,9 @@ guess.
 ## Inputs (read first, in this order)
 
 1. `docs/02-PRD.md` (or the nearest PRD-equivalent doc in `docs/`) — required.
-   If missing, ask the user where the PRD lives, or offer to run the
-   `requirements` skill first.
+   If missing, use the nearest PRD-equivalent in docs/ (e.g. docs/prd/prd.md);
+   if truly absent, proceed from discovery sources and record the substitution
+   as an assumption.
 2. `docs/00-discovery-notes.md`, if present — mine it for anything about users,
    devices, accessibility needs, or existing brand/style constraints that
    didn't make it into the PRD verbatim.
@@ -66,9 +67,9 @@ If `design-tokens.json` doesn't exist yet, propose one now (see schema below)
 and write it. If it exists, reference it — don't restate its contents in the
 spec, just note "uses existing design-tokens.json."
 
-### 6. Open questions for the client
-A short bullet list — this is the section stage 3c (client presentation)
-exists to resolve. Keep it tight; 3–7 items, not a wall of caveats.
+### 6. Assumptions & Decisions
+Numbered — each: what was assumed, the decision made, one line of rationale.
+3–7 entries; this is how the spec stays decisive without a live client.
 
 ## Design tokens (`design-tokens.json`)
 
@@ -121,6 +122,19 @@ tables + Mermaid). Obey exactly:
   Fence counts must balance — every opening ``` has a closing ```.
 - Lists start with `- `; emphasis `**bold**` / `*italic*`; no tab indentation
   anywhere (spaces only).
+
+## Non-interactive mode (mandatory)
+
+This skill runs inside an automated SDLC pipeline — **no user is present**.
+Never ask questions, never end a document with unresolved items, never wait
+for clarification. When references are ambiguous or silent:
+1. **Decide** — pick the most reasonable interpretation, consistent with the
+   other documents, templates and skills.
+2. **Record it** — as a numbered entry in the doc's *Assumptions & Decisions*
+   section: what was assumed, the decision made, one line of rationale.
+3. **Deliver complete** — the stage output must be final: no "TBD", no
+   "to be confirmed", no open questions. Assumptions are how you stay honest
+   without stalling the pipeline.
 
 ## Activation
 

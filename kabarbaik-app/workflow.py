@@ -80,12 +80,15 @@ def stage_recipe(stage_index: int) -> tuple:
             "with your file tool), *.extracted.md sidecars (pre-extracted text "
             "from rtf/eml/legacy formats — cite the ORIGINAL file name), and "
             "link-*.md / gdoc-*.md link notes (fetch the URL if public, else "
-            "flag as an open question). Produce docs/<phase>/<slug>.md files with SRC-<n> headers, "
-            "docs/<phase>/index.md, and an Open Questions section per source. "
+            "record it as a documented assumption). Produce "
+            "docs/<phase>/<slug>.md files with SRC-<n> headers, "
+            "docs/<phase>/index.md, and an Assumptions & Decisions section "
+            "per source (numbered: what was assumed, the decision, rationale). "
             "Then produce docs/discovery/discovery.md (executive summary, "
-            "stakeholders, current state, pain points, scope IN/OUT, assumptions, "
-            "OPEN QUESTIONS, glossary) and docs/discovery/index.md citing each SRC. "
-            "Do NOT invent content; mark scans [SCAN] and gaps as open questions.\n"
+            "stakeholders, current state, pain points, scope IN/OUT, "
+            "ASSUMPTIONS & DECISIONS, glossary) and docs/discovery/index.md "
+            "citing each SRC. Do NOT invent content; mark scans [SCAN] and "
+            "gaps as documented ASSUMPTIONS — decide, never defer.\n"
             "The client speaks Indonesian or English — match their language.",
         ),
         1: (
@@ -100,8 +103,9 @@ def stage_recipe(stage_index: int) -> tuple:
             "not template copies; NONE of the template's placeholder text may "
             "remain. PRD: assign US-xxx IDs with acceptance criteria. BRD: "
             "business objectives BO-x. Both: header version=v1.0 sources=[SRC-n], "
-            "scope OUT as binding as IN, numbered OPEN QUESTIONS for the next "
-            "client meeting. Do not invent content — gaps become open questions.",
+            "scope OUT as binding as IN, numbered ASSUMPTIONS & DECISIONS "
+            "(what was assumed, the decision, one-line rationale). Do not "
+            "invent content — gaps become documented assumptions.",
         ),
         2: (
             "ux-design",
@@ -113,8 +117,8 @@ def stage_recipe(stage_index: int) -> tuple:
             "Produce docs/ux/ux-spec.md with ALL 6 sections of the skill (scope & "
             "assumptions, Mermaid user flows, screen inventory traced to PRD "
             "requirements, per-screen wireframes with states, design tokens, "
-            "client open questions) and design-tokens.json at the project root. "
-            "SPEC ONLY — no code. If docs/03-ux-spec.md already exists, lead "
+            "assumptions & decisions) and design-tokens.json at the project root. "
+            "SPEC ONLY — no code. If docs/ux/ux-spec.md already exists, lead "
             "with what changed this round.",
         ),
         3: (
