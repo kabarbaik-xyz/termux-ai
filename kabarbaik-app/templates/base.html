@@ -4,13 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}KabarBaik SDLC{% endblock %}</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=3">
+  <link rel="icon" type="image/svg+xml" href="/static/images/kb-logo.svg">
+  <link rel="stylesheet" href="/static/css/style.css?v=4">
   {% block head %}{% endblock %}
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/">KabarBaik <span>SDLC</span></a>
+      <a class="brand" href="/">
+        <img class="logo" src="/static/images/kb-logo.svg" alt="KabarBaik logo">
+        KabarBaik <span>SDLC</span>
+      </a>
       <nav>
         <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}">Dashboard</a>
         <a href="/clients" class="{{ 'active' if request.url.path.startswith('/clients') else '' }}">Clients</a>
