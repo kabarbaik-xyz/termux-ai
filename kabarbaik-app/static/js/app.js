@@ -136,26 +136,11 @@
   var live = document.getElementById("live-run");
   if (live && window.EventSource && !activeStream) {
     var pidMatch = /\/projects\/(\d+)/.exec(window.location.pathname);
-    if (pidMatch) {
-      var stageName = live.dataset.stage;
-      document.querySelectorAll(".flow-step").forEach(function (stp) {
-        var lbl = stp.querySelector(".step-label");
-        if (lbl && lbl.textContent.trim() === stageName) stp.classList.add("running");
-      });
-      // find the stage index from the first matching form action
-      var idx = null;
-      document.querySelectorAll('form[action*="/stage/"]').forEach(function (f) {
-        var im = /\/stage\/(\d+)/.exec(f.getAttribute("action") || "");
-        if (im && idx === null) {
-          var stp = f.closest(".flow-step");
-          var lbl = stp && stp.querySelector(".step-label");
-          if (lbl && lbl.textContent.trim() === stageName) idx = im[1];
-        }
-      });
-      if (idx !== null) {
-        document.querySelectorAll('form[action*="/stage/"] button').forEach(function (b) { b.disabled = true; });
-        openStream("/projects/" + pidMatch[1] + "/stage/" + idx + "/stream", stageName);
-      }
+    var idx = live.dataset.stageIndex;   // server-rendered — always correct
+    if (pidMatch && idx !== undefined && idx !== "") {
+      document.querySelectorAll('form[action*="/stage/"] button').forEach(function (b) { b.disabled = true; });
+      openStream("/projects/" + pidMatch[1] + "/stage/" + idx + "/stream",
+                 live.dataset.stage || "stage");
     }
   }
 

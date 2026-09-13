@@ -247,3 +247,12 @@ h3.mt { margin-top: var(--sp-6); }
 .count-chip { background: var(--primary-soft); color: var(--primary-hover); font-size: .7rem; font-weight: 700; border-radius: var(--r-pill); padding: 1px 8px; }
 
 .empty.small { padding: var(--sp-6) var(--sp-4); font-size: .88rem; }
+
+/* ══ Running-step spinner (works on refresh, server-rendered) ══ */
+.step-idx.spinner {
+  background: var(--run-soft); border: 2px solid var(--run);
+  border-right-color: transparent; border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+.flow-step.running .badge.run { background: var(--run-soft); color: var(--run); }
+button:disabled { opacity: .45; }

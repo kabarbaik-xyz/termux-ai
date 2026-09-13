@@ -296,6 +296,12 @@ def running_stage(pid: int) -> str | None:
     return None if not st or st["done"] else st.get("stage")
 
 
+def running_stage_index(pid: int) -> int | None:
+    """Index of the currently running stage (or None) — for templates."""
+    st = _RUN_STATE.get(pid)
+    return None if not st or st["done"] else st.get("stage_index")
+
+
 def start_stage_run(project: dict, stage_index: int, timeout: float = 900.0) -> dict:
     """Get (or start) the live run state for a project.
 

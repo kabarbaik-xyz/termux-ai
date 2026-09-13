@@ -187,6 +187,7 @@ async def project_detail(request: Request, pid: int):
     ctx["fresh_stage"] = fresh["stage"]
     ctx["tokens"] = db.project_token_usage(pid)
     ctx["running_stage"] = workflow.running_stage(pid)
+    ctx["running_stage_idx"] = workflow.running_stage_index(pid)
     return templates.TemplateResponse(request, "project_detail.html", ctx)
 
 
@@ -253,6 +254,7 @@ async def run_stage(project_request: Request, pid: int, stage_index: int):
     ctx["fresh_stage"] = workflow.refresh_artifact_state(db.get_project(pid))["stage"]
     ctx["tokens"] = db.project_token_usage(pid)
     ctx["running_stage"] = workflow.running_stage(pid)
+    ctx["running_stage_idx"] = workflow.running_stage_index(pid)
     return templates.TemplateResponse(project_request, "project_detail.html", ctx)
 
 

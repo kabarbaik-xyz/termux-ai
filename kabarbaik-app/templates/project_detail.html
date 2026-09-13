@@ -23,8 +23,8 @@
   <a href="#tokens">Tokens</a>
 </nav>
 
-{% if running_stage is defined and running_stage is not none %}
-<div id="live-run" data-stage="{{ running_stage }}"></div>
+{% if running_stage_idx is defined and running_stage_idx is not none %}
+<div id="live-run" data-stage="{{ running_stage }}" data-stage-index="{{ running_stage_idx }}"></div>
 {% endif %}
 {% if ran_stage is defined %}
 <div data-ran-stage="{{ stages[ran_stage][1] }}" data-ran-ok="{{ 1 if stage_runs[stages[ran_stage][0]].status == 'ok' else 0 }}"></div>
@@ -62,9 +62,13 @@
   <h2>SDLC Flow</h2>
   <ol class="flow">
     {% for name, label in stages %}
-    <li class="flow-step {{ 'done' if stage_idx[name] < fresh_stage else ('current' if stage_idx[name] == fresh_stage else '') }}">
+    <li class="flow-step {{ 'done' if stage_idx[name] < fresh_stage else ('current' if stage_idx[name] == fresh_stage else '') }}{{ ' running' if running_stage_idx is defined and running_stage_idx == stage_idx[name] else '' }}">
       <div class="step-head">
+        {% if running_stage_idx is defined and running_stage_idx == stage_idx[name] %}
+        <span class="step-idx spinner" aria-label="running"></span>
+        {% else %}
         <span class="step-idx">{{ loop.index }}</span>
+        {% endif %}
         <span class="step-label">{{ label }}</span>
         {% if stage_runs[name].status == 'ok' %}<span class="badge ok">done</span>
         {% elif stage_runs[name].status == 'running' %}<span class="badge run">running</span>
@@ -72,15 +76,15 @@
         <div class="step-actions">
         {% if stage_idx[name] == fresh_stage %}
         <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
-          <button type="submit" class="btn-small primary">Run stage →</button>
+          <button type="submit" class="btn-small primary" {{ 'disabled' if running_stage_idx is defined and running_stage_idx is not none else '' }}>Run stage →</button>
         </form>
         {% elif stage_idx[name] > fresh_stage %}
         <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
-          <button type="submit" class="btn-small">Run stage</button>
+          <button type="submit" class="btn-small" {{ 'disabled' if running_stage_idx is defined and running_stage_idx is not none else '' }}>Run stage</button>
         </form>
         {% else %}
         <form method="post" action="/projects/{{ project.id }}/stage/{{ stage_idx[name] }}">
-          <button type="submit" class="btn-small ghost" title="Re-run this stage (loop until solid)">↻ Re-run</button>
+          <button type="submit" class="btn-small ghost" title="Re-run this stage (loop until solid)" {{ 'disabled' if running_stage_idx is defined and running_stage_idx is not none else '' }}>↻ Re-run</button>
         </form>
         {% endif %}
         </div>
