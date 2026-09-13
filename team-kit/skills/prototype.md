@@ -1,6 +1,6 @@
 ---
 name: prototype
-description: Build a self-contained, client-presentable HTML/CSS/JS prototype from a UX spec + PRD. Use after ux-design has produced docs/03-ux-spec.md. Triggers on "build the prototype", "make it clickable", "turn the wireframes into a demo".
+description: Build a self-contained, client-presentable HTML/CSS/JS prototype from a UX spec + PRD. Use after ux-design has produced docs/ux/ux-spec.md. Triggers on "build the prototype", "make it clickable", "turn the wireframes into a demo".
 mode: session
 ---
 
@@ -14,7 +14,7 @@ Requires Build mode (`/tools on`) — you will be writing files.
 
 ## Inputs (read first, in this order)
 
-1. `docs/03-ux-spec.md` — required. This is your build spec: screen inventory,
+1. `docs/ux/ux-spec.md` — required. This is your build spec: screen inventory,
    per-screen wireframe descriptions, user flows.
 2. `design-tokens.json` — required for styling. **Do not invent colors,
    fonts, or spacing that aren't in this file.** If it's missing, stop and
@@ -41,7 +41,7 @@ Write to a `prototype/` folder at the project root:
   with no server and no internet connection.
 
 Every screen must:
-- Match its wireframe description in `docs/03-ux-spec.md` region-by-region
+- Match its wireframe description in `docs/ux/ux-spec.md` region-by-region
 - Link to the other screens the user flow diagrams say it connects to, so a
   client can actually click through the journey, not just view static pages
 - Use realistic placeholder content (real-looking names/copy, not "Lorem

@@ -275,6 +275,14 @@ def index_artifacts(project_id: int) -> dict:
         files = sorted(f for f in folder.iterdir() if f.is_file() and not f.name.startswith("."))
         if files:
             out[folder.name] = [f.name for f in files]
+    # The prototype skill writes to prototype/ at the PROJECT ROOT (outside
+    # docs/) — merge it into the board so it shows in the Documents tab.
+    root_proto = docs.parent / "prototype"
+    if root_proto.is_dir():
+        names = sorted(f.name for f in root_proto.rglob("*")
+                       if f.is_file() and not f.name.startswith("."))
+        if names:
+            out["prototype"] = sorted(set(out.get("prototype", [])) | set(names))
     return out
 
 

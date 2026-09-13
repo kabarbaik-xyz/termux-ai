@@ -17,7 +17,7 @@ the full picture, not one document in isolation:
 
 1. `docs/02-PRD.md` (or the finalized version, e.g. `docs/05-PRD-final.md`
    if the loop has completed) — the requirement source of truth
-2. `docs/03-ux-spec.md` — screens, flows, and states (empty/loading/error)
+2. `docs/ux/ux-spec.md` — screens, flows, and states (empty/loading/error)
 3. `prototype/` folder, especially `prototype/README.md` — pay particular
    attention to anything listed there as "deliberately left unresolved
    pending client input." Those are pre-flagged risk, not an oversight —
@@ -29,8 +29,8 @@ the full picture, not one document in isolation:
 5. `docs/04-proposal.md` (or equivalent) — scope boundaries. Anything
    explicitly marked out-of-scope should be excluded from AC, not silently
    tested anyway.
-6. If this is a loop re-run: the existing `docs/08-test-cases.md` /
-   `docs/09-acceptance-criteria.md` / `docs/10-corner-cases.md` — diff
+6. If this is a loop re-run: the existing `docs/qa/test-cases.md` /
+   `docs/qa/acceptance-criteria.md` / `docs/qa/corner-cases.md` — diff
    mentally against what changed upstream, don't regenerate wholesale.
 
 Use `read_file` / `search_files` / `list_files` in your first one or two
@@ -42,7 +42,7 @@ Three linked docs. Cross-reference between them with requirement/screen IDs
 so a developer can jump from a task to its test cases to its known risks
 without re-reading everything.
 
-### `docs/08-test-cases.md`
+### `docs/qa/test-cases.md`
 
 Grouped by screen/flow (matching the UX spec's screen inventory), then by
 feature within each screen. For every "must" and "should" item in the PRD:
@@ -57,7 +57,7 @@ feature within each screen. For every "must" and "should" item in the PRD:
 - Reference the prototype's actual screen files/states where relevant, so
   a tester can literally open `prototype/checkout.html` and follow along
 
-### `docs/09-acceptance-criteria.md`
+### `docs/qa/acceptance-criteria.md`
 
 One section per Epic/feature (use the same grouping Task Breakdown will use
 in stage 6, so they line up 1:1 later):
@@ -68,13 +68,13 @@ in stage 6, so they line up 1:1 later):
   of guessing
 - **Definition of Done** checklist per Epic — code reviewed, unit/integration
   tests passing, matches design tokens from `design-tokens.json`, no P0/P1
-  corner cases from `docs/10-corner-cases.md` left unaddressed, accessibility
+  corner cases from `docs/qa/corner-cases.md` left unaddressed, accessibility
   pass (keyboard nav, contrast) if the PRD/UX spec calls for it, docs updated
 - Keep DoD generic enough to reuse across Epics but specific enough to be
   checkable — "tested" is not checkable, "TC-CHECKOUT-01 through 06 passing"
   is
 
-### `docs/10-corner-cases.md`
+### `docs/qa/corner-cases.md`
 
 This is the doc that gives Dev pre-emptive visibility — write it like a risk
 register, not a checklist:

@@ -30,8 +30,8 @@ def refresh_artifact_state(project: dict) -> dict:
     root = db.project_dir(project)
     docs = root / "docs"
     has = {}
-    for folder in ("inbox", "discovery", "brd", "prd", "prototype",
-                   "proposal", "tsd", "sad", "plan", "reports"):
+    for folder in ("inbox", "discovery", "brd", "prd", "ux", "prototype",
+                   "proposal", "tsd", "sad", "plan", "qa", "reports"):
         has[folder] = _folder_has_files(docs / folder)
 
     # Advance to the furthest completed stage.
@@ -42,7 +42,7 @@ def refresh_artifact_state(project: dict) -> dict:
         stage = 1
     if has["brd"] and has["prd"]:
         stage = 2
-    if (docs / "03-ux-spec.md").is_file():
+    if (docs / "ux" / "ux-spec.md").is_file() or (docs / "03-ux-spec.md").is_file():
         stage = 3
     if has["prototype"] or _folder_has_files(root / "prototype"):
         stage = 4
@@ -50,8 +50,8 @@ def refresh_artifact_state(project: dict) -> dict:
         stage = 5
     if has["tsd"] and has["sad"]:
         stage = 5
-    if (_folder_has_files(docs, "08-test-cases.md")
-            and _folder_has_files(docs, "10-corner-cases.md")):
+    if (_folder_has_files(docs / "qa")
+            or _folder_has_files(docs, "08-test-cases.md")):
         stage = 6
     if has["plan"]:
         stage = 7
@@ -109,7 +109,7 @@ def stage_recipe(stage_index: int) -> tuple:
             "Follow the ux-design skill. Inputs: the PRD at docs/prd/prd.md "
             "(this project's equivalent of docs/02-PRD.md — required) and "
             "discovery notes at docs/discovery/discovery.md. Produce "
-            "docs/03-ux-spec.md with ALL 6 sections of the skill (scope & "
+            "docs/ux/ux-spec.md with ALL 6 sections of the skill (scope & "
             "assumptions, Mermaid user flows, screen inventory traced to PRD "
             "requirements, per-screen wireframes with states, design tokens, "
             "client open questions) and design-tokens.json at the project root. "
@@ -119,11 +119,16 @@ def stage_recipe(stage_index: int) -> tuple:
         3: (
             "prototype",
             "on",
-            "Follow the prototype skill — build the clickable demo FROM the "
-            "spec: docs/03-ux-spec.md is your build spec and "
-            "design-tokens.json your only styling source (never invent "
-            "tokens). Functional detail the spec references but doesn't "
-            "spell out comes from docs/prd/prd.md. Output to prototype/ at "
+            "Follow the prototype skill — build the clickable demo strictly "
+            "FROM the UX Design output: docs/ux/ux-spec.md is your build "
+            "spec (screen inventory, per-screen wireframes region-by-region, "
+            "user flows, states) and design-tokens.json your ONLY styling "
+            "source (never invent tokens). Consider ALL reference documents "
+            "for content and functional detail: docs/prd/prd.md (copy, "
+            "validation, business rules), docs/brd/brd.md, "
+            "docs/discovery/discovery.md — where they conflict, the UX "
+            "spec's structure wins and deviations are flagged in the "
+            "handoff. Output to prototype/ at "
             "the project root: index.html linking every inventory screen, "
             "one file per screen, shared styles.css from token custom "
             "properties, app.js only if needed — vanilla, self-contained, "
@@ -171,16 +176,17 @@ def stage_recipe(stage_index: int) -> tuple:
             "on",
             "Follow the qa-spec skill. Inputs (read all before writing): the "
             "final PRD at docs/prd/prd.md, the UX spec at docs/03-ux-spec.md, "
-            "the prototype in prototype/ or docs/prototype/ (its README.md or "
+            "the UX spec at docs/ux/ux-spec.md, the prototype in prototype/ "
+            "or docs/prototype/ (its README.md or "
             "handoff.md — carry anything marked unresolved into corner cases), "
             "docs/tsd/tsd.md + docs/sad/sad.md (architecture-implied failure "
             "modes), and docs/proposal/proposal-vN.md (highest N — respect "
             "scope boundaries). Produce the three linked docs per the skill: "
-            "docs/08-test-cases.md (TC-xxx grouped by screen/flow, positive "
+            "docs/qa/test-cases.md (TC-xxx grouped by screen/flow, positive "
             "AND negative side by side, PRD refs, P0/P1/P2), "
-            "docs/09-acceptance-criteria.md (Given/When/Then per Epic + "
+            "docs/qa/acceptance-criteria.md (Given/When/Then per Epic + "
             "checkable DoD — use the same Epic grouping Task Breakdown will "
-            "use next so they line up 1:1), docs/10-corner-cases.md (risk "
+            "use next so they line up 1:1), docs/qa/corner-cases.md (risk "
             "heat map + corner-case catalog + known deferred risk). Trace "
             "everything to a source; flag ambiguity, never guess.",
         ),
@@ -195,9 +201,9 @@ def stage_recipe(stage_index: int) -> tuple:
             "dependencies, estimate range, suggested role) and the traceability "
             "matrix PRD req → US-xx → SC-xx → component → test file. CONSUME "
             "the QA package: attach TC-xxx IDs to stories from "
-            "docs/08-test-cases.md, use the Given/When/Then AC verbatim from "
-            "docs/09-acceptance-criteria.md (same Epic grouping), and carry "
-            "P0/P1 items from docs/10-corner-cases.md into story DoD / risk "
+            "docs/qa/test-cases.md, use the Given/When/Then AC verbatim from "
+            "docs/qa/acceptance-criteria.md (same Epic grouping), and carry "
+            "P0/P1 items from docs/qa/corner-cases.md into story DoD / risk "
             "notes — ready for the development phase.",
         ),
     }
@@ -210,13 +216,13 @@ def stage_recipe(stage_index: int) -> tuple:
 STAGE_ARTIFACTS = {
     "discovery": ["docs/discovery/discovery.md"],
     "brd_prd": ["docs/brd/brd.md", "docs/prd/prd.md"],
-    "ux_design": ["docs/03-ux-spec.md", "design-tokens.json"],
+    "ux_design": ["docs/ux/ux-spec.md", "design-tokens.json"],
     # prototype: new skill writes prototype/ at root; legacy runs wrote docs/prototype/
     "prototype": ["prototype/", "docs/prototype/"],
     "proposal": ["docs/proposal/"],
     "post_approval": ["docs/tsd/tsd.md", "docs/sad/sad.md"],
-    "qa_spec": ["docs/08-test-cases.md", "docs/09-acceptance-criteria.md",
-                "docs/10-corner-cases.md"],
+    "qa_spec": ["docs/qa/test-cases.md", "docs/qa/acceptance-criteria.md",
+                "docs/qa/corner-cases.md"],
     "task_breakdown": ["docs/plan/backlog.md"],
 }
 
@@ -251,9 +257,10 @@ def _stage_gate(stage_name: str, root: Path) -> str | None:
                     "(the UX spec must trace every screen to PRD requirements).")
         return None
     if stage_name == "prototype":
-        if not (docs / "03-ux-spec.md").is_file():
+        if not ((docs / "ux" / "ux-spec.md").is_file()
+                or (docs / "03-ux-spec.md").is_file()):
             return ("Blocked: no UX spec — run 'UX Design' first. It produces "
-                    "docs/03-ux-spec.md + design-tokens.json, which the "
+                    "docs/ux/ux-spec.md + design-tokens.json, which the "
                     "prototype skill requires (it will not invent a design).")
         return None
     if stage_name == "qa_spec":
@@ -499,8 +506,8 @@ def _scaffold_docs(root: Path) -> None:
     document templates are seeded by the stage that consumes them (see
     _seed_templates), so e.g. running Discovery never drops BRD/PRD files
     that look like an auto-triggered stage 2."""
-    for folder in ("inbox", "discovery", "brd", "prd", "prototype",
-                   "proposal", "tsd", "sad", "plan", "reports"):
+    for folder in ("inbox", "discovery", "brd", "prd", "ux", "prototype",
+                   "proposal", "tsd", "sad", "plan", "qa", "reports"):
         (root / "docs" / folder).mkdir(parents=True, exist_ok=True)
 
 

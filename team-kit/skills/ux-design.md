@@ -21,7 +21,7 @@ guess.
 3. `design-tokens.json` at the project root, if present — see "Design tokens"
    below. **Never regenerate this file if it already exists** unless the user
    explicitly asks for a visual-identity change.
-4. Any existing `docs/03-ux-spec.md` — if this is a loop re-run, diff against
+4. Any existing `docs/ux/ux-spec.md` — if this is a loop re-run, diff against
    it mentally: only change what the updated PRD/discovery notes actually
    affect. State explicitly what changed and why at the top of your output
    (a short "Changes this round" list), so the client-facing diff is legible
@@ -34,7 +34,7 @@ brand/style conventions before inventing your own.
 
 ## What you produce
 
-Write **`docs/03-ux-spec.md`** with these sections, in this order:
+Write **`docs/ux/ux-spec.md`** with these sections, in this order:
 
 ### 1. Scope & assumptions
 One paragraph. What PRD version this spec is built from, and any assumptions
