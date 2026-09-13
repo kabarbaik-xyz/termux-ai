@@ -83,21 +83,60 @@
     btnSave.classList.add("hidden");
   }
 
+  function toast(text, kind) {
+    if (window.kbToast) window.kbToast(text, kind || "err", 5000);
+  }
+
+  function esc(t) {
+    var d = document.createElement("div");
+    d.textContent = t == null ? "" : String(t);
+    return d.innerHTML;
+  }
+
+  function showBinary(doc, path) {
+    currentPath = null;               // binary files are not editable here
+    titleEl.textContent = doc.name;
+    viewer.classList.remove("hidden");
+    bodyEl.innerHTML =
+      '<div class="binary-card">' +
+      '<div class="binary-icon">📦</div>' +
+      '<p><strong>' + esc(doc.name) + '</strong> is a binary file (' +
+      esc((doc.ext || "").replace(".", "").toUpperCase()) + " · " + esc(doc.size || "?") +
+      ') and can\u2019t be previewed in the document viewer.</p>' +
+      '<p class="hint">The AI reads it directly during stages — this is only a preview limitation.</p>' +
+      '<a class="btn primary" href="/docs/download?pid=' + findPid() +
+      "&path=" + encodeURIComponent(path) + '">Download file</a>' +
+      "</div>";
+    bodyEl.classList.remove("hidden");
+    editorEl.classList.add("hidden");
+    btnEdit.classList.add("hidden");
+    btnSave.classList.add("hidden");
+  }
+
   document.addEventListener("click", function (ev) {
     var link = ev.target.closest ? ev.target.closest("a.doc-link") : null;
     if (!link) return;
     ev.preventDefault();
     var path = link.getAttribute("data-path");
+    var name = link.textContent.trim();
     fetch("/docs/read?pid=" + findPid() + "&path=" + encodeURIComponent(path))
-      .then(function (r) { if (!r.ok) throw new Error("not found"); return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
       .then(function (doc) {
-        currentPath = path;
-        titleEl.textContent = doc.name;
         viewer.classList.remove("hidden");
-        showView(doc.html);
+        if (doc.binary) { showBinary(doc, path); }
+        else {
+          currentPath = path;
+          titleEl.textContent = doc.name;
+          showView(doc.html);
+        }
         if (window.location.hash !== "#docs") window.location.hash = "#docs";
       })
-      .catch(function (e) { alert("Could not load document: " + e.message); });
+      .catch(function (e) {
+        toast("Could not load " + name + " — " + e.message, "err");
+      });
   });
 
   if (btnEdit) btnEdit.addEventListener("click", function () {
@@ -119,7 +158,7 @@
           .then(function (doc) { showView(doc.html); })
           .catch(function () { showView("<p>saved</p>"); });
       })
-      .catch(function (e) { alert("Save failed: " + e.message); });
+      .catch(function (e) { toast("Save failed — " + e.message, "err"); });
   });
 
   // Carry the raw markdown over between edit/view toggles.

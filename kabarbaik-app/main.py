@@ -558,15 +558,60 @@ async def add_note(
 # Docs CRUD (WYSIWYG ↔ markdown)
 # ----------------------------------------------------------------------------
 
+# Extensions the viewer renders as text/markdown. Everything else gets the
+# binary card (download offered) — never a UnicodeDecodeError 500.
+TEXT_EXTS = {".md", ".markdown", ".txt", ".csv", ".json", ".log", ".yml",
+             ".yaml", ".xml", ".ini", ".cfg", ".toml", ".html", ".htm"}
+
+
+def _fmt_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+    return f"{n} B"
+
+
 @app.get("/docs/read")
 def doc_read(pid: int = 0, path: str = ""):
     project = _project_or_404(pid)
     safe = _safe_doc_path(project, path)
     if not safe.is_file():
         raise HTTPException(404, "Document not found")
-    text = safe.read_text(encoding="utf-8")
+    ext = safe.suffix.lower()
+    size = safe.stat().st_size
+
+    if ext not in TEXT_EXTS:
+        # Binary (xlsx/docx/pdf/…) — never decode; the viewer shows a
+        # themed card with a download link instead.
+        return JSONResponse({"name": nice_name(safe), "path": path,
+                             "binary": True, "ext": ext,
+                             "size": _fmt_size(size)})
+
+    # Text-ish: replace undecodable bytes instead of crashing.
+    text = safe.read_text(encoding="utf-8", errors="replace")
+    if ext in (".html", ".htm", ".xml"):
+        # Show markup SOURCE, not rendered tags (markdown would pass HTML
+        # straight through and wreck the page).
+        text = "```html\n" + text + "\n```"
     return JSONResponse({"name": nice_name(safe), "path": path,
-                          "markdown": text, "html": _md(text)})
+                         "binary": False,
+                         "markdown": text, "html": _md(text)})
+
+
+@app.get("/docs/download")
+def doc_download(request: Request, pid: int = 0, path: str = ""):
+    """Serve any artifact as a file download (binary formats, originals)."""
+    import mimetypes
+    from fastapi.responses import FileResponse
+    _auth(request)
+    project = _project_or_404(pid)
+    safe = _safe_doc_path(project, path)
+    if not safe.is_file():
+        raise HTTPException(404, "Document not found")
+    media, _ = mimetypes.guess_type(safe.name)
+    return FileResponse(safe, filename=safe.name,
+                        media_type=media or "application/octet-stream")
 
 
 @app.post("/docs/save")

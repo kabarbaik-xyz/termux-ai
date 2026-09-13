@@ -280,3 +280,11 @@ button:disabled { opacity: .45; }
   border-radius: var(--r-md); padding: 10px 14px; font-size: .82rem; margin: var(--sp-2) 0; }
 
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ══ Binary-file card in the doc viewer ══ */
+.binary-card { text-align: center; padding: var(--sp-8) var(--sp-4);
+  background: var(--surface-alt); border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md); display: flex; flex-direction: column;
+  gap: var(--sp-2); align-items: center; }
+.binary-card .binary-icon { font-size: 2rem; }
+.binary-card p { margin: 0; }
