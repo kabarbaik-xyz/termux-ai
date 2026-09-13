@@ -125,30 +125,30 @@
       <form method="post" action="/projects/{{ project.id }}/upload" enctype="multipart/form-data" class="stacked">
         <input type="file" name="file" required
                accept=".md,.txt,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.odt,.eml,.csv,.json,.html,.htm,.rtf,.url">
+        <p class="hint">pdf · docx · pptx · xlsx read directly by the AI ·
+          rtf/eml/legacy get an extracted-text sidecar</p>
         <button type="submit" class="primary">Upload to inbox</button>
       </form>
-      <p class="hint">pdf · docx · pptx · xlsx read directly by the AI ·
-        rtf/eml/legacy get an extracted-text sidecar</p>
     </div>
 
     <div class="input-panel">
       <h3>🔗 Paste link</h3>
       <form method="post" action="/projects/{{ project.id }}/link" class="stacked">
         <label>URL <input name="url" type="url" required placeholder="https://docs.google.com/document/d/…"></label>
+        <p class="hint">Link-shared Google Docs/Sheets/Slides export to
+          docx/xlsx/pptx automatically</p>
         <button type="submit" class="primary">Ingest link</button>
       </form>
-      <p class="hint">Link-shared Google Docs/Sheets/Slides export to
-        docx/xlsx/pptx automatically</p>
     </div>
 
     <div class="input-panel">
       <h3>✍️ Write note</h3>
       <form method="post" action="/projects/{{ project.id }}/note" class="stacked">
         <label>Title <input name="title" required placeholder="Meeting notes — 2026-09-05"></label>
-        <label>Body <textarea name="body" class="rte" data-editor rows="5" placeholder="Type or paste meeting notes / requirements…"></textarea></label>
+        <label>Body <textarea name="body" class="rte" data-editor rows="4" placeholder="Type or paste meeting notes / requirements…"></textarea></label>
+        <p class="hint">Rich text — lands in the inbox as a citable SRC</p>
         <button type="submit" class="primary">Save note</button>
       </form>
-      <p class="hint">Rich text — lands in the inbox as a citable SRC</p>
     </div>
   </div>
 
