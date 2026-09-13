@@ -15,3 +15,16 @@ else
     exit 1
   fi
 fi
+
+# Block client data (kabarbaik-app/data/) from ever being committed —
+# stage runs execute AI agents in the repo; one once committed its own
+# prototype output past .gitignore via a forced add.
+# Deletions (D) are fine — they REMOVE data from the repo. Only block
+# additions/modifications (A/M/R-with-add).
+added=$(git diff --cached --name-status -- kabarbaik-app/data/ | awk '$1 ~ /^[AMR]/ {print}')
+if [ -n "$added" ]; then
+  echo "✗ REFUSED: kabarbaik-app/data/ contains client data and is never committed." >&2
+  echo "  Offending paths:" $added >&2
+  echo "  Fix: git rm -r --cached kabarbaik-app/data/ && re-commit" >&2
+  exit 1
+fi
