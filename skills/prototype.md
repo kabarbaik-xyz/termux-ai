@@ -51,6 +51,26 @@ Every screen must:
   separate reachable views or toggles where the spec asks for them, not just
   the happy path
 
+### Responsive / adaptive (REQUIRED — desktop AND mobile)
+
+Every screen is **auto-adaptive**: one HTML file that renders correctly from
+a ~360px phone to a widescreen desktop, with no separate mobile build:
+
+- **Mobile-first CSS**: write base styles for the phone, then layer
+  `min-width` media queries for tablet/desktop upgrades — never the reverse.
+- **Fluid layout primitives**: CSS Grid with `auto-fit`/`minmax()` and
+  flex-wrap for cards/tables/lists, so content reflows without hardcoded
+  column counts. No fixed pixel widths on containers.
+- **Navigation morphs**: desktop nav bar collapses to a bottom tab bar or
+  hamburger (pure CSS `:checked` or a 5-line JS toggle in app.js) below
+  ~768px — pick per the UX spec, never leave a cramped horizontal nav.
+- **Tables adapt**: wide tables become stacked cards or horizontal-scroll
+  wrappers below ~640px (`display:block` + `overflow-x:auto` at minimum).
+- **Tap targets ≥ 44px**, 16px base font on mobile (prevents iOS zoom),
+  viewport meta tag on every page, `clamp()` for fluid type from tokens.
+- **Test at 3 widths before declaring done**: 360px, 768px, 1280px — the
+  self-check below includes this.
+
 For large screens, use `write_file` + `append=true` in sections rather than
 one giant write, and split work across responses if a single screen would
 overflow the output-token limit.
@@ -59,7 +79,9 @@ overflow the output-token limit.
 
 1. Run a quick self-check: open `prototype/index.html` in your head against
    the screen inventory — does every "must" screen exist and link correctly?
-   List any gaps instead of silently shipping them.
+   Then mentally render every screen at 360px, 768px and 1280px — nav
+   collapses, tables reflow, nothing overflows horizontally. List any gaps
+   instead of silently shipping them.
 2. Write a one-paragraph `prototype/README.md`: how to open it (just open
    `index.html`), which screens are stubbed vs. fully built, and which of the
    UX spec's "open questions" this prototype deliberately left unresolved
