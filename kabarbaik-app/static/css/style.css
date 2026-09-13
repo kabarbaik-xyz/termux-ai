@@ -227,19 +227,15 @@ pre.template-preview { background: var(--surface-alt); border: 1px solid var(--b
 .console .done { color: #4ade80; }
 section[hidden] { display: none; }
 
-/* ══ Inputs tab — one action bar, all buttons on one row ══ */
-.input-bar { display: flex; flex-wrap: wrap; gap: var(--sp-3); align-items: center;
-  background: var(--surface-alt); border: 1px solid var(--border);
-  border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4); margin: var(--sp-3) 0; }
-.input-group { display: flex; gap: var(--sp-2); align-items: center; flex: 1 1 280px; min-width: 0; }
-.input-group > input { flex: 1 1 120px; min-width: 0; }
-.input-group > input[type=file] { flex: 0 1 auto; }
-.input-group > button { flex-shrink: 0; white-space: nowrap; }
-.note-group { flex-wrap: wrap; }
-.note-group > textarea { flex: 1 1 100%; }
-@media (max-width: 900px) {
-  .input-group { flex-basis: 100%; }
-}
+/* ══ Inputs tab ══ */
+.input-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--sp-4); margin: var(--sp-3) 0; }
+.input-panel { background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }
+.input-panel h3 { margin: 0; }
+/* Buttons pinned to the panel bottoms: panels in one grid row share equal
+   height (the note panel is tallest), so margin-top:auto drops every button
+   to the SAME baseline — Upload / Ingest / Save note line up. */
+.input-panel form.stacked { max-width: none; flex: 1; }
+.input-panel form.stacked > button { margin-top: auto; align-self: flex-start; }
 h3.mt { margin-top: var(--sp-6); }
 
 /* ══ File / folder lists ══ */
@@ -275,11 +271,3 @@ button:disabled { opacity: .45; }
 .flow-step.pending { border-left-color: var(--border-strong); }
 .flow-step.pending .step-label { color: var(--muted); }
 .flow-step.pending .step-idx { border: 2px solid var(--primary); background: transparent; color: var(--primary); }
-
-/* ══ Inline input rows (Inputs tab) ══ */
-.inline-form { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
-.inline-form > input { flex: 1 1 180px; min-width: 0; }
-.inline-form > button { flex-shrink: 0; white-space: nowrap; }
-@media (max-width: 560px) {
-  .inline-form > button { flex: 1 1 100%; }
-}
