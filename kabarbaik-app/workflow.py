@@ -469,9 +469,12 @@ async def run_stage_stream(project: dict, stage_index: int, timeout: float = 900
             yield {"type": "done", "ok": False, "message": msg}
             return
 
-        db.finish_stage(pid, stage_name, True, log_text(), tok_in, tok_out)
+        health = _render_health(root, stage_name)
+        db.finish_stage(pid, stage_name, True,
+                        (health + "\n" + log_text()) if health else log_text(),
+                        tok_in, tok_out)
         yield {"type": "status",
-               "text": f"✓ artifacts verified · tokens {tok_in + tok_out:,} "
+               "text": f"✓ artifacts verified · {health} · tokens {tok_in + tok_out:,} "
                        f"(in {tok_in:,} · out {tok_out:,})"}
         refreshed = refresh_artifact_state(project)
         if refreshed["stage"] > project["stage"]:
@@ -559,6 +562,39 @@ def _unfilled_outputs(root: Path, stage_name: str) -> list:
         checks["proposal"] = [f"docs/proposal/{v.name}" for v in versions[-1:]]
     return [rel for rel in checks.get(stage_name, [])
             if _looks_unfilled(root / rel)]
+
+
+def _render_health(root: Path, stage_name: str) -> str:
+    """Quick render-sanity for the stage's .md artifacts: balanced code
+    fences, no tabs, mermaid block count. Returns a one-line report for the
+    run log (viewer renders these docs — catch format drift early)."""
+    rels = STAGE_ARTIFACTS.get(stage_name, [])
+    files = []
+    for rel in rels:
+        target = root / rel
+        if rel.endswith("/"):
+            files.extend(target.rglob("*.md"))
+        elif target.suffix == ".md":
+            files.append(target)
+    fences_bad, tabs_bad, mermaid, n = [], [], 0, 0
+    for f in files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        n += 1
+        if text.count("```") % 2 != 0:
+            fences_bad.append(f.name)
+        if "\t" in text:
+            tabs_bad.append(f.name)
+        mermaid += text.count("```mermaid")
+    parts = [f"{n} docs"]
+    parts.append(f"{mermaid} mermaid ✓" if mermaid else "no diagrams")
+    if fences_bad:
+        parts.append(f"⚠ unbalanced code fences: {', '.join(fences_bad)}")
+    if tabs_bad:
+        parts.append(f"⚠ tab indentation (viewer-unsafe): {', '.join(tabs_bad)}")
+    return " · ".join(parts)
 
 
 def _looks_unfilled(path: Path) -> bool:
