@@ -1,6 +1,6 @@
 ---
 name: ux-design
-description: Turn a PRD (and, if present, discovery notes) into a UI/UX design specification — user flows, screen inventory, wireframe descriptions, and a locked design-token set. Use after requirements are captured and before building a prototype. Triggers on "design the UI", "UX spec", "screen flow", "wireframe".
+description: Turn a PRD (and, if present, discovery notes) into a UI/UX design specification — user flows, screen inventory, wireframe descriptions, a visual system, and a locked design-token set. Enterprise-class and responsive by default. Use after requirements are captured and before building a prototype. Triggers on "design the UI", "UX spec", "screen flow", "wireframe".
 mode: session
 ---
 
@@ -9,6 +9,11 @@ is to turn requirements into a **design specification** — not code, not visual
 polish. Downstream, the `prototype` skill will consume exactly what you write here
 and turn it into working HTML/CSS/JS. Be precise enough that it doesn't have to
 guess.
+
+The bar is **professional, enterprise-class design** — clean hierarchy, a coherent
+visual system, disciplined spacing and typography, and every screen defined in its
+empty/loading/error/populated states. Decide the design direction; never ask the
+client.
 
 ## Inputs (read first, in this order)
 
@@ -37,59 +42,78 @@ brand/style conventions before inventing your own.
 ## Design direction (decide BEFORE writing the spec)
 
 Read the client profile from `docs/discovery/discovery.md` and
-`docs/prd/prd.md` (industry, brand, audience, tone), then pick ONE mode
-and STATE it in §1 Scope & Assumptions — the tokens, wireframes and the
-downstream `prototype` build all follow it. This is an assumption like
-any other: decide, record, never ask.
+`docs/prd/prd.md` (industry, brand, audience, tone). Then pick ONE mode,
+and within Mode B ONE direction, and STATE both in §1 Scope & Assumptions —
+the tokens, wireframes and the downstream `prototype` build all follow it.
+This is an assumption like any other: decide, record, never ask.
 
-### Mode A — Product-aligned (deliverable lives inside an existing product)
+### Mode A — final-product deliverable (LIVES inside a known product)
 
 If the final deliverable is implemented IN a known platform — **Power BI,
 Looker Studio / Data Studio, Tableau, Google Workspace, Shopify admin,
-WordPress,** etc. — design FOR that product's look:
+WordPress,** etc. — the design target is **fidelity to that product**, NOT
+our custom enterprise recipe. The client must recognize their future tool
+from the first click:
 
 - Screen inventory and wireframes mirror the product's chrome: its
   navigation, header/toolbar, filter/slicer panes, report-page tabs,
-  card/panel style.
-- `design-tokens.json` (when you create it) **mirrors the product's
-  theme** — its characteristic color language (e.g. Power BI's dark
-  service chrome + yellow accent; Looker Studio's Material
-  whites/blues) and typography conventions. Say so in §5.
+  card/panel style, density, and typography conventions.
 - Component mapping lists the product's native components (slicers,
-  scorecards, pivot tables…) instead of generic web ones.
+  scorecards, pivot tables, ribbon toolbars, Blocks…), never generic web
+  controls where a native one exists.
+- `design-tokens.json` (when you create it) **mirrors the product's theme**
+  — its characteristic color language (e.g. Power BI's dark service chrome +
+  yellow accent; Looker Studio's Google-Material whites/blues; Shopify's
+  Poppins + its admin colors; WordPress' Twenty*-style neutral themes). Say
+  so in §5. Nothing is invented from our recipe when the product theme is
+  known.
+- **Responsive/adaptive is still required** (desktop AND mobile), but it
+  follows how THAT product behaves on smaller screens (BI is desktop-first
+  with its own tablet/mobile handling; Shopify/WordPress follow their
+  platform's responsive conventions). Document the mobile behavior you are
+  mirroring in §4.
 
-### Mode B — Tailored product (custom build)
+### Mode B — tailor-made product (custom build)
 
-Pick ONE modern style direction from the current top UI trends —
-**Glassmorphism · Flat/Minimal (incl. Flat 2.0) · Neumorphism** — matched
-to the client's character:
+For custom / customizable builds, the bar is **modern, professional,
+enterprise-class**. Pick ONE direction from this curated menu, matched to
+the client's character:
 
-- corporate / enterprise / data-heavy → **Flat/Minimal**
-- tech-savvy, modern, app-like → **Glassmorphism** (restrained)
-- premium, tactile, low-density → **Neumorphism** (sparing)
+- **Enterprise Light (Flat 2.0) — the DEFAULT for most projects.**
+  Warm-neutral surfaces, one restrained accent color, hairline borders,
+  soft elevation, generous whitespace on an 8pt grid, a strong type-ramp
+  hierarchy. The Linear / Stripe / Vercel class of visual quality. Use for
+  corporate, enterprise, data-heavy, SaaS and admin tools.
+- **Restrained Glassmorphism** — for tech-savvy, modern, app-like products.
+  Translucent panels with soft backdrop blur and 1px light borders applied
+  as **secondary surfaces and accents only** (never whole-screen, never on
+  dense text). Requires the glass tokens (blur/alpha) in `design-tokens.json`.
+- **Official design-system look** — when the deliverable must blend into a
+  known ecosystem (Material 3, IBM Carbon, Ant Design, Shopify Polaris…).
+  Follow that system's layout, component and type conventions using the
+  contract below.
+- **Neumorphism is OUT** (poor accessibility, easy to render amateur).
+  Do not choose it; if forced by the client profile, add a loud accessibility
+  caveat in §6.
 
-Record the choice + rationale in §1; when creating
-`design-tokens.json`, include the trend's tokens (glass blur / alpha
-values, soft dual shadows) so `prototype` can build the direction
-without inventing anything.
-
-Simple and modern wins in both modes: restraint, whitespace, one accent
-family, clear hierarchy.
+"Simple and modern wins": restraint, whitespace, one accent family, clear
+hierarchy. A confident flat light design outperforms a busy decorative one.
 
 ## What you produce
 
 Write **`docs/ux/ux-spec.md`** with these sections, in this order:
 
 ### 1. Scope & assumptions
-One paragraph. What PRD version this spec is built from, and any assumptions
-you made where the PRD was silent (flag these — they're the first things to
+One paragraph. What PRD version this spec is built from, the chosen
+Mode + (Mode B) direction + one-line rationale, and any assumptions you
+made where the PRD was silent (flag these — they're the first things to
 confirm with the client).
 
 ### 2. User flows
 One Mermaid flowchart or sequence diagram per primary user journey named in
-the PRD (e.g. "Onboarding", "Checkout", "Admin approves request"). Diagrams
-only — never describe a flow in prose when a diagram says it better. Label
-decision points and error/edge paths, not just the happy path.
+the PRD. Diagrams only — never describe a flow in prose when a diagram says
+it better. Label decision points and error/edge paths, not just the happy
+path.
 
 ### 3. Screen inventory
 A table: `Screen | Purpose | Maps to PRD requirement(s) | Key components |
@@ -100,31 +124,129 @@ suggestion, not a requirement.
 ### 4. Per-screen wireframe description
 For each "must" screen (and "should" if time allows): a structured text
 wireframe — regions top-to-bottom or by zone (header / primary content /
-sidebar / footer, or mobile equivalent), what lives in each region, and any
-states that matter (empty state, loading, error, populated). This is what
-`prototype` will build from directly, so be concrete: "primary CTA button,
-top-right of header, label from PRD requirement X" beats "a nice header."
+sidebar / footer, or mobile equivalent), what lives in each region, and the
+states that matter. **This is what `prototype` will build from directly**,
+so be concrete and name components from the vocabulary below:
+"primary CTA button, top-right of header, label from PRD requirement X"
+beats "a nice header". For every screen also state the
+empty/loading/error/populated behavior explicitly.
 
-### 5. Design tokens
-If `design-tokens.json` doesn't exist yet, propose one now (see schema below)
-and write it. If it exists, reference it — don't restate its contents in the
-spec, just note "uses existing design-tokens.json."
+### 5. Visual system
+For Mode B (custom builds), pin the enterprise look so `prototype` has no
+latitude to drift:
 
-### 6. Assumptions & Decisions
+- **Type hierarchy map** — which scale step is used for page titles,
+  section titles, body, table text, labels and captions; KPI numbers use
+  the display/hero step with `tabular-nums`.
+- **Color discipline** — neutrals carry the UI; the accent is used for
+  primary actions and active states only; semantic colors (danger/watch/
+  success/info) are reserved for meaning; large-text and UI contrast meet
+  WCAG AA (4.5:1 text, 3:1 UI).
+- **Rhythm & density** — spacing lives on the 4/8 grid; consistent page
+  gutters/margins; pick a density (comfortable, or compact for dense
+  enterprise/Bi data) and apply it everywhere.
+- **Elevation** — cards are flat on the surface; shadows are reserved for
+  popovers, drawers and focus; borders are hairline 1px, never heavy.
+- **Component language** — every interactive element has hover, focus
+  (2px offset ring), active, disabled and loading states; use ONE consistent
+  icon family (inline SVG, 1.5px stroke style) named in the spec.
+- **Data-viz hygiene (dashboards/reports)** — chart type chosen for the
+  data relationship (trend→line/area, parts→donut/bar, rank→sorted bar,
+  comparison→grouped bar, distribution→histogram); colors ONLY from the
+  chart palette in `design-tokens.json`; bars sorted; readable axis labels;
+  thousands separators + consistent units; scorecard pattern
+  (label / value / delta / trend arrow); no 3D, no gridlines spam, ≤5–7
+  series per chart with a legend.
+- **Responsive / adaptive** — state how each screen reflows for phone
+  (≈360px), tablet (≈768px) and desktop (≈1024–1280px): nav collapse
+  behavior, table-to-card or scroll behavior, filter placement on mobile.
+  Desktop AND mobile views are both first-class — say this explicitly.
+
+For Mode A, §5 instead states the product theme being mirrored (nav/chrome
+pattern, color language, typography, density) — fidelity IS the visual
+system.
+
+### 6. Design tokens
+If `design-tokens.json` doesn't exist yet, instantiate it now from the
+contract in "Design tokens" below (Mode B: use the Enterprise-Light recipe
+as the base, restyle to brand; Mode A: mirror the product theme), write it,
+and note in §1. If it exists, reference it — don't restate its contents,
+just note "uses existing design-tokens.json" and any deviations.
+
+### 7. Assumptions & Decisions
 Numbered — each: what was assumed, the decision made, one line of rationale.
 3–7 entries; this is how the spec stays decisive without a live client.
+Always include: the Mode/direction choice; and for Mode B the token
+instantiation/backfill if the token file was absent or thin.
+
+## Wireframe vocabulary (use these names; `prototype` knows them)
+
+- **Topbar** — app navigation: brand, primary nav links/tabs, search, user
+  menu, global actions.
+- **Sidebar** — persistent secondary navigation (desktop) → drawer (mobile).
+- **Slicer / filter bar** — the product's plural filters (dates, segments,
+  stores…), compact chips or controls.
+- **KPI scorecard** — label / value / delta / trend arrow; one per metric.
+- **Data table** — column headers with sort affordance, zebra/dividers,
+  number columns right-aligned; defined mobile behavior.
+- **Card** — surface container for a section, chart or summary list
+  (with optional card header + action).
+- **Form panel** — labeled inputs with helper/error text; primary action
+  first/rightmost.
+- **Tabs / breadcrumb** — view switching / location.
+- **Drawer** — slide-in panel for filters or detail, with backdrop.
+- **Dialog** — modal confirm/inspect; esc + backdrop close.
+- **Toast** — transient feedback, top-right or bottom per spec.
+- **Skeleton** — loading placeholder shaped like the final content.
+- **Empty state** — icon/illustration + one-line why + primary next action.
+
+Wireframes describe regions, components from this list, and states — never
+CSS, colors or pixel values (that's the token file's job).
 
 ## Design tokens (`design-tokens.json`)
 
 Locked reference, generated once, reused by every later loop pass and by the
-`prototype` skill:
+`prototype` skill. Superset contract (unknown keys are preserved; missing
+keys are backfilled from the recipe below — say so in §7):
 
 ```json
 {
-  "colors": { "primary": "#...", "secondary": "#...", "surface": "#...", "text": "#...", "danger": "#...", "success": "#..." },
-  "typography": { "fontFamily": "...", "scale": { "h1": "...", "h2": "...", "body": "...", "caption": "..." } },
-  "spacing": { "unit": "8px", "scale": [4, 8, 16, 24, 32, 48] },
-  "radius": { "sm": "...", "md": "...", "lg": "..." }
+  "schema": "design-tokens-v2",
+  "colors": {
+    "primary": "#2563eb", "primaryHover": "#1d4ed8", "primarySoft": "#eff6ff", "primaryDeep": "#1e40af",
+    "bg": "#f8fafc", "surface": "#ffffff", "surfaceAlt": "#f1f5f9",
+    "border": "#e2e8f0", "borderStrong": "#cbd5e1",
+    "text": "#0f172a", "textMuted": "#64748b", "ink": "#0f172a", "inkDeep": "#0b1220",
+    "ok": "#16a34a", "okSoft": "#dcfce7", "fail": "#dc2626", "failSoft": "#fee2e2",
+    "warn": "#d97706", "warnSoft": "#fef3c7", "info": "#0ea5e9", "infoSoft": "#e0f2fe",
+    "run": "#d97706", "runSoft": "#fef3c7",
+    "chart": ["#2563eb", "#0ea5e9", "#8b5cf6", "#ec4899", "#f97316", "#facc15", "#10b981", "#64748b"]
+  },
+  "typography": {
+    "fontFamily": "system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+    "monoFamily": "ui-monospace, SFMono-Regular, Menlo, monospace",
+    "scale": {
+      "display": "clamp(1.75rem, 4vw, 2.5rem)", "h1": "2rem", "h2": "1.5rem",
+      "h3": "1.25rem", "h4": "1.125rem", "body": "1rem", "label": "0.875rem", "caption": "0.75rem"
+    },
+    "weights": { "regular": 400, "medium": 500, "semibold": 600, "bold": 700 },
+    "lineHeights": { "tight": 1.2, "normal": 1.5, "loose": 1.7 },
+    "tabular": true
+  },
+  "spacing": { "unit": "4px", "scale": [4, 8, 12, 16, 20, 24, 32, 40, 48, 64] },
+  "radius": { "sm": "4px", "md": "8px", "lg": "12px", "xl": "16px", "pill": "999px" },
+  "border": { "hairline": "1px", "color": "#e2e8f0", "strong": "#cbd5e1" },
+  "shadow": {
+    "xs": "0 0 0 3px rgba(37,99,235,.25)", "sm": "0 1px 2px rgba(15,23,42,.06)",
+    "md": "0 4px 12px rgba(15,23,42,.08)", "lg": "0 12px 32px rgba(15,23,42,.12)"
+  },
+  "grid": {
+    "maxWidth": "1280px", "gutter": { "mobile": "16px", "desktop": "24px" },
+    "columns": { "mobile": 4, "desktop": 12 }, "breakpoints": [360, 768, 1024, 1280, 1536]
+  },
+  "motion": { "duration": { "fast": "120ms", "normal": "200ms", "slow": "320ms" }, "easing": "cubic-bezier(.2,0,0,1)" },
+  "glass": { "blur": "16px", "panelAlpha": 0.72, "cardAlpha": 0.85, "border": "rgba(255,255,255,.55)" },
+  "source": "enterprise-light-v1 (custom builds) — restyle to brand; Mode A: mirror the product theme instead"
 }
 ```
 
@@ -142,6 +264,8 @@ change is the kind of thing that breaks trust in a loop workflow.
   convention as `reverse-engineer`.
 - **Match the user's language** (Bahasa/English) in prose sections; keep the
   design-tokens JSON and Mermaid syntax as-is.
+- **Desktop AND mobile are both first-class** — state the mobile behavior of
+  every screen, don't treat it as an afterthought.
 - On a loop re-run, **lead with what changed**, not a full re-explanation.
 - If the PRD is ambiguous about a flow, don't silently pick one — list it
   under "Open questions" instead of guessing quietly.
@@ -183,6 +307,6 @@ for clarification. When references are ambiguous or silent:
 
 `/skill ux-design`, then e.g. *"design the UI/UX from the current PRD"* or,
 for a re-run, *"update the UX spec — the PRD changed the checkout flow."*
-Best with a capable model (cloud, or `qwen2.5:3b`+ locally); wireframe
-descriptions need enough working context to stay consistent across a dozen
-screens.
+Best with a capable model (cloud, or `qwen2.5:3b`+ locally); wireframe +
+visual-system description need enough working context to stay consistent
+across a dozen screens.
