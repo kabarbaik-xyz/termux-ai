@@ -26,6 +26,51 @@ Requires Build mode (`/tools on`) — you will be writing files.
    screens that didn't change; only touch what the updated spec actually
    changed. State what changed at the start of your response.
 
+## Design direction (decide BEFORE building)
+
+Read the client profile from `docs/discovery/discovery.md`,
+`docs/prd/prd.md` and `docs/ux/ux-spec.md` (industry, brand, audience,
+tone), then pick ONE mode and record the choice + rationale in the
+handoff. This is an assumption like any other — decide, never ask.
+
+### Mode A — Product-aligned (deliverable lives inside an existing product)
+
+If the final deliverable is implemented IN a known platform — **Power BI,
+Looker Studio / Data Studio, Tableau, Google Workspace, Shopify admin,
+WordPress,** etc. — the prototype must LOOK like that product, so the
+client recognizes their future tool from the first click:
+
+- Mirror the product's chrome: layout regions, navigation and
+  header/toolbar conventions, card/panel style, typography, and its
+  characteristic color language (e.g. Power BI's dark service chrome +
+  yellow accent and slicer/filter panes; Looker Studio's Google-Material
+  whites/blues and report-page tabs).
+- **Update `design-tokens.json` to mirror the product's theme** and say so
+  out loud in the handoff — this is *referencing the product's design*, not
+  inventing styling. Then build from those tokens as usual.
+- Keep interactions native to that product: slicers, filter panes, tabbed
+  report pages, ribbon-style toolbars.
+
+### Mode B — Tailored product (custom build)
+
+Pick ONE modern style direction from the current top UI trends —
+**Glassmorphism · Flat/Minimal (incl. Flat 2.0) · Neumorphism** — matched
+to the client's character from discovery:
+
+- corporate / enterprise / data-heavy → **Flat/Minimal**: generous
+  whitespace, clear grid, restrained color, strong type hierarchy
+- tech-savvy, modern, app-like → **Glassmorphism**: translucent cards,
+  soft backdrop blur, subtle 1px borders — kept restrained
+- premium, tactile, low-density content → **Neumorphism**: soft dual
+  shadows, used sparingly
+
+- **Extend `design-tokens.json`** with the trend's tokens (glass blur /
+  alpha values, soft dual shadows) instead of inventing ad-hoc styles;
+  record the direction + rationale in the handoff.
+
+Simple and modern wins in both modes: restraint, whitespace, one accent
+family, clear hierarchy.
+
 ## What you produce
 
 Write to a `prototype/` folder at the project root:
@@ -104,6 +149,8 @@ overflow the output-token limit.
 - **On a loop re-run, prefer edits over rewrites** for unchanged screens —
   cheaper, and keeps the diff reviewable.
 - Match the user's language (Bahasa/English) for on-screen copy.
+- The design direction (Mode A or B) is an assumption: decide from the
+  client profile, record it, proceed — never ask which style they want.
 
 ## Document format (mandatory — the SDLC app renders these docs)
 
