@@ -82,11 +82,11 @@ async def probe(name: str, prof: dict, ai_bin: str) -> tuple[bool, float]:
     t0 = asyncio.get_event_loop().time()
     try:
         lines = []
-        async for ln in ai_runner.run('{"ok": true}', project_dir=scratch, json_mode=True,
-                                      timeout=45.0):
+        async for ln in ai_runner.run_stream('{"ok": true}', project_dir=scratch,
+                                             timeout=45.0):
             lines.append(ln)
-        out = "".join(lines).strip()
-        ok = "ok" in out and bool(out)
+        out = " ".join(lines).strip()
+        ok = "ok" in out.lower() and bool(out)
     except Exception:
         ok, out = False, ""
     dt = asyncio.get_event_loop().time() - t0

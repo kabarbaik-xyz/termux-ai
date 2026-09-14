@@ -53,9 +53,6 @@ def _add_column(db, table: str, column: str, decl: str) -> None:
 
 def init() -> None:
     with get_db() as db:
-        _add_column(db, "stage_runs", "tok_in", "INTEGER DEFAULT 0")
-        _add_column(db, "stage_runs", "tok_out", "INTEGER DEFAULT 0")
-        _add_column(db, "stage_runs", "tok_total", "INTEGER DEFAULT 0")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS clients (
@@ -111,6 +108,9 @@ def init() -> None:
             )
             """
         )
+        _add_column(db, "stage_runs", "tok_in", "INTEGER DEFAULT 0")
+        _add_column(db, "stage_runs", "tok_out", "INTEGER DEFAULT 0")
+        _add_column(db, "stage_runs", "tok_total", "INTEGER DEFAULT 0")
     settings.ensure_dirs()
 
 
