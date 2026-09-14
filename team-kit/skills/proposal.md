@@ -42,13 +42,13 @@ Follow this structure EXACTLY (same sections, same order). Use
    - **Infrastructure & Tools** — monthly items + one-time items, Subtotal.
    - **AI Operational Cost** — only when the product uses AI (model, token
      price, estimated requests per 1M tokens).
-   - **6.1 Payment Terms** — monthly installments: termin schedule with an
-     amount per month sized to that month's staffed roles (**Nett, Excl.
-     Tax**), progress update in the last week of each month, payment due
-     within 3 calendar days of the update, note that monthly amounts vary
-     with actual staffing.
+   - **6.1 Payment Terms** — payment frequency, a termin schedule with an
+     amount per period sized to the work staffed in that period (state
+     the tax basis), the progress-update mechanism and payment-due window,
+     and a note on how amounts are sized. Follow the structure; the
+     specific terms are decided per project and recorded as assumptions.
    - Closing `***` disclaimer: estimate, subject to scope finalization;
-     infra costs recurring and borne by the client.
+     recurring costs borne by the client.
 7. **Architecture & Technology** — tech stack bullets (frontend, backend,
    package manager, database + extensions, auth, cloud, storage, CI/CD).
 
@@ -58,38 +58,21 @@ Follow this structure EXACTLY (same sections, same order). Use
 an actual RFP document exists in the inputs: every RFP row → proposal
 section → coverage (full/partial/excluded); gaps honest and explained.
 
-## Rate card (house standard — derived from prior KabarBaik proposals)
+## Pricing discipline (structure only — derive every number per project)
 
-Use these rates unless discovery explicitly states a client-agreed rate.
-Same rate per role throughout; partial months pro-rated.
-
-| Role | Monthly (IDR) |
-|------|---------------|
-| Project Manager | 6,000,000 |
-| Technical Lead | 8,000,000 |
-| Full Stack Developer | 6,500,000 |
-| Backend Developer | 5,500,000 |
-| Senior Frontend Developer | 6,500,000 |
-| DevOps Specialist | 5,000,000 |
-| UI/UX Designer | 4,000,000 |
-| QA Tester | 5,000,000 |
-
-| Infrastructure (monthly, borne by client) | IDR |
-|---|---|
-| Google Cloud Platform | 2,720,000 |
-| Cloud SQL (PostgreSQL) | 880,000 |
-| Cloud Storage (4TB) | 736,000 |
-| Logging/Monitoring | 300,000 |
-| Backup & NAS (one-time) | 8,000,000 |
-| Development tools (one-time, if needed) | 12,000,000 |
-
-**Manpower planning:** PM + Technical Lead for the full duration; core
-developers for the build months; DevOps ~0.5–3 months (setup + handover);
-UI/UX front-loaded (1–2 months); QA 1–1.5 months or the last third.
-Staff only what the PRD/prototype justify — no padded roles.
-
-**FX:** assume and record a single IDR→USD rate, used everywhere (the
-Investment line and every money mention).
+No rates or amounts are pre-baked. For each proposal:
+- **Role rates:** choose a market-consistent monthly rate per role (the
+  client's market), the SAME rate per role throughout the document,
+  rounded to clean numbers; partial months pro-rated. Record each rate
+  + one-line rationale in the run's assumptions.
+- **Manpower plan:** map roles to phases — leadership roles span the
+  project, specialists only for the months their work needs. Staff only
+  what the PRD/prototype justify — no padded roles.
+- **Infrastructure items:** derive from the chosen tech stack and
+  deployment model (cloud, database, storage, monitoring; one-time
+  purchases where needed); recurring items are client-borne.
+- **FX:** assume and record a single IDR↔USD rate, used everywhere
+  (the Investment line and every money mention).
 
 ## Rules
 - Every requirement claim traces to an SRC or PRD ID.

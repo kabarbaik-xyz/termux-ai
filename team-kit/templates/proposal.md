@@ -6,94 +6,81 @@
 **For:** <Client Management>
 
 ## 1. Executive Summary
-Formal proposal for <project>. The main objective, the solution shape (platform / architecture model), and the operational wins — 2-3 paragraphs.
+The project objective, the solution shape (platform / architecture model), and the operational wins — 2–3 paragraphs.
 
 ### 1.1 Project Summary
 | Aspect | Detail |
 | :---- | :---- |
-| **Project Type** | <Greenfield / New Development / Extension> |
-| **Deployment Model** | <Cloud SaaS (Multi-tenant) / On-prem / Hybrid> |
+| **Project Type** | <project type> |
+| **Deployment Model** | <deployment model> |
 | **Phase Duration** | <~N months (~M weeks)> |
-| **Investment** | Rp <total IDR> (~$<USD> ) |
+| **Investment** | <Rp total IDR (~USD)> |
 
 ## 2. Background & Problem Statement
-Bulleted pain points from discovery — each shaped as *risk → consequence* (what is manual/decentralized today, and what it costs the client).
+Bulleted pain points from discovery — each shaped as *risk → consequence*.
 
 ## 3. Proposed Solution
 One-paragraph overview, then the foundation and numbered pillars:
 
-### 3.1. Foundation: <Architecture Model (IAM / tenancy)>
-- **Dynamic organization structure:** <hierarchy levels>
-- **Full data isolation:** <per-tenant rules; who sees across tenants>
-- **Flexible user management:** <roles, sessions>
-- **Configurable workflows:** <per-module workflow rules>
+### 3.1. Foundation: <architecture model>
+- **<Structural capability>:** <one-line description>
+- **<Structural capability>:** <one-line description>
 
-### 3.2. Pillar 1: <Module name>
-- **<Feature>:** <one-line description>
+### 3.2. Pillar 1: <module name>
 - **<Feature>:** <one-line description>
 
-### 3.3. Pillar 2: <Module name>
-(Same feature-bullet pattern. One pillar per PRD module.)
+### 3.3. Pillar 2: <module name>
+(One pillar per module; same feature-bullet pattern.)
 
 ## 4. Project Scope (Phase X)
-This proposal specifically covers the implementation of **Phase X (<name>)** for ~N months.
+State exactly which phase this proposal covers and its duration.
 
 ### In-Scope
-- **<Area>:** detailed deliverable bullets (CRUD, workflows, APIs, integrations, testing).
+- **<Area>:** detailed deliverable bullets (workflows, APIs, integrations, testing).
 
 ### Out-of-Scope
-- <Explicitly excluded items>
-- Third-party subscription costs (Google Cloud, payment gateways, etc.) are borne directly by the client.
+- <explicit exclusions>
+- Third-party subscription costs are borne directly by the client.
 
 ### Next-Phase Scope
 High-value features deliberately planned for later phases — NOT included in this budget or schedule.
 
 ## 5. Project Plan & Phases
-Executed in phases with total estimate ~N months:
-
-* **Phase <0>: <Name> (Duration: ~N weeks)**
-  * **Deliverables:** <bullet per deliverable>
-
-* **Phase <1>: <Name> (Duration: ~N weeks)**
-  * **Deliverables:** grouped by module, month-by-month when the phase spans months (Month 1: …; Month 2-3: …; Testing & bug fixes last)
+Phases with durations:
+* **Phase <n>: <name> (Duration: ~N weeks)**
+  * **Deliverables:** bullets, grouped by module / month when a phase spans months; testing & bug fixes last.
 
 ## 6. Budget ***
-Budget breakdown for the ~N-month duration per the scope in section 5.
+Budget breakdown for the project duration per the scope in section 5.
 
 ### Human Resources
 | Role | Duration | Amount (IDR) |
 | :---- | :---- | :---- |
-| Project Manager | <N months> | <total> |
-| Technical Lead | <N months> | <total> |
-| <Developers / DevOps / UI-UX / QA> | <partial months ok> | <total> |
-| **Subtotal** |  | **<total>** |
+| <role> | <N months> | <amount> |
+| **Subtotal** |  | **<amount>** |
 
 ### Infrastructure & Tools
 | Item | Period | Amount (IDR) |
 | :---- | :---- | :---- |
-| Google Cloud Platform | Monthly | 2,720,000 |
-| Cloud SQL (PostgreSQL) | Monthly | 880,000 |
-| Cloud Storage (4TB) | Monthly | 736,000 |
-| Logging/Monitoring | Monthly | 300,000 |
-| Backup & NAS | **One-time** | <amount> |
+| <cloud / database / storage / monitoring item> | Monthly | <amount> |
+| <one-time item> | **One-time** | <amount> |
 | **Subtotal** |  | **<amount>** |
 
 ### AI Operational Cost (only when the product uses AI)
-| Item | Token Price | Est. Requests per 1M tokens |
+| Item | Token Price | Est. Usage |
 | :---- | :---- | :---- |
 
 ### 6.1 Payment Terms
-Based on the total budget and the agreed N-month duration:
-* **Frequency:** monthly installments for the project duration.
-* **Schedule (Termin):** Termin 1 at the end of month 1 — **Rp <amount>** (Nett, Excl. Tax); Termin 2 …; final termin at project close.
-* **Mechanism:** progress update in the last week of each month; payment due within 3 calendar days of that update.
-* **Note:** monthly amounts vary with the roles actually staffed each month. Amounts are Nett, excluding applicable tax.
+* **Frequency:** <payment frequency> for the project duration.
+* **Schedule (Termin):** Termin 1 — **Rp <amount>** (<tax basis>); Termin 2 …; final termin at project close.
+* **Mechanism:** <progress-update cadence> ; payment due within <N calendar days> of each update.
+* **Note:** <how monthly amounts are sized; tax treatment>.
 
-*** Budget is an estimate and may change with scope finalization. Infrastructure costs are recurring monthly items borne directly by the client.
+*** Budget is an estimate and may change with scope finalization. Recurring costs are borne directly by the client.
 
 ## 7. Architecture & Technology
-Tech stack bullets — Frontend framework · Backend language · Package manager · Database (+extensions) · Auth · Cloud infrastructure · File storage · Version control/CI-CD.
+Tech stack bullets — Frontend · Backend · Package manager · Database (+extensions) · Auth · Cloud infrastructure · File storage · Version control/CI-CD.
 
 ---
 
-Thank you for the opportunity. We are confident <solution> will be a strategic asset bringing <client>'s operations to a higher level of efficiency and competitiveness.
+Thank you for the opportunity. <one-paragraph closing expressing confidence in the solution.>
