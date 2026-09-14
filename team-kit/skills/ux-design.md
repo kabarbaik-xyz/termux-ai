@@ -20,8 +20,9 @@ guess.
    devices, accessibility needs, or existing brand/style constraints that
    didn't make it into the PRD verbatim.
 3. `design-tokens.json` at the project root, if present — see "Design tokens"
-   below. **Never regenerate this file if it already exists** unless the user
-   explicitly asks for a visual-identity change.
+   below. **Never regenerate this file if it already exists** unless the
+   design direction changes (Mode A product switch, or a rebrand) — that
+   counts as a visual-identity change and must be stated out loud.
 4. Any existing `docs/ux/ux-spec.md` — if this is a loop re-run, diff against
    it mentally: only change what the updated PRD/discovery notes actually
    affect. State explicitly what changed and why at the top of your output
@@ -32,6 +33,48 @@ Use `read_file` / `search_files` / `list_files` to gather all of this in your
 first one or two responses (gather-then-execute — don't dribble reads across
 the whole task). If `CONTEXT.md` exists, it's already attached — check it for
 brand/style conventions before inventing your own.
+
+## Design direction (decide BEFORE writing the spec)
+
+Read the client profile from `docs/discovery/discovery.md` and
+`docs/prd/prd.md` (industry, brand, audience, tone), then pick ONE mode
+and STATE it in §1 Scope & Assumptions — the tokens, wireframes and the
+downstream `prototype` build all follow it. This is an assumption like
+any other: decide, record, never ask.
+
+### Mode A — Product-aligned (deliverable lives inside an existing product)
+
+If the final deliverable is implemented IN a known platform — **Power BI,
+Looker Studio / Data Studio, Tableau, Google Workspace, Shopify admin,
+WordPress,** etc. — design FOR that product's look:
+
+- Screen inventory and wireframes mirror the product's chrome: its
+  navigation, header/toolbar, filter/slicer panes, report-page tabs,
+  card/panel style.
+- `design-tokens.json` (when you create it) **mirrors the product's
+  theme** — its characteristic color language (e.g. Power BI's dark
+  service chrome + yellow accent; Looker Studio's Material
+  whites/blues) and typography conventions. Say so in §5.
+- Component mapping lists the product's native components (slicers,
+  scorecards, pivot tables…) instead of generic web ones.
+
+### Mode B — Tailored product (custom build)
+
+Pick ONE modern style direction from the current top UI trends —
+**Glassmorphism · Flat/Minimal (incl. Flat 2.0) · Neumorphism** — matched
+to the client's character:
+
+- corporate / enterprise / data-heavy → **Flat/Minimal**
+- tech-savvy, modern, app-like → **Glassmorphism** (restrained)
+- premium, tactile, low-density → **Neumorphism** (sparing)
+
+Record the choice + rationale in §1; when creating
+`design-tokens.json`, include the trend's tokens (glass blur / alpha
+values, soft dual shadows) so `prototype` can build the direction
+without inventing anything.
+
+Simple and modern wins in both modes: restraint, whitespace, one accent
+family, clear hierarchy.
 
 ## What you produce
 

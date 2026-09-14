@@ -30,8 +30,10 @@ Requires Build mode (`/tools on`) — you will be writing files.
 
 Read the client profile from `docs/discovery/discovery.md`,
 `docs/prd/prd.md` and `docs/ux/ux-spec.md` (industry, brand, audience,
-tone), then pick ONE mode and record the choice + rationale in the
-handoff. This is an assumption like any other — decide, never ask.
+tone). **If the UX spec already states a design direction in its §1,
+FOLLOW it** — the spec is the single source of truth; only decide
+yourself when it is absent. Record the mode + rationale in the handoff
+either way. This is an assumption like any other — decide, never ask.
 
 ### Mode A — Product-aligned (deliverable lives inside an existing product)
 
