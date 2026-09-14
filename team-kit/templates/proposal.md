@@ -19,7 +19,7 @@ The project objective, the solution shape (platform / architecture model), and t
 ## 2. Background & Problem Statement
 Bulleted pain points from discovery — each shaped as *risk → consequence*.
 
-## 3. Proposed Solution
+## 3. Proposed Solution (Mermaid architecture diagram + narrative per capability)
 One-paragraph overview, then the foundation and numbered pillars:
 
 ### 3.1. Foundation: <architecture model>
