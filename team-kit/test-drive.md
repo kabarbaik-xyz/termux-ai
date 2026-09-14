@@ -69,9 +69,9 @@ Tanya: kalau Lebaran telat gimana?
 
 ## 7. proposal
 ```
-ai "Draft docs/proposal/proposal-v1.md from docs/prd/ (latest), docs/prototype/handoff.md and docs/discovery/: exec summary, understanding with [SRC] citations, solution overview with Mermaid, RFP compliance matrix (the 4 client asks), phased delivery with range estimates tied to assumptions, risks with triggers, [PRICING — HUMAN OWNED] placeholder." --skill proposal --tools on
+ai "Draft docs/proposal/proposal-v1.md from docs/prd/ (latest), docs/prototype/handoff.md and docs/discovery/: exec summary, understanding with [SRC] citations, solution overview with Mermaid, RFP compliance matrix (the 4 client asks), phased delivery with range estimates tied to assumptions, risks with triggers, and the AI-estimated budget: phase × role manday table, day-rate + FX documented as assumptions, non-labor + 15% contingency, totals in IDR and USD before-tax, budget-conformance verdict vs discovery." --skill proposal --tools on
 ```
-✓ Check: compliance matrix honestly marks WA as deferred; pricing is a placeholder.
+✓ Check: compliance matrix honestly marks WA as deferred; budget totals are internally consistent (Σ = grand total) and include mandays/role + IDR+USD.
 
 ## 8. TSD/SAD
 ```

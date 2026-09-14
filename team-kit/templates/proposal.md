@@ -11,5 +11,23 @@ Language: <EN/ID — match client>
 ## 7. Team & Allocation (roles per phase)
 ## 8. Risks & Mitigations (top 5 — trigger + mitigation each)
 ## 9. Why Us (3 differentiators grounded in the prototype)
-## 10. Pricing
-[PRICING — HUMAN OWNED] — never generated.
+## 10. Budget & Effort Estimate (before-tax — IDR + USD)
+
+### 10.1 Effort table (phase × role)
+| Phase | Role | Mandays | Rate (IDR/day) | Cost (IDR) | Cost (USD) |
+|---|---|---|---|---|---|
+| P1 | ... | ... | ... | ... | ... |
+
+### 10.2 Non-labor costs
+| Item | Basis | Cost (IDR) | Cost (USD) |
+|---|---|---|---|
+| ... | ... | ... | ... |
+
+### 10.3 Contingency, totals & conformance
+- Labor subtotal: IDR ... / USD ...
+- Non-labor subtotal: IDR ... / USD ...
+- Contingency (X% of labor): IDR ... / USD ...
+- **Grand total (before-tax): IDR ... / USD ...** · PPN 11% applies on invoice if applicable
+- vs. client budget (docs/discovery/): at / under / over → scope-cut proposal when over
+
+### 10.4 Assumptions & Decisions (rates, FX, manday basis, contingency, tax)
