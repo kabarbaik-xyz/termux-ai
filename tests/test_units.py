@@ -14,6 +14,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT = ROOT / "ai"   # the generated single-file artifact
 
+# skills/*.md is the single source of truth for bundled skills (build.py embeds
+# it as EXAMPLES), so derive expectations from it instead of a hardcoded list
+# that goes stale every time a skill is added.
+EXPECTED_SKILLS = sorted(p.name[:-3] for p in sorted((ROOT / "skills").glob("*.md")))
+
 
 def load():
     loader = importlib.machinery.SourceFileLoader("ai_units", str(ARTIFACT))
@@ -210,9 +215,9 @@ class TestSkills(_TmpHome):
 
     def test_seed_and_load(self):
         sk = self._skills()
-        self.assertEqual(sorted(sk.seed()), ["brainstorm", "client-feedback", "cloud-arch", "commit", "data-engineer", "db-migration", "deploy-checklist", "discovery", "doc-ingest", "epic-breakdown", "figma-to-component", "figma-tokens", "finops", "frontend-tester", "fullstack", "go-api-endpoint", "nuxt-component", "nuxt-page", "pentest", "proposal", "py-api-endpoint", "python", "qa", "reverse-engineer", "review", "tsd-sad", "ui-audit", "webapp"])
+        self.assertEqual(sorted(sk.seed()), EXPECTED_SKILLS)
         self.assertEqual(sk.seed(), [])  # doesn't overwrite
-        self.assertEqual(sorted(n for n, _ in sk.list()), ["brainstorm", "client-feedback", "cloud-arch", "commit", "data-engineer", "db-migration", "deploy-checklist", "discovery", "doc-ingest", "epic-breakdown", "figma-to-component", "figma-tokens", "finops", "frontend-tester", "fullstack", "go-api-endpoint", "nuxt-component", "nuxt-page", "pentest", "proposal", "py-api-endpoint", "python", "qa", "reverse-engineer", "review", "tsd-sad", "ui-audit", "webapp"])
+        self.assertEqual(sorted(n for n, _ in sk.list()), EXPECTED_SKILLS)
         meta, body = sk.load("review")
         self.assertEqual(meta["mode"], "once")
         self.assertIn("senior code reviewer", body)
