@@ -143,7 +143,8 @@ ol.flow { list-style: none; padding: 0; margin: 0; }
 .step-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .step-idx { width: 24px; height: 24px; border-radius: 50%; background: var(--border);
   color: var(--muted); font-size: .76rem; font-weight: 700; flex: none;
-  display: inline-flex; align-items: center; justify-content: center; }
+  display: inline-flex; align-items: center; justify-content: center;
+  position: relative; }
 .flow-step.done .step-idx { background: var(--ok); color: #fff; }
 .flow-step.current .step-idx { background: var(--primary); color: #fff; }
 .step-label { font-weight: 600; }
@@ -256,12 +257,11 @@ h3.mt { margin-top: var(--sp-6); }
 
 .empty.small { padding: var(--sp-6) var(--sp-4); font-size: .88rem; }
 
-/* ══ Running-step spinner (works on refresh, server-rendered) ══ */
-.step-idx.spinner {
-  background: var(--run-soft); border: 2px solid var(--run);
-  border-right-color: transparent; border-radius: 50%;
-  animation: spin .8s linear infinite;
-}
+/* ══ Running-stage ring — overlays the numbered circle so the stage's
+   own status fill (done/failed/current/pending) never hides the index ══ */
+.flow-step.running .step-idx::after { content: ""; position: absolute; inset: -2px;
+  border: 2px solid var(--run); border-right-color: transparent; border-radius: 50%;
+  animation: spin .8s linear infinite; }
 .flow-step.running .badge.run { background: var(--run-soft); color: var(--run); }
 button:disabled { opacity: .45; }
 

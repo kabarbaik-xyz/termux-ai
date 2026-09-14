@@ -77,11 +77,7 @@
     {% set run_status = stage_runs[name].status %}
     <li class="flow-step {{ 'done' if run_status == 'ok' else ('failed' if run_status == 'failed' else ('current' if stage_idx[name] == fresh_stage else 'pending')) }}{{ ' running' if running_stage_idx is defined and running_stage_idx == stage_idx[name] else '' }}">
       <div class="step-head">
-        {% if running_stage_idx is defined and running_stage_idx == stage_idx[name] %}
-        <span class="step-idx spinner" aria-label="running"></span>
-        {% else %}
         <span class="step-idx">{{ loop.index }}</span>
-        {% endif %}
         <span class="step-label">{{ label }}</span>
         {% if stage_runs[name].status == 'ok' %}<span class="badge ok">done</span>
         {% elif stage_runs[name].status == 'running' %}<span class="badge run">running</span>
