@@ -27,7 +27,7 @@ follows — the dashboard shows the live backend/model.
 | 2 | Draft the BRD & PRD | `discovery` | `docs/brd/brd.md` + `docs/prd/prd.md` — **filled documents following the kit templates**, US-xxx/BO-x IDs |
 | 3 | Design Screens & Style (UX) | `ux-design` | `docs/03-ux-spec.md` + `design-tokens.json` |
 | 4 | Build the Clickable Prototype | `prototype` | `prototype/` — spec-driven, tokens-only, self-contained HTML |
-| 5 | Write the Proposal | `proposal` | `docs/proposal/proposal-vN.md` (versioned; budget AI-estimated: mandays/role, IDR + USD) |
+| 5 | Write the Proposal | `proposal` | `docs/proposal/proposal-vN.md` (versioned house format: exec summary + project table, solution pillars, scope, phases, budget in separate components — HR + one-time + subscriptions + AI op-cost — with payment terms & an Assumptions & Decisions appendix; in the source docs' language) |
 | 6 | Finalize Docs After Approval | `tsd-sad` | final `brd.md`/`prd.md` + `docs/tsd/tsd.md` + `docs/sad/sad.md` + ADRs — derived from the **final proposal** (docs/inbox/ first, else proposal-vN) |
 | 7 | Prepare the QA Plan | `qa-spec` | `docs/08-test-cases.md` + `docs/09-acceptance-criteria.md` + `docs/10-corner-cases.md` |
 | 8 | Plan the Development Backlog | `epic-breakdown` | `docs/plan/backlog.md` — consumes the QA package (TC IDs, AC verbatim, P0/P1 risks in DoD) |

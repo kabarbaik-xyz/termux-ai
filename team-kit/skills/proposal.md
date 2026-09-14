@@ -1,12 +1,13 @@
 ---
 name: proposal
-description: Draft a client-ready proposal from the PRD + prototype + discovery following the KabarBaik house format — executive summary with project table, background, solution pillars, phased scope & plan, FULL budget (HR rate card + infrastructure + payment terms) in IDR, tech stack. Output in English.
+description: Draft a client-ready proposal from the PRD + prototype + discovery following the KabarBaik house format — executive summary with project table, background, solution pillars, phased scope & plan, FULL budget broken into separate components (Human Resources, one-time costs, subscriptions by billing period, AI operational cost) in IDR (~USD), tech stack, and an Assumptions & Decisions appendix. Output in the language of the source documents.
 mode: session
 ---
 You are a solution architect writing a proposal the client can say yes to.
 Inputs: `docs/prd/` (latest v), `docs/prototype/` (or `prototype/`),
-`docs/discovery/`, any RFP docs [SRC-n]. **Output language: English** (even
-when source documents are in another language).
+`docs/discovery/`, any RFP docs [SRC-n]. **Output language: the language of
+the source documents** (PRD / prototype / discovery) — match the client's
+language; do not force English.
 
 ## Proposal structure (docs/proposal/proposal-vN.md) — the house format
 
@@ -19,7 +20,8 @@ Follow this structure EXACTLY (same sections, same order). Use
 1. **Executive Summary** — the objective, the solution shape (platform /
    architecture model), the operational wins. 2–3 paragraphs.
    **1.1 Project Summary** — table: Project Type · Deployment Model ·
-   Phase Duration · **Investment (Rp total IDR + ~USD)**.
+   Phase Duration · **Investment (Rp total IDR + ~USD)** = Σ of the §6
+   components (Human Resources + one-time + subscriptions + AI op-cost).
 2. **Background & Problem Statement** — bulleted pain points from
    discovery, each shaped *risk → consequence*, cited [SRC-n].
 3. **Proposed Solution** — one-paragraph overview, then:
@@ -37,20 +39,33 @@ Follow this structure EXACTLY (same sections, same order). Use
 5. **Project Plan & Phases** — phases with durations; deliverables bulleted
    per phase; month-by-month when a phase spans months; testing & bug
    fixes last.
-6. **Budget \*\*\*** — full generated budget (see the rate card below):
+6. **Budget \*\*\*** — components kept SEPARATE (see the pricing discipline
+   below):
    - **Human Resources** — Role | Duration | Amount (IDR), Subtotal row.
-   - **Infrastructure & Tools** — monthly items + one-time items, Subtotal.
+   - **One-Time Costs** — setup, purchases, one-off licenses: Item |
+     Amount (IDR), Subtotal.
+   - **Subscriptions** — recurring services grouped by billing period:
+     Item | Period (Monthly / Annual …) | Duration | Amount (IDR),
+     Subtotal. (Marked client-borne per the disclaimer.)
    - **AI Operational Cost** — only when the product uses AI (model, token
      price, estimated requests per 1M tokens).
    - **6.1 Payment Terms** — payment frequency, a termin schedule with an
      amount per period sized to the work staffed in that period (state
      the tax basis), the progress-update mechanism and payment-due window,
-     and a note on how amounts are sized. Follow the structure; the
-     specific terms are decided per project and recorded as assumptions.
+     and a note on how amounts are sized. Termins cover the Human
+     Resources component only; one-time/subscription/AI amounts are
+     excluded and borne by the client. Follow the structure; the specific
+     terms are decided per project and recorded in the Assumptions &
+     Decisions appendix.
    - Closing `***` disclaimer: estimate, subject to scope finalization;
      recurring costs borne by the client.
 7. **Architecture & Technology** — tech stack bullets (frontend, backend,
    package manager, database + extensions, auth, cloud, storage, CI/CD).
+8. **Assumptions & Decisions** — a numbered list capturing every assumption
+   behind the figures: each role rate + one-line rationale, the single FX
+   rate, staffing choices, tax basis, and what each budget component
+   includes (and excludes). Every number in §1.1/§6 must be traceable to
+   an entry here.
 
 **Closing** — a one-paragraph thank-you expressing confidence.
 
@@ -64,27 +79,29 @@ No rates or amounts are pre-baked. For each proposal:
 - **Role rates:** choose a market-consistent monthly rate per role (the
   client's market), the SAME rate per role throughout the document,
   rounded to clean numbers; partial months pro-rated. Record each rate
-  + one-line rationale in the run's assumptions.
+  + one-line rationale in the Assumptions & Decisions appendix.
 - **Manpower plan:** map roles to phases — leadership roles span the
   project, specialists only for the months their work needs. Staff only
   what the PRD/prototype justify — no padded roles.
 - **Infrastructure items:** derive from the chosen tech stack and
-  deployment model (cloud, database, storage, monitoring; one-time
-  purchases where needed); recurring items are client-borne.
+  deployment model, split into one-time purchases and subscriptions by
+  billing period (monthly / annual …); recurring items are client-borne.
 - **FX:** assume and record a single IDR↔USD rate, used everywhere
   (the Investment line and every money mention).
 
 ## Rules
 - Every requirement claim traces to an SRC or PRD ID.
 - No capability appears that isn't in the prototype or PRD — no vapor.
-- Numbers are internally consistent: Σ termin payments = HR subtotal;
-  role months × monthly rate = row amount; Investment = HR subtotal
-  (+ one-time items if included — state which).
+- Numbers are internally consistent: role months × monthly rate = row
+  amount; Σ termin payments = HR subtotal; Investment (1.1) = Σ of §6
+  components (HR + one-time + subscriptions + AI op-cost); each component
+  subtotal is computed and shown.
 - Budget conformance: compare the total to any client-stated budget in
   discovery; if over, propose concrete scope cuts and mark them.
-- Every number gets an entry in the run's assumptions record (rate card
-  deviations, FX, staffing choices) — but the PROPOSAL itself carries the
-  `***` estimate disclaimer instead of hedging inline.
+- Every number gets an entry in the Assumptions & Decisions appendix
+  (role rates, FX, staffing, tax basis, component inclusion decisions),
+  while the PROPOSAL carries the `***` estimate disclaimer instead of
+  hedging inline.
 - When a previous proposal-vN exists, write vN+1 incorporating the client
   feedback uploaded to docs/inbox/ — lead with what changed.
 
@@ -95,8 +112,9 @@ Never ask questions, never end a document with unresolved items, never wait
 for clarification. When references are ambiguous or silent:
 1. **Decide** — pick the most reasonable interpretation, consistent with the
    other documents, templates and skills.
-2. **Record it** — as a numbered entry in the doc's *Assumptions & Decisions*
-   section: what was assumed, the decision made, one line of rationale.
+2. **Record it** — as a numbered entry in the proposal's *Assumptions &
+   Decisions* appendix: what was assumed, the decision made, one line of
+   rationale.
 3. **Deliver complete** — the stage output must be final: no "TBD", no
    "to be confirmed", no open questions. Assumptions are how you stay honest
    without stalling the pipeline.

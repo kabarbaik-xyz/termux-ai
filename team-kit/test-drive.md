@@ -69,9 +69,9 @@ Tanya: kalau Lebaran telat gimana?
 
 ## 7. proposal
 ```
-ai "Draft docs/proposal/proposal-v1.md from docs/prd/ (latest), docs/prototype/handoff.md and docs/discovery/: exec summary, understanding with [SRC] citations, solution overview with Mermaid, RFP compliance matrix (the 4 client asks), phased delivery with range estimates tied to assumptions, risks with triggers, and the AI-estimated budget: phase × role manday table, day-rate + FX documented as assumptions, non-labor + 15% contingency, totals in IDR and USD before-tax, budget-conformance verdict vs discovery." --skill proposal --tools on
+ai "Draft docs/proposal/proposal-v1.md from docs/prd/ (latest), docs/prototype/handoff.md and docs/discovery/ following the HOUSE FORMAT exactly: header, exec summary + project summary table (Investment IDR/~USD), background problems, solution (foundation + pillars, Mermaid), scope (in/out/next-phase), plan & phases, FULL Budget in separate components (Human Resources, One-Time Costs, Subscriptions by period, AI op-cost when applicable) + Payment Terms (termin schedule sized to HR staffed per period, tax basis) with the *** disclaimer, architecture & technology, Assumptions & Decisions appendix (every rate, FX, staffing, tax choice), then closing. RFP compliance matrix only if an RFP exists; budget-conformance verdict vs discovery. Write in the language of the client's documents — the brief is in Indonesian." --skill proposal --tools on
 ```
-✓ Check: compliance matrix honestly marks WA as deferred; budget totals are internally consistent (Σ = grand total) and include mandays/role + IDR+USD.
+✓ Check: Investment (1.1) = Σ of §6 components; role-months × monthly rate = each row; Σ termins = HR subtotal; every number traces to an Assumptions & Decisions entry; proposal language matches the (Indonesian) source docs.
 
 ## 8. TSD/SAD
 ```

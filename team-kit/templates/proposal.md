@@ -14,7 +14,7 @@ The project objective, the solution shape (platform / architecture model), and t
 | **Project Type** | <project type> |
 | **Deployment Model** | <deployment model> |
 | **Phase Duration** | <~N months (~M weeks)> |
-| **Investment** | <Rp total IDR (~USD)> |
+| **Investment** | <Rp total IDR (~USD)> — Σ of §6: Human Resources + one-time + subscriptions + AI op-cost |
 
 ## 2. Background & Problem Statement
 Bulleted pain points from discovery — each shaped as *risk → consequence*.
@@ -51,7 +51,7 @@ Phases with durations:
   * **Deliverables:** bullets, grouped by module / month when a phase spans months; testing & bug fixes last.
 
 ## 6. Budget ***
-Budget breakdown for the project duration per the scope in section 5.
+Budget components, kept separate, for the project duration per the scope in section 5.
 
 ### Human Resources
 | Role | Duration | Amount (IDR) |
@@ -59,12 +59,18 @@ Budget breakdown for the project duration per the scope in section 5.
 | <role> | <N months> | <amount> |
 | **Subtotal** |  | **<amount>** |
 
-### Infrastructure & Tools
-| Item | Period | Amount (IDR) |
-| :---- | :---- | :---- |
-| <cloud / database / storage / monitoring item> | Monthly | <amount> |
-| <one-time item> | **One-time** | <amount> |
-| **Subtotal** |  | **<amount>** |
+### One-Time Costs
+| Item | Amount (IDR) |
+| :---- | :---- |
+| <setup / purchase / one-off license> | <amount> |
+| **Subtotal** | **<amount>** |
+
+### Subscriptions
+| Item | Period | Duration | Amount (IDR) |
+| :---- | :---- | :---- | :---- |
+| <cloud / database / storage / monitoring> | Monthly | <N months> | <amount> |
+| <annual service / license> | Annually | <N months pro-rated> | <amount> |
+| **Subtotal** |  |  | **<amount>** |
 
 ### AI Operational Cost (only when the product uses AI)
 | Item | Token Price | Est. Usage |
@@ -72,14 +78,22 @@ Budget breakdown for the project duration per the scope in section 5.
 
 ### 6.1 Payment Terms
 * **Frequency:** <payment frequency> for the project duration.
-* **Schedule (Termin):** Termin 1 — **Rp <amount>** (<tax basis>); Termin 2 …; final termin at project close.
+* **Schedule (Termin):** Termin 1 — **Rp <amount>** (<tax basis>); Termin 2 …; final termin at project close. Termins cover the Human Resources component only.
 * **Mechanism:** <progress-update cadence> ; payment due within <N calendar days> of each update.
-* **Note:** <how monthly amounts are sized; tax treatment>.
+* **Note:** <how termin amounts are sized to the HR staffed per period; one-time/subscription/AI amounts are excluded and borne by the client>.
 
 *** Budget is an estimate and may change with scope finalization. Recurring costs are borne directly by the client.
 
 ## 7. Architecture & Technology
 Tech stack bullets — Frontend · Backend · Package manager · Database (+extensions) · Auth · Cloud infrastructure · File storage · Version control/CI-CD.
+
+## 8. Assumptions & Decisions
+Numbered list of every assumption behind the figures:
+1. <Each role rate + one-line rationale.>
+2. <The single FX rate assumed and where it is used.>
+3. <Staffing choices — which roles span the project, which are month-limited.>
+4. <Tax basis applied to termin amounts.>
+5. <What each budget component includes/excludes; client-borne items.>
 
 ---
 
