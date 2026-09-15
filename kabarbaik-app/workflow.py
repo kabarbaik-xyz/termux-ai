@@ -19,6 +19,7 @@ switching flows never collides stage_runs rows):
 from __future__ import annotations
 
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Optional
@@ -311,7 +312,11 @@ _TRAINING_RECIPES = {
     1: (
         "evidence-research",
         "on",
-        "Follow the evidence-research skill. Research the web with web_search "
+        "Follow the evidence-research skill. **Hard cap: keep exactly 7 "
+        "sources** (at most) that best match the discovery — stop researching "
+        "and fetching once you have 7 solid references; log everything else as "
+        "Sources rejected. Aim for category diversity (peer-reviewed + report "
+        "+ case study when available). Research the web with web_search "
         "+ fetch_url, then write docs/training/research/evidence-base.md ("
         "findings grouped by research question with inline [R-n] citations, "
         "convergent/conflicting evidence, what's adapted to the trainee "
@@ -971,6 +976,17 @@ def _render_health(root: Path, stage_name: str, flow: str = "sdlc") -> str:
         parts.append(f"⚠ unbalanced code fences: {', '.join(fences_bad)}")
     if tabs_bad:
         parts.append(f"⚠ tab indentation (viewer-unsafe): {', '.join(tabs_bad)}")
+    if flow == "training" and stage_name == "research":
+        refs_path = root / "docs" / "training" / "research" / "references.md"
+        try:
+            refs_text = refs_path.read_text(errors="ignore")
+            ref_count = sum(1 for line in refs_text.splitlines()
+                            if re.match(r"\s*\|\s*R-\d+", line))
+        except OSError:
+            ref_count = 0
+        parts.append(f"{ref_count}/7 refs")
+        if ref_count > 7:
+            parts.append("⚠ ref cap exceeded")
     return " · ".join(parts)
 
 

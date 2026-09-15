@@ -31,11 +31,14 @@ reference titles stay in their original language.
    of: peer-reviewed papers/journals, research/report publications (industry
    research, benchmark/trend reports), and **use cases / case studies** (real
    orgs or practitioners, ideally near the trainee profile). Note the search
-   date for every source.
+   date for every source. **Budget: ~15 web_search calls total.** Once a first
+   sweep of promising hits is in, stop searching — do not run follow-up deep
+   dives.
 3. **Fetch** — `fetch_url` the promising hits (abstracts + key sections; ~500
-   KB cap). If the top hit is paywalled, fetch what is readable and say so.
-   Capture for each source: authors/org, year, title, venue/journal, URL,
-   DOI/ISSN when present, evidence type, and the claim(s) it supports.
+   KB cap). **Fetch at most 8 promising URLs; keep the 7 strongest.** If the
+   top hit is paywalled, fetch what is readable and say so. Capture for each
+   source: authors/org, year, title, venue/journal, URL, DOI/ISSN when
+   present, evidence type, and the claim(s) it supports.
 4. **Extract** per source — `[R-n]` (in order of first citation): the claim,
    its strength (high = meta-analysis/replicated experiments / institutional
    standard; medium = single study / reputable industry research; low =
@@ -70,6 +73,11 @@ reference titles stay in their original language.
 
 ## Rules
 
+- **Cap at 7 references.** Search broadly once, then fetch and keep only the
+  top 7 sources that best match the discovery (learner profile + mindset
+  ratio). Aim for category diversity (peer-reviewed, report, case study) when
+  the search allows it. Everything else goes into *Sources rejected*. Never
+  stretch to 8 just because you searched.
 - **Never invent a source.** If you cannot verify a citation exists at a real
   URL, it does not go in. Fabricated references are the worst failure mode.
 - Use `web_search` FIRST; only `fetch_url` URLs the search returned or that you
