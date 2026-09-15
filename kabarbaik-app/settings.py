@@ -45,6 +45,12 @@ TOKEN = os.environ.get("KABARBAIK_TOKEN", "").strip()  # empty = local only
 # Where the team-kit lives (for installing skills/templates into the live skill dir).
 TEAM_KIT_DIR = PROJECT_DIR.parent / "team-kit"
 
+# kbti-elearning platform repo — the Training flow's `install_course` copies a
+# validated course package in here and appends it to courses/manifest.json.
+ELEARNING_DIR = Path(
+    os.environ.get("KABARBAIK_ELEARNING_DIR", os.path.expanduser("~/kbti-elearning"))
+)
+
 # Maximum bytes for an uploaded reference file.
 MAX_UPLOAD_BYTES = int(os.environ.get("KABARBAIK_MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 
