@@ -31,6 +31,26 @@ STAGES = [
 
 STAGE_IDX = {name: i for i, (name, _) in enumerate(STAGES)}
 
+# Stage order for the KabarBaik Training flow (kbti-elearning). Names are
+# deliberately UNIQUE vs the SDLC flow so stage_runs rows can never collide,
+# and so a project can switch flows without confusing the stage index.
+TRAINING_STAGES = [
+    ("training_brief", "Understand the Training Request"),
+    ("research", "Research the Evidence Base"),
+    ("curriculum", "Design the Curriculum"),
+    ("content", "Write the Modules & Lessons"),
+    ("training_proposal", "Write the Training Proposal"),
+    ("elearning_design", "Design the Course Experience (UX)"),
+    ("elearning_build", "Author & Validate the Course Package"),
+    ("training_qa", "QA the Course (Outcome Check)"),
+    ("rollout", "Plan the Rollout"),
+]
+
+
+def get_stages(flow: str) -> list:
+    """Stage list for a project's flow ('sdlc' default | 'training')."""
+    return TRAINING_STAGES if flow == "training" else STAGES
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -73,6 +93,7 @@ def init() -> None:
                 name        TEXT NOT NULL,
                 slug        TEXT NOT NULL,
                 description TEXT DEFAULT '',
+                flow        TEXT NOT NULL DEFAULT 'sdlc',
                 stage       INTEGER NOT NULL DEFAULT 0,
                 status      TEXT NOT NULL DEFAULT 'sandbox',
                 created     TEXT NOT NULL,
@@ -108,6 +129,7 @@ def init() -> None:
             )
             """
         )
+        _add_column(db, "projects", "flow", "TEXT NOT NULL DEFAULT 'sdlc'")
         _add_column(db, "stage_runs", "tok_in", "INTEGER DEFAULT 0")
         _add_column(db, "stage_runs", "tok_out", "INTEGER DEFAULT 0")
         _add_column(db, "stage_runs", "tok_total", "INTEGER DEFAULT 0")
@@ -139,12 +161,13 @@ def get_client(client_id: int) -> Optional[dict]:
 
 # ---------- projects ----------
 
-def add_project(client_id: int, name: str, description: str) -> dict:
+def add_project(client_id: int, name: str, description: str, flow: str = "sdlc") -> dict:
     slug = _slug(name)
     with get_db() as db:
         cur = db.execute(
-            "INSERT INTO projects (client_id, name, slug, description, created) VALUES (?,?,?,?,?)",
-            (client_id, name, slug, description, _utcnow()),
+            "INSERT INTO projects (client_id, name, slug, description, flow, created) "
+            "VALUES (?,?,?,?,?,?)",
+            (client_id, name, slug, description, flow, _utcnow()),
         )
         pid = cur.lastrowid
     return get_project(pid)
@@ -165,7 +188,8 @@ def list_projects(client_id: Optional[int] = None) -> list[dict]:
     out = []
     for r in rows:
         d = dict(r)
-        d["stage_name"] = STAGES[d["stage"]][1] if 0 <= d["stage"] < len(STAGES) else "archived"
+        stages = get_stages(d.get("flow", "sdlc"))
+        d["stage_name"] = stages[d["stage"]][1] if 0 <= d["stage"] < len(stages) else "archived"
         out.append(d)
     return out
 
@@ -180,7 +204,8 @@ def get_project(project_id: int) -> Optional[dict]:
     if not r:
         return None
     d = dict(r)
-    d["stage_name"] = STAGES[d["stage"]][1] if 0 <= d["stage"] < len(STAGES) else "archived"
+    stages = get_stages(d.get("flow", "sdlc"))
+    d["stage_name"] = stages[d["stage"]][1] if 0 <= d["stage"] < len(stages) else "archived"
     return d
 
 
