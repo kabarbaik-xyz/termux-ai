@@ -318,7 +318,11 @@ def list_feedback(project_id: int) -> list[dict]:
 # ---------- artifact index ----------
 
 def index_artifacts(project_id: int) -> dict:
-    """Walk the project's docs/ tree and return {folder: [filenames]}."""
+    """Walk the project's docs/ tree and return {folder: [filenames]}.
+
+    SDLC projects list docs/<folder>/ top-level files. Training projects also
+    merge docs/training/<folder>/ under 'training/<folder>' keys so the
+    document board shows the research/curriculum/modules/… artifacts."""
     p = get_project(project_id)
     if not p:
         return {}
@@ -331,6 +335,14 @@ def index_artifacts(project_id: int) -> dict:
         files = sorted(f for f in folder.iterdir() if f.is_file() and not f.name.startswith("."))
         if files:
             out[folder.name] = [f.name for f in files]
+    if p.get("flow") == "training":
+        tdocs = docs / "training"
+        if tdocs.is_dir():
+            for folder in sorted(d for d in tdocs.iterdir() if d.is_dir()):
+                files = sorted(f for f in folder.iterdir()
+                               if f.is_file() and not f.name.startswith("."))
+                if files:
+                    out[f"training/{folder.name}"] = [f.name for f in files]
     # The prototype skill writes to prototype/ at the PROJECT ROOT (outside
     # docs/) — merge it into the board so it shows in the Documents tab.
     root_proto = docs.parent / "prototype"

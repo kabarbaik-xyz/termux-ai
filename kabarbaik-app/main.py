@@ -71,14 +71,22 @@ _seeded_skills = ai_runner.install_team_kit_skills()
 if _seeded_skills:
     print(f"[kit] skills seeded/updated: {', '.join(_seeded_skills)}")
 
-# Hard guarantee: every skill the SDLC flow invokes must resolve in the live
+# Hard guarantee: every skill both flows invoke must resolve in the live
 # dir — a missing one silently degrades stages to template copies.
 for _i, (_stage_name, _label) in enumerate(db.STAGES):
-    _r = workflow.stage_recipe(_i)
+    _r = workflow.stage_recipe(_i, "sdlc")
     if _r and _r[0]:
         _skill_file = settings.AI_SKILLS_DIR / f"{_r[0]}.md"
         if not _skill_file.is_file():
-            print(f"[kit] ✗ MISSING SKILL '{_r[0]}' (needed by stage "
+            print(f"[kit] ✗ MISSING SKILL '{_r[0]}' (needed by SDLC stage "
+                  f"'{_label}') — stages will run WITHOUT it. "
+                  f"Copy team-kit/skills/{_r[0]}.md into {settings.AI_SKILLS_DIR}/")
+for _i, (_stage_name, _label) in enumerate(db.TRAINING_STAGES):
+    _r = workflow.stage_recipe(_i, "training")
+    if _r and _r[0]:
+        _skill_file = settings.AI_SKILLS_DIR / f"{_r[0]}.md"
+        if not _skill_file.is_file():
+            print(f"[kit] ✗ MISSING SKILL '{_r[0]}' (needed by Training stage "
                   f"'{_label}') — stages will run WITHOUT it. "
                   f"Copy team-kit/skills/{_r[0]}.md into {settings.AI_SKILLS_DIR}/")
 
@@ -104,6 +112,7 @@ def _common(request: Request) -> dict:
         "request": request,
         "active": _active(),
         "stages": db.STAGES,
+        "training_stages": db.TRAINING_STAGES,
     }
 
 
@@ -165,15 +174,24 @@ async def create_project(
     cid: int,
     name: str = Form(...),
     description: str = Form(""),
+    flow: str = Form("sdlc"),
 ):
     _auth(request)
-    project = db.add_project(cid, name, description)
+    if flow not in ("sdlc", "training"):
+        raise HTTPException(400, "Invalid flow")
+    project = db.add_project(cid, name, description, flow)
     root = db.project_dir(project)
     root.mkdir(parents=True, exist_ok=True)
-    for folder in ("docs/inbox", "docs/discovery", "docs/brd", "docs/prd",
-                   "docs/prototype", "docs/proposal", "docs/tsd", "docs/sad",
-                   "docs/plan", "docs/reports"):
-        (root / folder).mkdir(parents=True, exist_ok=True)
+    if flow == "training":
+        for folder in ("docs/inbox", *("docs/training/%s" % f for f in
+                       ("discovery", "research", "curriculum", "modules",
+                        "preview", "proposal", "spec", "qa", "rollout"))):
+            (root / folder).mkdir(parents=True, exist_ok=True)
+    else:
+        for folder in ("docs/inbox", "docs/discovery", "docs/brd", "docs/prd",
+                       "docs/prototype", "docs/proposal", "docs/tsd", "docs/sad",
+                       "docs/plan", "docs/reports"):
+            (root / folder).mkdir(parents=True, exist_ok=True)
     return RedirectResponse(f"/clients/{cid}?msg=Project+created", status_code=303)
 
 
@@ -193,12 +211,15 @@ async def project_detail(request: Request, pid: int):
     _auth(request)
     project = _project_or_404(pid)
     ctx = _common(request)
+    flow = project.get("flow", "sdlc")
     ctx["project"] = project
     ctx["client"] = db.get_client(project["client_id"])
     ctx["artifacts"] = db.index_artifacts(pid)
     ctx["feedback"] = db.list_feedback(pid)
-    ctx["stage_runs"] = _stage_runs_map(pid)
-    ctx["stage_idx"] = db.STAGE_IDX
+    ctx["stage_runs"] = _stage_runs_map(project)
+    stages = db.get_stages(flow)
+    ctx["stages"] = stages
+    ctx["stage_idx"] = {name: i for i, (name, _) in enumerate(stages)}
     fresh = workflow.refresh_artifact_state(project)
     ctx["fresh_stage"] = fresh["stage"]
     ctx["tokens"] = db.project_token_usage(pid)
@@ -219,7 +240,8 @@ async def stage_stream(request: Request, pid: int, stage_index: int):
     import time as _time
     _auth(request)
     project = _project_or_404(pid)
-    stage_index = min(max(stage_index, 0), len(db.STAGES) - 1)
+    stages = db.get_stages(project.get("flow", "sdlc"))
+    stage_index = min(max(stage_index, 0), len(stages) - 1)
     # A connection carrying Last-Event-ID is a RECONNECT (stale tab,
     # refresh) — if the run already finished, replay it instead of
     # starting a duplicate. A fresh press (no header) starts a new run.
@@ -282,12 +304,16 @@ _TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.md$")
 
 
 def _template_stage_map() -> dict:
-    """{template filename: stage label} — inverse of workflow.STAGE_TEMPLATES."""
+    """{template filename: stage label} — inverse of the flow template maps."""
     m = {}
     for stage, pairs in workflow.STAGE_TEMPLATES.items():
         label = dict(db.STAGES).get(stage, stage)
         for kit_name, _dst in pairs:
             m.setdefault(kit_name, []).append(label)
+    for stage, pairs in workflow.TRAINING_STAGE_TEMPLATES.items():
+        label = dict(db.TRAINING_STAGES).get(stage, stage)
+        for kit_name, _dst in pairs:
+            m.setdefault(kit_name, []).append(f"Training · {label}")
     return m
 
 
@@ -315,13 +341,17 @@ def templates_list(request: Request):
     items = []
     for f in sorted(_template_dir().glob("*.md")):
         rel = workflow.STAGE_TEMPLATES and stage_of.get(f.name)
+        dest = next((dst for pairs in workflow.STAGE_TEMPLATES.values()
+                     for n, dst in pairs if n == f.name), "")
+        if not dest:
+            dest = next((dst for pairs in workflow.TRAINING_STAGE_TEMPLATES.values()
+                         for n, dst in pairs if n == f.name), "")
         items.append({
             "name": f.name,
             "stages": " · ".join(rel) if rel else "reference (not auto-seeded)",
             "size": f.stat().st_size,
             "mtime": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-            "dest": next((dst for pairs in workflow.STAGE_TEMPLATES.values()
-                          for n, dst in pairs if n == f.name), ""),
+            "dest": dest,
         })
     ctx = _common(request)
     ctx["templates"] = items
@@ -350,13 +380,15 @@ async def template_save(request: Request, name: str = Form(...), content: str = 
     return RedirectResponse(f"/templates/edit?name={name}&msg=Template+saved", status_code=303)
 
 
-def _stage_runs_map(pid: int) -> dict:
-    """{stage_name: {status, log, ...}} with a default entry for EVERY stage,
-    so templates never hit a missing key (Jinja raises on missing dict attrs).
-    Historical rows for removed stages (feedback/development/monthly_report)
-    are kept but simply not rendered."""
+def _stage_runs_map(project: dict) -> dict:
+    """{stage_name: {status, log, ...}} with a default entry for EVERY stage of
+    the project's flow, so templates never hit a missing key (Jinja raises on
+    missing dict attrs). Historical rows for removed stages
+    (feedback/development/monthly_report) are kept but simply not rendered."""
+    stages = db.get_stages(project.get("flow", "sdlc"))
     m = {name: {"status": "", "log": "", "started": "", "finished": "", "target": ""}
-         for name, _ in db.STAGES}
+         for name, _ in stages}
+    pid = project["id"]
     with db.get_db() as conn:
         rows = conn.execute(
             "SELECT * FROM stage_runs WHERE project_id=? ORDER BY id", (pid,)
