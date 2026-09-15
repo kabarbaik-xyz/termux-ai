@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} — KabarBaik SDLC{% endblock %}
+{% block title %}{{ project.name }} — KabarBaik {{ 'Training' if project.flow == 'training' else 'SDLC' }}{% endblock %}
 
 {% block content %}
+{% set flow_label = 'Training' if project.flow == 'training' else 'SDLC' %}
 <div class="page-head">
   <div>
-    <h1>{{ project.name }}</h1>
+    <h1>{{ project.name }} <span class="stage-pill {{ 'kind-training' if project.flow == 'training' else 'kind-sdlc' }}">{{ flow_label }}</span></h1>
     <p class="muted">Client: <a href="/clients/{{ project.client_id }}">{{ project.client_name }}</a>
        · Created {{ project.created[:10] }}{% if project.description %} · {{ project.description }}{% endif %}</p>
   </div>
@@ -71,7 +72,7 @@
 </section>
 
 <section id="flow" class="card" data-tab-section>
-  <h2>SDLC Flow</h2>
+  <h2>{{ flow_label }} Flow</h2>
   <ol class="flow">
     {% for name, label in stages %}
     {% set run_status = stage_runs[name].status %}
@@ -112,8 +113,8 @@
 
 <section id="inbox" class="card" hidden>
   <h2>Inputs</h2>
-  <p class="card-sub">Everything the AI reads during doc-ingest. Feed the inbox with files,
-    links, or notes — then (re-)run Discovery.</p>
+  <p class="card-sub">Everything the AI reads at the start of the {{ flow_label|lower }} flow. Feed the inbox with files,
+    links, or notes — then (re-)run {{ stages[0][1] }}.</p>
 
   <div class="input-grid">
     <div class="input-panel">
@@ -172,7 +173,13 @@
   <p class="card-sub">Generated artifacts, grouped by stage. Click any file to view or edit it.</p>
   {% set folders = [('discovery','Discovery'),('brd','BRD'),('prd','PRD'),('ux','UX'),
                     ('prototype','Prototype'),('proposal','Proposal'),('tsd','TSD'),
-                    ('sad','SAD'),('qa','QA'),('plan','Plan'),('reports','Reports'),('inbox','Inbox')] %}
+                    ('sad','SAD'),('qa','QA'),('plan','Plan'),('reports','Reports'),('inbox','Inbox')]
+     if project.flow != 'training' else
+     [('training/discovery','Training Discovery'),('training/research','Research'),
+      ('training/curriculum','Curriculum'),('training/modules','Modules'),
+      ('training/preview','Modules Preview'),('training/proposal','Proposal'),
+      ('training/spec','Course Spec'),('training/qa','QA'),
+      ('training/rollout','Rollout'),('inbox','Inbox')] %}
   {% set ns = namespace(any=false) %}
   <div class="folder-grid">
   {% for folder, folder_label in folders %}
@@ -195,7 +202,7 @@
   {% endfor %}
   </div>
   {% if not ns.any %}
-  <div class="empty small"><p>No documents yet — run <a href="#flow">Discovery</a> to generate the first ones.</p></div>
+  <div class="empty small"><p>No documents yet — run <a href="#flow">{{ stages[0][1] }}</a> to generate the first ones.</p></div>
   {% endif %}
 
   <div id="doc-viewer" class="doc-viewer hidden">

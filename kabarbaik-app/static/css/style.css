@@ -113,8 +113,17 @@ button[disabled] { opacity: .55; cursor: not-allowed; transform: none; }
 .badge.run { background: var(--run-soft); color: var(--run); }
 .stage-pill { background: var(--primary-soft); color: var(--primary); border: 1px solid #e5bcbc;
   padding: 6px 14px; border-radius: var(--r-pill); font-size: .84rem; white-space: nowrap; font-weight: 600; }
+.stage-pill.kind-sdlc { background: var(--info-soft, #e0f2fe); color: var(--info, #0369a1); border-color: #bae6fd; }
+.stage-pill.kind-training { background: var(--primary-soft); color: var(--primary); border-color: #e5bcbc; }
 .hint { font-size: .78rem; color: var(--muted); }
 .tok-line { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ══ Flow selector (new-project form) ══ */
+.choice-row { display: flex; flex-direction: column; gap: var(--sp-2, 8px); align-items: flex-start; }
+.choice-row > .hint { font-weight: 600; }
+.choice { display: flex; gap: 8px; align-items: baseline; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px); cursor: pointer; }
+.choice strong { min-width: 66px; }
 
 /* ══ Progress bar ══ */
 .progress { height: 6px; background: var(--border); border-radius: var(--r-pill); overflow: hidden; margin: var(--sp-2) 0 var(--sp-4); }

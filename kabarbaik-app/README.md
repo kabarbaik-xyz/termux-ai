@@ -1,13 +1,24 @@
-# KabarBaik SDLC Web App
+# KabarBaik Web App
 
-A thin orchestration layer over the **termux-ai** `ai` binary that drives the
-**KabarBaik SDLC workflow** described by the team-kit:
+A thin orchestration layer over the **termux-ai** `ai` binary that drives two
+workflows defined by the team-kit: the **SDLC workflow** (software build) and
+the **Training workflow** (courses for the hosted **kbti-elearning** platform).
 
-```
-Gather Client Requirements → Draft BRD & PRD → Design Screens & Style (UX)
-→ Build the Clickable Prototype → Write the Proposal → Finalize Docs After
-Approval → Prepare the QA Plan → Plan the Development Backlog
-```
+Each project is created with a **kind**:
+
+- **SDLC** — software delivery:
+  ```
+  Gather Client Requirements → Draft BRD & PRD → Design Screens & Style (UX)
+  → Build the Clickable Prototype → Write the Proposal → Finalize Docs After
+  Approval → Prepare the QA Plan → Plan the Development Backlog
+  ```
+- **Training** — mindset-first course production for kbti-elearning:
+  ```
+  Understand the Training Request → Research the Evidence Base
+  → Design the Curriculum → Write the Modules & Lessons → Write the Training
+  Proposal → Design the Course Experience (UX) → Author & Validate the Course
+  Package → QA the Course (Outcome Check) → Plan the Rollout
+  ```
 
 Client feedback arrives via **inbox uploads** (not a stage): upload meeting
 notes / signed proposals / change requests to `docs/inbox/` and re-run the
@@ -19,7 +30,7 @@ termux-ai (`ai --skill <name> --yes`), which reads its **own**
 active backend + model. Switch backends in termux-ai (`/backend`); this app
 follows — the dashboard shows the live backend/model.
 
-## Stages → team-kit skills
+## Stages → team-kit skills (SDLC)
 
 | # | Stage | Skill | Produces (verified) |
 |---|-------|-------|---------------------|
@@ -32,11 +43,29 @@ follows — the dashboard shows the live backend/model.
 | 7 | Prepare the QA Plan | `qa-spec` | `docs/08-test-cases.md` + `docs/09-acceptance-criteria.md` + `docs/10-corner-cases.md` |
 | 8 | Plan the Development Backlog | `epic-breakdown` | `docs/plan/backlog.md` — consumes the QA package (TC IDs, AC verbatim, P0/P1 risks in DoD) |
 
+## Stages → team-kit skills (Training)
+
+| # | Stage | Skill | Produces (verified) |
+|---|-------|-------|---------------------|
+| 1 | Understand the Training Request | `training-brief` (+ `doc-ingest` on `docs/inbox/`) | `docs/training/discovery/discovery.md` — training field, target audience, end goal |
+| 2 | Research the Evidence Base | `evidence-research` | `docs/training/research/evidence-base.md` (inline `[R-n]` citations, Direct/Adapted findings) + `references.md` |
+| 3 | Design the Curriculum | `training-design` | `docs/training/curriculum/curriculum.md` — modules → lessons, learning objectives |
+| 4 | Write the Modules & Lessons | `lesson-script` | `docs/training/modules/*.md` — lesson content following the kit's lesson structure |
+| 5 | Write the Training Proposal | `proposal` (training mode) | `docs/training/proposal/proposal-vN.md` + `docs/training/preview/modules-preview.md` — how the course changes behavior |
+| 6 | Design the Course Experience | `ux-design` (KBTI Course Experience mode) | `docs/training/spec/course-spec.md` — course metadata, audience roles, lesson outline, KBTI style (never rebranding platform chrome) |
+| 7 | Author & Validate the Course Package | `elearning` | `elearning-package/<course-id>/course.json` + lesson markdown — schema-validated, then **installed** into the kbti-elearning platform (manifest updated atomically) |
+| 8 | QA the Course (Outcome Check) | `learning-qa` | `docs/training/qa/review-checklist.md` — behavior-change alignment vs. the proposal |
+| 9 | Plan the Rollout | `rollout` | `docs/training/rollout/rollout.md` — audiences, schedule, success metrics |
+
 ### What keeps the flow honest
 
 - **Hard gates (code, not prompts)**: UX needs the PRD · Prototype needs the
-  UX spec · QA needs TSD+SAD · post-approval needs a proposal. Blocked runs
-  return instantly with instructions.
+  UX spec · QA needs TSD+SAD · post-approval needs a proposal. Training:
+  Research needs the discovery file · Curriculum needs an evidence base ·
+  Lessons need the curriculum · Proposal needs the modules preview · Course
+  UX needs an **approved** proposal · Build needs the course spec (and the
+  packaged course is schema-validated) · QA needs the package · Rollout needs
+  QA sign-off. Blocked runs return instantly with instructions.
 - **Artifact verification**: a stage is `ok` only if it produced/updated its
   expected files. Phantom runs ("said done, wrote nothing") and **unfilled
   template copies** (placeholder markers survived) fail loudly.
@@ -48,6 +77,19 @@ follows — the dashboard shows the live backend/model.
 Artifacts live on disk under `data/projects/<client>/<project>/docs/…`.
 SQLite at `data/kabarbaik.db` tracks workflow state (clients, projects,
 stage runs **incl. token usage**, feedback).
+
+### Training course installs
+
+Stage 7 (elearning_build) produces an `elearning-package/<course-id>/` inside
+the project, then runs the app-side `install_course` step: the package is
+schema-validated and copied into the kbti-elearning platform's
+`courses/<course-id>/`, and the platform's `courses/manifest.json` is merged
+atomically (a versioned manifest with a `course_ids` list; the platform only
+lists courses present in it). Installs are idempotent and never touch other
+courses. The platform location is `KABARBAIK_ELEARNING_DIR` (default
+`~/kbti-elearning`, a small FastAPI app that serves the courses on its own
+port/host — see that repo's README). An invalid package **fails** the stage
+with the validation errors.
 
 ## Setup
 
@@ -89,7 +131,8 @@ KABARBAIK_TOKEN=secret .venv/bin/python main.py
 - **Dashboard** — stats (clients · projects · stages done · tokens used),
   per-project progress bars, danger zone (typed-confirm reset).
 - **Project page (real tabs)**
-  - **Flow** — progress bar, 8 steps colored by run status:
+  - **Flow** — progress bar, steps colored by run status (8 for SDLC, 9 for
+    Training):
     **green** = ran & succeeded · **red** = failed · **blue** = never run.
     Ran stages offer `↻ Re-run`; a live run shows a spinner and disables
     every other stage button (survives refresh).
@@ -105,8 +148,10 @@ KABARBAIK_TOKEN=secret .venv/bin/python main.py
   - **Tokens** — per-stage + project token totals (read from termux-ai's
     per-request usage log).
 - **Templates** — every document stage's template (BRD, PRD, Proposal, TSD,
-  SAD, Backlog) is listed, editable in-app, and versioned in git. Edits apply
-  to new stage runs (seeding never overwrites existing project docs).
+  SAD, Backlog + the training-flow set: discovery, research, curriculum,
+  lessons, modules preview, course spec, rollout) is listed, editable in-app,
+  and versioned in git. Edits apply to new stage runs (seeding never
+  overwrites existing project docs).
 - **Theme** — KBTI brand (learned from kbti.cloud): red `#a11c1c` accents,
   navy console, the KabarBaik logo in the header + favicon.
   `design-tokens.json` is the source of truth; `docs/ux-redesign.md` is the
@@ -138,6 +183,8 @@ rm -rf data/projects                                  # artifacts
 - `KABARBAIK_TOKEN` — optional shared token gate
 - `KABARBAIK_AI_CONFIG_DIR` — termux-ai config dir (default `~/.config/termux-ai`)
 - `KABARBAIK_MAX_UPLOAD_BYTES` — upload cap (default 15 MB)
+- `KABARBAIK_ELEARNING_DIR` — kbti-elearning platform root that training
+  course packages get installed into (default `~/kbti-elearning`)
 
 ## Notes
 

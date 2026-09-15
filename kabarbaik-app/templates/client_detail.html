@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ client.name }} — KabarBaik SDLC{% endblock %}
+{% block title %}{{ client.name }} — KabarBaik{% endblock %}
 
 {% block content %}
 <h1>{{ client.name }}</h1>
@@ -9,8 +9,13 @@
 <section class="card">
   <h2>New project</h2>
   <form method="post" action="/clients/{{ client.id }}/projects" class="stacked">
-    <label>Project name <input name="name" required placeholder="e.g. Courier Tracking Portal"></label>
-    <label>Description <textarea name="description" rows="2" placeholder="One-liner about what we're building"></textarea></label>
+    <label>Project name <input name="name" required placeholder="e.g. Courier Tracking Portal / Sales Training"></label>
+    <label>Description <textarea name="description" rows="2" placeholder="One-liner about what we're building or training"></textarea></label>
+    <div class="choice-row">
+      <span class="hint">Flow:</span>
+      <label class="choice"><input type="radio" name="flow" value="sdlc" checked> <strong>SDLC</strong> <span class="hint">build a software product (discovery → plan)</span></label>
+      <label class="choice"><input type="radio" name="flow" value="training"> <strong>Training</strong> <span class="hint">produce a course for the kbti-elearning platform (brief → rollout)</span></label>
+    </div>
     <button type="submit">Create project</button>
   </form>
 </section>
@@ -19,20 +24,20 @@
   <h2>Projects for {{ client.name }}</h2>
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Project</th><th>Stage</th><th>Created</th></tr></thead>
+    <thead><tr><th>Project</th><th>Kind</th><th>Stage</th><th>Created</th></tr></thead>
     <tbody>
     {% for p in projects %}
       <tr>
         <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
         <td>
-          {% for name, label in stages %}
-            {% if loop.index0 == p.stage %}{{ label }}{% endif %}
-          {% endfor %}
+          {% if p.flow == 'training' %}<span class="stage-pill kind-training">Training</span>
+          {% else %}<span class="stage-pill kind-sdlc">SDLC</span>{% endif %}
         </td>
+        <td>{{ p.stage_name }}</td>
         <td>{{ p.created[:10] }}</td>
       </tr>
     {% else %}
-      <tr><td colspan="3" class="muted">No projects yet — create the first one above.</td></tr>
+      <tr><td colspan="4" class="muted">No projects yet — create the first one above.</td></tr>
     {% endfor %}
     </tbody>
   </table>

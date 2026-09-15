@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — KabarBaik SDLC{% endblock %}
+{% block title %}Dashboard — KabarBaik{% endblock %}
 
 {% block content %}
 <div class="page-head">
@@ -18,16 +18,21 @@
   {% if projects %}
   <div class="table-wrap">
   <table>
-    <thead><tr><th>Project</th><th>Client</th><th>Stage</th><th>Progress</th><th>Created</th></tr></thead>
+    <thead><tr><th>Project</th><th>Client</th><th>Kind</th><th>Stage</th><th>Progress</th><th>Created</th></tr></thead>
     <tbody>
     {% for p in projects %}
+      {% set total = (training_stages|length if p.flow == 'training' else stages|length) %}
       <tr>
         <td><a href="/projects/{{ p.id }}">{{ p.name }}</a></td>
         <td>{{ p.client_name }}</td>
+        <td>
+          {% if p.flow == 'training' %}<span class="stage-pill kind-training">Training</span>
+          {% else %}<span class="stage-pill kind-sdlc">SDLC</span>{% endif %}
+        </td>
         <td><span class="stage-pill" style="font-size:.75rem; padding:3px 10px;">{{ p.stage_name }}</span></td>
         <td style="min-width:120px;">
-          <div class="progress" style="margin:0;"><span style="width: {{ ((p.stage + 1) / (stages|length) * 100)|round|int }}%"></span></div>
-          <span class="hint">{{ p.stage + 1 }} / {{ stages|length }}</span>
+          <div class="progress" style="margin:0;"><span style="width: {{ ((p.stage + 1) / total * 100)|round|int }}%"></span></div>
+          <span class="hint">{{ p.stage + 1 }} / {{ total }}</span>
         </td>
         <td class="muted">{{ p.created[:10] }}</td>
       </tr>
@@ -39,8 +44,9 @@
   <div class="empty">
     <div class="big">🗂️</div>
     <p><strong>No projects yet.</strong><br>
-      Start your first delivery: <a href="/clients">add a client</a>, create a project,
-      upload the brief to its inbox, then run <em>Discovery</em>.</p>
+      Start your first delivery: <a href="/clients">add a client</a>, create a project
+      (SDLC build or Training course), upload the brief to its inbox, then run the
+      first stage of its flow.</p>
   </div>
   {% endif %}
 </section>
