@@ -186,6 +186,21 @@ rm -rf data/projects                                  # artifacts
 - `KABARBAIK_ELEARNING_DIR` — kbti-elearning platform root that training
   course packages get installed into (default `~/kbti-elearning`)
 
+## Tests
+
+Pure-logic unit tests (no AI calls):
+
+```bash
+.venv/bin/python tests/test_training_flow.py   # training flow + install_course
+```
+
+Sandboxed end-to-end smoke (probes a real backend, runs stage 0 through the
+`ai` binary, never touches the real `~/.config/termux-ai`):
+
+```bash
+KABARBAIK_AI_BIN=~/.local/bin/ai python3 tests/e2e_smoke.py
+```
+
 ## Notes
 
 - Meeting notes / requirements can be **uploaded** into the project inbox,
