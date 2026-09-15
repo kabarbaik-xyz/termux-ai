@@ -356,22 +356,23 @@ _TRAINING_RECIPES = {
         "docs/training/preview/TEMPLATE.md.",
     ),
     4: (
-        "proposal",
+        "training-proposal",
         "on",
-        "Follow the proposal skill, using the STRUCTURE of "
+        "Follow the training-proposal skill, using the STRUCTURE of "
         "docs/training/proposal/TEMPLATE.md exactly (same sections/order, "
-        "every section filled), but written for a TRAINING engagement. "
-        "Write docs/training/proposal/proposal-v1.md from "
-        "docs/training/preview/modules-preview.md (the module map learners "
-        "will take), docs/training/curriculum/curriculum.md, and "
+        "every section filled). Write docs/training/proposal/proposal-v1.md "
+        "from docs/training/preview/modules-preview.md (the module map "
+        "learners will take), docs/training/curriculum/curriculum.md, and "
         "docs/training/discovery/discovery.md (learner profile, end goal, "
-        "mindset-vs-skill ratio). Include: executive summary, the training "
-        "pillars (modules) mapped to the end goal, delivery model (self-paced "
-        "eLearning on the kbti-elearning platform + any facilitation), scope "
-        "in/out, LLM-based COURSE ENGINEERING service line and AI op-cost "
-        "tier (0 op if the client runs it without AI per module), schedule & "
-        "phases with deliverables, FULL Budget in separate components plus "
-        "Payment Terms and the *** estimate disclaimer — derive all rates per "
+        "mindset-vs-skill ratio). This is a TRAINING engagement — no "
+        "development fees, no infrastructure costs, no tech stack section. "
+        "Include: executive summary with delivery model (live sessions at "
+        "venue + self-paced homework: case study + presentation next session), "
+        "training pillars mapped to modules, scope in/out (explicit: no "
+        "software build), schedule with per-session homework, FULL Budget in "
+        "three components — Trainer (~80%, role × sessions × rate), Training "
+        "Materials (~5%), KBTI Handle Fee (~15%) — plus Payment Terms (termin "
+        "schedule) and the *** estimate disclaimer. Derive all rates per "
         "engagement, each recorded as a numbered assumption, market-consistent. "
         "Numbered Assumptions & Decisions appendix. Language of the source "
         "documents. If a proposal already exists, write proposal-vN+1 "
@@ -873,7 +874,7 @@ TRAINING_STAGE_TEMPLATES = {
     "curriculum": [("curriculum.md", "docs/training/curriculum/TEMPLATE.md")],
     "content": [("lesson-structure.md", "docs/training/modules/TEMPLATE-LESSON.md"),
                 ("modules-preview.md", "docs/training/preview/TEMPLATE.md")],
-    "training_proposal": [("proposal.md", "docs/training/proposal/TEMPLATE.md")],
+    "training_proposal": [("training-proposal.md", "docs/training/proposal/TEMPLATE.md")],
     "elearning_design": [("course-spec.md", "docs/training/spec/TEMPLATE.md"),
                          ("course-package.schema.json",
                           "docs/training/spec/COURSE-PACKAGE-SCHEMA.md")],
