@@ -92,7 +92,7 @@ def _refresh_training(project: dict) -> dict:
         stage = 4
     if has["spec"]:
         stage = 5
-    if _folder_has_files(root / "elearning-package"):
+    if any((root / "elearning-package").rglob("course.json")):
         stage = 6
     if has["qa"]:
         stage = 7
@@ -583,7 +583,11 @@ def _training_gate(stage_name: str, root: Path) -> str | None:
                     "straight from it.")
         return None
     if stage_name == "training_qa":
-        if not has(root / "elearning-package"):
+        # The package layout is elearning-package/<course-id>/course.json —
+        # one level deeper than _folder_has_files looks (non-recursive), so a
+        # COMPLETE package used to read as "no package". Detect course.json
+        # anywhere under elearning-package/ (same contract as install_course).
+        if not any((root / "elearning-package").rglob("course.json")):
             return ("Blocked: no packaged course — run 'Author & Validate the "
                     "Course Package' first. QA checks the packaged lessons "
                     "and quizzes, not just the design docs.")
