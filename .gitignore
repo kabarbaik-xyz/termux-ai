@@ -14,10 +14,6 @@ build/
 # Termux AI runtime config
 .config/termux-ai/
 
-# KabarBaik web app
-kabarbaik-app/.venv/
-kabarbaik-app/data/
-
 # Editor / OS
 .DS_Store
 *.swp
@@ -26,6 +22,3 @@ kabarbaik-app/data/
 .idea/
 .vscode/
 gh_ai_probe
-# KabarBaik runtime logs (never commit client data / logs)
-kabarbaik-app/*.log
-kabarbaik-app/kb.log

@@ -7,6 +7,11 @@ A zero-dependency AI chat CLI for [Termux](https://termux.dev) on Android — an
 ![dependencies](https://img.shields.io/badge/deps-zero-brightgreen)
 ![platform](https://img.shields.io/badge/platform-Android%20%7C%20Termux-orange)
 
+> **KabarBaik** — the SDLC/Training web app that shells out to `ai` now lives
+> in its own repo (`~/kabarbaik-app`). This repo keeps the `ai` binary, its
+> bundled `skills/`, and the authoritative `team-kit/` that the app consumes
+> via `KABARBAIK_TEAM_KIT_DIR` (default `~/termux-ai/team-kit`).
+
 ---
 
 ## Features
