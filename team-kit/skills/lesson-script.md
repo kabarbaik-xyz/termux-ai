@@ -57,9 +57,21 @@ Every lesson file follows this skeleton (in order):
    the correct-answer key HERE for facilitators, but the packaged lesson body
    must stay spoiler-free — do not duplicate the answers inline.
 
-Lesson metadata to keep at the top of the file as a small table: lesson id,
-type (`reading | story | drill | roleplay | reflection | case | assessment`),
-duration_min, module.
+Cover metadata — a small **human-readable** table at the very top of the file
+(this is the learner's cover page, so no technical slugs):
+
+| Type | Duration | Module | Outcome |
+| :--- | :------- | :------ | :------ |
+| Reading | 45 min | <human module title from the curriculum Module Map — no slug> | OU-<n> |
+
+- `Type` in Title Case English (`Reading / Story / Drill / Role-play /
+  Reflection / Case / Assessment`), `Duration` as "`<mins>` min".
+- `Module` is the module's title from the curriculum Module Map (e.g. *Tanggung
+  Jawab Digital Marketer*), never `module-<NN>-<slug>`.
+- `Outcome` lists the OU labels this lesson serves.
+- Do NOT include a `Lesson id` column or any underscore/dash-slug values — the
+  platform numbers lessons from its own order. The lesson file heading is the
+  plain title: `# <Title>`.
 
 ### Per-page deck layout (the platform shows one section per screen)
 

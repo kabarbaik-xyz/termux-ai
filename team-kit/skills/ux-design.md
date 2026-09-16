@@ -102,7 +102,8 @@ the client's character:
   TOC with type/duration/quiz tags), and the lesson **app-shell** (sidebar
   index holding the course title + tagged lesson list, header pill + progress
   bar + "Mark complete", and a framed **page deck**: one full-screen page per
-  `##` section — cover page (title + metadata table), then one page per
+  `##` section — cover page (plain lesson title + the human-readable cover
+  table `Type | Duration | Module | Outcome`, no slugs), then one page per
   section flipped by dots/arrows/counter (no vertical scrolling between pages);
   the quiz renders as the final page — while the sidebar switches lessons.
 - **Neumorphism is OUT** (poor accessibility, easy to render amateur).

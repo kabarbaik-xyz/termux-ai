@@ -21,7 +21,8 @@ bodies. **KBTI style comes from the platform chrome** (navy
 cards radius 14px) — course content is style-neutral: no brand colors, no CSS,
 no layout. You write content, not presentation. The chrome renders the package automatically (course cards, cover panel,
 sidebar index, quiz panel). Lessons play as a **full-screen deck: one page per
-`##` section** — cover page (title + the top-of-file metadata table), then one
+`##` section** — cover page (plain title + the human-readable cover table with
+`Type | Duration | Module | Outcome` — no lesson-id/module slugs), then one
 page per section, quiz as the last page; dots/arrows flip pages, the sidebar
 switches lessons. Keep every `##` section compact enough to fit a landscape
 screen (~≤20 rendered lines) — split long content into more sections.
@@ -47,8 +48,9 @@ elearning-package/<course-id>/
   cover.md         ← 2–5 line pitch shown on the course card + the course
                      page's Cover panel (title + standalone pitch, no HTML)
   lessons/lesson-01-<slug>.md …   ← one file per lesson; the body plays as a
-                     per-`##`-page deck (cover = title + metadata table,
-                     quiz lives only in `course.json`)
+                     per-`##`-page deck (cover = plain title + the
+                     human-readable cover table `Type | Duration | Module |
+                     Outcome`, quiz lives only in `course.json`)
 ```
 
 `course-id` derives from the project (slug: lower-case, numbers, hyphens,
@@ -82,7 +84,9 @@ summary, follow the schema file.
 
 1. Map `curriculum` outcomes + `course-spec.md` order → an ordered lesson list;
    use each module/lesson script for the body. Keep lesson ids stable across a
-   re-run (upserts, not duplicates).
+   re-run (upserts, not duplicates). Lesson body headings stay the plain title
+   with the human-readable cover table — the platform numbers lessons, so don't
+   stamp `Lesson N:` prefixes into bodies.
 2. Keep quiz questions from the lesson scripts / assessments, grading hidden
    server-side (the platform's job). Never invent quizzes the content doesn't
    support. Quizzes ship ONLY in `course.json` — the platform renders them in
