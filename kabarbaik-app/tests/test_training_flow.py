@@ -23,6 +23,19 @@ os.environ["HOME"] = str(SANDBOX / "home")
 os.environ["KABARBAIK_DATA_DIR"] = str(SANDBOX / "data")
 os.environ["KABARBAIK_ELEARNING_DIR"] = str(SANDBOX / "elearning")
 
+# Hermetic team-kit fixture: the app reads stage templates/schemas from
+# KABARBAIK_TEAM_KIT_DIR (default ~/termux-ai/team-kit). Tests must not depend
+# on the real checkout existing, so seed a sandbox copy.
+_KIT_FIXTURE = SANDBOX / "kit"
+(_KIT_FIXTURE / "templates").mkdir(parents=True, exist_ok=True)
+(_KIT_FIXTURE / "elearning").mkdir(parents=True, exist_ok=True)
+for _kit_name in ("evidence-base.md", "references.md", "course-spec.md"):
+    (_KIT_FIXTURE / "templates" / _kit_name).write_text(
+        f"kit-template:{_kit_name}\n", encoding="utf-8")
+(_KIT_FIXTURE / "elearning" / "course-package.schema.json").write_text(
+    '{"$schema": "kit-fixture"}\n', encoding="utf-8")
+os.environ["KABARBAIK_TEAM_KIT_DIR"] = str(_KIT_FIXTURE)
+
 import db  # noqa: E402
 import settings  # noqa: E402
 import workflow  # noqa: E402

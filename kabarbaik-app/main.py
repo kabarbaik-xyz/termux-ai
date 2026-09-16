@@ -71,6 +71,14 @@ _seeded_skills = ai_runner.install_team_kit_skills()
 if _seeded_skills:
     print(f"[kit] skills seeded/updated: {', '.join(_seeded_skills)}")
 
+# The team-kit repo holds stage templates + schemas. It is external (env
+# KABARBAIK_TEAM_KIT_DIR, default ~/termux-ai/team-kit) — fail loudly when
+# missing so seeding doesn't silently skip.
+if not (settings.TEAM_KIT_DIR / "templates").is_dir():
+    print(f"[kit] ✗ TEAM-KIT NOT FOUND at {settings.TEAM_KIT_DIR} — stage "
+          "templates/schemas will NOT be seeded. Point KABARBAIK_TEAM_KIT_DIR "
+          "at a termux-ai checkout (default ~/termux-ai/team-kit).")
+
 # Hard guarantee: every skill both flows invoke must resolve in the live
 # dir — a missing one silently degrades stages to template copies.
 for _i, (_stage_name, _label) in enumerate(db.STAGES):

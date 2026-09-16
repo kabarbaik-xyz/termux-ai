@@ -42,8 +42,14 @@ HOST = os.environ.get("KABARBAIK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("KABARBAIK_PORT", "8021"))
 TOKEN = os.environ.get("KABARBAIK_TOKEN", "").strip()  # empty = local only
 
-# Where the team-kit lives (for installing skills/templates into the live skill dir).
-TEAM_KIT_DIR = PROJECT_DIR.parent / "team-kit"
+# Where the team-kit lives (for installing skills/templates into the live
+# skill dir). Resolved via env with an absolute default — the app no longer
+# assumes it sits inside the termux-ai repo.
+TEAM_KIT_DIR = Path(
+    os.environ.get(
+        "KABARBAIK_TEAM_KIT_DIR", os.path.expanduser("~/termux-ai/team-kit")
+    )
+)
 
 # kbti-elearning platform repo — the Training flow's `install_course` copies a
 # validated course package in here and appends it to courses/manifest.json.

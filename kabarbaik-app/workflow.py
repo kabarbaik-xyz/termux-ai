@@ -840,7 +840,7 @@ async def run_stage(project: dict, stage_index: int, timeout: float = 900.0) -> 
     return "\n".join(output)
 
 
-_KIT = Path(__file__).resolve().parent.parent / "team-kit"
+_KIT = settings.TEAM_KIT_DIR
 
 def _scaffold_docs(root: Path) -> None:
     """Create the team-kit docs/ folder tree if missing (both flows). ONLY

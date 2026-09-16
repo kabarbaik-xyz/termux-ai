@@ -182,6 +182,8 @@ rm -rf data/projects                                  # artifacts
 - `KABARBAIK_HOST` / `KABARBAIK_PORT` — bind address (default `127.0.0.1:8021`)
 - `KABARBAIK_TOKEN` — optional shared token gate
 - `KABARBAIK_AI_CONFIG_DIR` — termux-ai config dir (default `~/.config/termux-ai`)
+- `KABARBAIK_TEAM_KIT_DIR` — team-kit root with stage templates/schemas/skills
+  (default `~/termux-ai/team-kit`)
 - `KABARBAIK_MAX_UPLOAD_BYTES` — upload cap (default 15 MB)
 - `KABARBAIK_ELEARNING_DIR` — kbti-elearning platform root that training
   course packages get installed into (default `~/kbti-elearning`)
