@@ -21,13 +21,22 @@ practice → assessment → completion).
 
 ## 4. Quiz & Feedback Strategy
 - Note | correct | options | explanation message, mapped to lessons.
+  Quizzes ship ONLY in `course.json`; the platform renders them in the
+  lesson's server-graded quiz panel (answers never reach the client) and
+  gates completion via the "Mark complete" button — lesson bodies carry NO
+  inline answer keys.
 
 ## 5. Visual System
-Course-level tokens follow the **KBTI preset** (`design-tokens.json` · red
-`#a11c1c` emphasis, navy `#0e2233` chrome). Content itself is style-neutral.
+Course-level tokens follow the **KBTI preset** (`design-tokens.json`: red
+`#a11c1c` family, navy `#1a1a2e`, `bg #f7f6f5`, ok `#15803d`, warn
+`#b45309`, cards radius 14px). The design targets the kbti-elearning lesson
+app-shell: sidebar lesson index (type/duration tags), header pill + progress
+bar + "Mark complete", framed reading surface, prev/next cards, dedicated
+quiz panel, and the course cover panel. Content itself is style-neutral.
 
 ## 6. Design Tokens
-Reference `design-tokens.json` (KBTI preset) — no restatement.
+Reference `design-tokens.json` (KBTI preset, colors + radius + shadow) — no
+restatement.
 
 ## 7. Assumptions & Decisions
 1. **Assumed:** <…> **Decision:** <…> **Rationale:** <…>

@@ -52,7 +52,10 @@ Every lesson file follows this skeleton (in order):
    "share/self-check" completion line.
 5. **Summary + self-check** — 3-line recap and 1–3 quiz questions (question,
    options, correct answer index, one-line explanation), for lessons the
-   curriculum flagged for assessment.
+   curriculum flagged for assessment. This Q+A bank ships into `course.json`;
+   the platform renders it in a dedicated quiz panel. Author the options and
+   the correct-answer key HERE for facilitators, but the packaged lesson body
+   must stay spoiler-free — do not duplicate the answers inline.
 
 Lesson metadata to keep at the top of the file as a small table: lesson id,
 type (`reading | story | drill | roleplay | reflection | case | assessment`),

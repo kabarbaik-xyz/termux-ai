@@ -55,6 +55,9 @@ A pass/fail checklist (with the failing evidence quoted), covering:
 7. **Accessibility & rendering** — no raw HTML in lesson files, balanced code
    fences, GitHub tables well-formed, no `{{ }}`/`{% %}` remnants, no exploded
    token placeholders.
+8. **No spoilers in lesson bodies** — quiz options and answer indices live
+   only in `course.json`; any inline answer key (e.g. "Jawaban benar …") in a
+   lesson body is a FAIL (the platform grades the quiz in a separate panel).
 
 Severity policy: **Blockers** fail the course (wrong facts, invalid package,
 broken quiz, uncovered outcomes). **Warnings** don't fail but must be listed

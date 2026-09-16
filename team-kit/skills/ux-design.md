@@ -94,8 +94,15 @@ the client's character:
   contract below.
 - **KBTI Course Experience (Training flow)** — when the deliverable is a
   Course Experience for the kbti-elearning platform, pick the **KBTI preset**
-  in "Design tokens" below instead of Enterprise Light (red `#a11c1c` +
-  navy chrome; platform palette is fixed, never rebranded).
+  in "Design tokens" below instead of Enterprise Light (KBTI red `#a11c1c`
+  family + navy `#1a1a2e` chrome; the platform chrome is FIXED — design
+  course-level tokens against it, never rebrand). Design the spec for the
+  platform's real UI: course **cards** (accent band, summary, field/language
+  pills, lesson count), the course page (**cover panel**, stat row, lesson
+  TOC with type/duration/quiz tags), and the lesson **app-shell** (sidebar
+  index holding the course title + tagged lesson list, header pill + progress
+  bar + "Mark complete", framed centered reading surface, prev/next cards,
+  and a separate server-graded **quiz panel** fed from `course.json`).
 - **Neumorphism is OUT** (poor accessibility, easy to render amateur).
   Do not choose it; if forced by the client profile, add a loud accessibility
   caveat in §6.
@@ -259,32 +266,38 @@ keys are backfilled from the recipe below — say so in §7):
 When the deliverable is a **Course Experience** for the kbti-elearning
 platform (the Training flow's `elearning_design` stage), use this preset as
 the base instead of the Enterprise-Light recipe. The platform chrome (navy
-surfaces, red `#a11c1c` accents) is FIXED — design course-level tokens against
-it, never a rebrand:
+`#1a1a2e`/`#16213e` surfaces, red `#a11c1c` family accents) is FIXED — design
+course-level tokens against it, never a rebrand:
 
 ```json
 {
   "schema": "design-tokens-v2",
   "brand": "kbti-v1",
   "colors": {
-    "primary": "#a11c1c", "primaryHover": "#8c1818", "primarySoft": "#f7ecec", "primaryDeep": "#7d1212",
-    "navy": "#0e2233", "navy-2": "#16324a",
-    "bg": "#f4f5f7", "surface": "#ffffff", "surfaceAlt": "#f1f5f9",
-    "border": "#e2e6ea", "borderStrong": "#cbd5e1",
-    "text": "#1c2733", "textMuted": "#5b6b7a",
-    "ok": "#1c7c3c", "okSoft": "#e5f3ea", "fail": "#a11c1c", "failSoft": "#f7ecec",
-    "warn": "#b9770a", "info": "#0ea5e9",
-    "run": "#b9770a", "runSoft": "#fbf3e4",
-    "chart": ["#a11c1c", "#0e2233", "#b9770a", "#0ea5e9", "#1c7c3c", "#8b5cf6", "#f97316", "#64748b"]
+    "primary": "#a11c1c", "primaryHover": "#c42222", "primarySoft": "#faeded", "primaryDeep": "#8b1616",
+    "navy": "#1a1a2e", "navy-2": "#16213e",
+    "bg": "#f7f6f5", "surface": "#ffffff", "surfaceAlt": "#f7f6f5",
+    "border": "#e7e2e2", "borderStrong": "#d3cccc",
+    "text": "#1a1a2e", "textMuted": "#6b6b7b",
+    "ok": "#15803d", "okSoft": "#dcfce7", "fail": "#a11c1c", "failSoft": "#faeded",
+    "warn": "#b45309", "warnSoft": "#fef3c7", "info": "#0ea5e9",
+    "run": "#b45309", "runSoft": "#fef3c7",
+    "chart": ["#a11c1c", "#1a1a2e", "#b45309", "#0ea5e9", "#15803d", "#8b5cf6", "#f97316", "#64748b"]
   },
-  "source": "kbti-v1 preset (course experience — kbti-elearning platform chrome is fixed; never rebrand)"
+  "radius": { "sm": "10px", "md": "14px", "lg": "18px", "pill": "999px" },
+  "shadow": {
+    "sm": "0 1px 2px rgba(26,26,46,.05)", "md": "0 4px 14px rgba(26,26,46,.09)",
+    "lg": "0 12px 32px rgba(26,26,46,.14)"
+  },
+  "source": "kbti-v1 preset (course experience — kbti-elearning platform chrome; matches the redesign; never rebrand)"
 }
 ```
 
-Preset summary: primary **red `#a11c1c`** for CTAs/emphasis, **navy `#0e2233`,
-`#16324a`** for headers/chrome/section tinting, neutral system surface palette,
-success green **`#1c7c3c`**, warning amber **`#b9770a`**. Typography, spacing,
-radius, motion, and grid come from the Enterprise-Light recipe unchanged
+Preset summary: primary **red `#a11c1c`** (hover `#c42222`, deep `#8b1616`,
+soft `#faeded`) for CTAs/emphasis, **navy `#1a1a2e`/`#16213e`** for
+headers/chrome/section tinting, neutral system surface palette (`bg #f7f6f5`),
+success green **`#15803d`**, warning amber **`#b45309`**; cards radius 14px.
+Typography, spacing, and motion come from the Enterprise-Light recipe unchanged
 (restyle `primary`/background to KBTI values only). Feedback, progress and quiz
 states use `ok`/`fail`/`warn` as set above — `write_code` uses these exact
 values.

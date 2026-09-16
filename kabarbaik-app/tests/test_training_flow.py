@@ -116,7 +116,8 @@ class WorkflowFlow(TrainingFlowTest):
         pairs = [workflow.stage_recipe(i, "training") for i in range(9)]
         skills = [r[0] for r in pairs]
         self.assertEqual(skills, ["training-brief", "evidence-research",
-                                  "training-design", "lesson-script", "proposal",
+                                  "training-design", "lesson-script",
+                                  "training-proposal",
                                   "ux-design", "elearning", "learning-qa",
                                   "rollout"])
         # SDLC stays on the SDLC map even for training-adjacent indices.
@@ -157,7 +158,10 @@ class WorkflowFlow(TrainingFlowTest):
         (d / "training" / "spec" / "course-spec.md").write_text("s")
         self.assertIsNone(workflow._training_gate("elearning_build", self.root))
         (self.root / "elearning-package").mkdir(parents=True, exist_ok=True)
-        (self.root / "elearning-package" / "preview.txt").write_text("p")
+        (self.root / "elearning-package" / "demo-course").mkdir(parents=True,
+                                                                exist_ok=True)
+        (self.root / "elearning-package" / "demo-course" /
+         "course.json").write_text("{}")
         self.assertIsNone(workflow._training_gate("training_qa", self.root))
         (d / "training" / "qa" / "review-checklist.md").write_text("q")
         self.assertIsNone(workflow._training_gate("rollout", self.root))
@@ -180,8 +184,8 @@ class WorkflowFlow(TrainingFlowTest):
                          "docs/training/research/TEMPLATE.md")
         self.assertEqual(merged["modules-preview.md"],
                          "docs/training/preview/TEMPLATE.md")
-        # proposal.md / review-checklist.md reused from the SDLC kit set.
-        self.assertIn("proposal.md", merged)
+        # training-proposal.md / review-checklist.md from the kit template set.
+        self.assertIn("training-proposal.md", merged)
         self.assertIn("review-checklist.md", merged)
 
     def test_seed_templates_writes_training_dest(self):

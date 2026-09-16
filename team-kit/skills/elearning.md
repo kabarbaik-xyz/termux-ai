@@ -16,9 +16,12 @@ layout deterministically after this stage succeeds — so you must produce a
 package that is valid on its own.
 
 Match the source documents' language for `course.json` fields and lesson
-bodies. **KBTI style comes from the platform chrome** (navy surfaces, red
-`#a11c1c` accents) — course content is style-neutral: no brand colors, no CSS,
-no layout. You write content, not presentation.
+bodies. **KBTI style comes from the platform chrome** (navy
+`#1a1a2e`/`#16213e` surfaces, red `#a11c1c` family accents, `bg #f7f6f5`,
+cards radius 14px) — course content is style-neutral: no brand colors, no CSS,
+no layout. You write content, not presentation. The chrome renders the package
+automatically (course cards, cover panel, sidebar index, quiz panel), so your
+job is a valid, complete, well-written package.
 
 ## Inputs (read first)
 
@@ -38,7 +41,8 @@ no layout. You write content, not presentation.
 ```
 elearning-package/<course-id>/
   course.json      ← the manifest (see schema below)
-  cover.md         ← optional 2–5 line pitch shown on the course card
+  cover.md         ← 2–5 line pitch shown on the course card + the course
+                     page's Cover panel (title + standalone pitch, no HTML)
   lessons/lesson-01-<slug>.md …   ← one file per lesson
 ```
 
@@ -52,6 +56,10 @@ disambiguating suffix.
 - `id` — the course slug (≥ 2 chars, `[a-z0-9][a-z0-9-]*`).
 - `title`, `field` (the discipline), `language` (source language, e.g. `en`,
   `id`), `summary` (1–2 sentences), `source_brief` (the project name).
+- `cover` — an object with `file` (the `cover.md` filename, e.g. `cover.md`)
+  and `accent` (a hex color for the course card band + course page; omit it
+  and the platform uses the KBTI red `#a11c1c` default, or pick a tasteful
+  course-level accent when the discipline warrants one).
 - `audience` — `{ roles: [..], routine: "...", background: "..." }` (roles is
   required, non-empty).
 - `lessons` — non-empty array; each lesson: `id` (unique, `[a-z0-9-]`),
@@ -72,7 +80,10 @@ summary, follow the schema file.
    re-run (upserts, not duplicates).
 2. Keep quiz questions from the lesson scripts / assessments, grading hidden
    server-side (the platform's job). Never invent quizzes the content doesn't
-   support.
+   support. Quizzes ship ONLY in `course.json` — the platform renders them in
+   the lesson's dedicated quiz panel. Never echo options or the answer key
+   into lesson bodies: a quiz-backed drill stays a `Do this now` task with a
+   self-check completion line, no answer list inline.
 3. Write the package. Then **re-read your own `course.json` and validate it**
    against the schema — fix and re-write anything that fails (a package that
    doesn't validate will not install).
