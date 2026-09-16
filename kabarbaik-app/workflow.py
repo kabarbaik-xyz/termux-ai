@@ -1040,6 +1040,44 @@ def _find_package(root: Path):
     return None
 
 
+def _validate_lesson_body(fname: Path, pkg_dir: Path, title: str) -> str:
+    """Check the packaged lesson body plays as a kbti deck cover: plain-title
+    h1 matching the course.json title + the human cover table
+    (Type | Duration | Module | Outcome, no slugs). Returns '' when valid."""
+    path = pkg_dir / fname
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return f"unreadable lesson file: {fname}"
+    top = []
+    for ln in lines[:12]:
+        s = ln.strip()
+        if not s or s.startswith("<!--"):
+            continue
+        top.append(s)
+        if len(top) >= 4:
+            break
+    if not top:
+        return "lesson body is empty"
+    if not top[0].startswith("# "):
+        return "lesson body must open with an h1 heading"
+    h1 = top[0][2:].strip()
+    if h1 != title:
+        return f"lesson h1 {h1!r} does not match course.json title {title!r}"
+    table = [s for s in top if s.startswith("|")]
+    if not table or len(table) < 3:
+        return "lesson body must carry the cover table (Type | Duration | Module | Outcome)"
+    header = table[0]
+    if not all(f"| {h} |" in header for h in
+               ("Type", "Duration", "Module", "Outcome")):
+        return "cover table must use the human headers: Type | Duration | Module | Outcome"
+    for row in table[2:]:
+        if "lesson-" in row or "module-" in row or "_" in row:
+            return ("cover table must not contain lesson-/module- slugs or "
+                    "underscore field names")
+    return ""
+
+
 def _validate_course(course: dict, pkg_dir: Path) -> str:
     """Lightweight dependency-free course.json validation mirroring
     team-kit/elearning/course-package.schema.json. Returns '' when valid."""
@@ -1081,6 +1119,9 @@ def _validate_course(course: dict, pkg_dir: Path) -> str:
             return f"lessons[{i}].file must be a relative path inside the course: {fname!r}"
         if not (pkg_dir / rel).is_file():
             return f"lessons[{i}].file not found inside package: {fname}"
+        body_err = _validate_lesson_body(rel, pkg_dir, lesson.get("title") or "")
+        if body_err:
+            return f"lessons[{i}].body ({fname}): {body_err}"
         if lesson.get("type") is not None and lesson["type"] not in lesson_types:
             return f"lessons[{i}].type unknown: {lesson['type']!r}"
         if lesson.get("duration_min") is not None:

@@ -232,7 +232,10 @@ class InstallCourse(TrainingFlowTest):
     def _write_package(self, course_id="demo-course", corrupt=False):
         pkg = self.root / "elearning-package" / course_id
         (pkg / "lessons").mkdir(parents=True, exist_ok=True)
-        (pkg / "lessons" / "l1.md").write_text("# Intro\n", encoding="utf-8")
+        (pkg / "lessons" / "l1.md").write_text(
+            "# Intro\n\n| Type | Duration | Module | Outcome |\n"
+            "| :--- | :------- | :------ | :------ |\n"
+            "| Reading | 10 min | Demo Module | OU-1 |\n", encoding="utf-8")
         course = _sample_course(course_id)
         if corrupt:
             course["lessons"] = []
@@ -274,6 +277,37 @@ class InstallCourse(TrainingFlowTest):
         self.assertEqual(existing.read_text(), "untouched")
         # no temp files left behind
         self.assertFalse((courses / "manifest.json.tmp").exists())
+
+    def test_install_rejects_non_plain_h1(self):
+        self._platform()
+        pkg = self._write_package("bad-h1")
+        (pkg / "lessons" / "l1.md").write_text(
+            "# Lesson 01: Intro\n\n| Type | Duration | Module | Outcome |\n"
+            "| :--- | :------- | :------ | :------ |\n"
+            "| Reading | 10 min | Demo Module | OU-1 |\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as cm:
+            workflow.install_course(self.root)
+        self.assertIn("does not match course.json title", str(cm.exception))
+
+    def test_install_rejects_slug_cover_table(self):
+        self._platform()
+        pkg = self._write_package("bad-table")
+        (pkg / "lessons" / "l1.md").write_text(
+            "# Intro\n\n| Lesson id | type | duration_min | module | outcome |\n"
+            "| :-------- | :--- | :----------- | :----- | :------ |\n"
+            "| l1 | reading | 10 | module-demo | OU-1 |\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as cm:
+            workflow.install_course(self.root)
+        self.assertIn("cover table must use the human headers", str(cm.exception))
+
+    def test_install_rejects_missing_cover_table(self):
+        self._platform()
+        self._write_package("no-table")
+        (self.root / "elearning-package" / "no-table" / "lessons" / "l1.md")\
+            .write_text("# Intro\n\nSome body only.\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as cm:
+            workflow.install_course(self.root)
+        self.assertIn("must carry the cover table", str(cm.exception))
 
     def test_install_rejects_invalid_course(self):
         self._platform()

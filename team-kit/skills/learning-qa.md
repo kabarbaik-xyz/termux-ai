@@ -61,7 +61,8 @@ A pass/fail checklist (with the failing evidence quoted), covering:
 9. **Deck-ready pages** — the lesson body opens with the human-readable cover
    table (`Type | Duration | Module | Outcome` with human values — no
    `lesson-…` ids, `module-…` slugs, or `duration_min` field headers) and a
-   plain-title heading (no `Lesson N:` prefix), and each `##` section reads as
+   plain-title heading (no `Lesson N:` prefix). The builder gating install
+   already hard-fails those; QA checks the rest — each `##` section reads as
    one screen (warning, not blocker: sections over ~20 lines, huge tables, or
    bullet walls that overflow a landscape page must be listed as a warning).
 

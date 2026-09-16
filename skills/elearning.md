@@ -95,9 +95,15 @@ summary, follow the schema file.
    self-check completion line, no answer list inline.
 3. Write the package. Then **re-read your own `course.json` and validate it**
    against the schema — fix and re-write anything that fails (a package that
-   doesn't validate will not install).
+   doesn't validate will not install). The builder ALSO enforces the lesson
+   body shape before install: every lesson file must open with the plain-title
+   h1 exactly equal to its `course.json` `title`, followed by the human cover
+   table `Type | Duration | Module | Outcome` (no `Lesson id` column, no
+   `lesson-…`/`module-…` slugs, no `duration_min`-style field names). Check
+   your bodies against this — a failing cover is a hard install error.
 4. Self-check: every lesson `file` exists under the course folder; lesson ids
-   unique; no leftover placeholder markers (`<FIELD>`, `R-00`, `<TOPIC>`).
+   unique; h1 equals its `course.json` `title`; each body carries the cover
+   table; no leftover placeholder markers (`<FIELD>`, `R-00`, `<TOPIC>`).
 
 ## Rules
 
