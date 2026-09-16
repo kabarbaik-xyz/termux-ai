@@ -61,6 +61,22 @@ Lesson metadata to keep at the top of the file as a small table: lesson id,
 type (`reading | story | drill | roleplay | reflection | case | assessment`),
 duration_min, module.
 
+### Per-page deck layout (the platform shows one section per screen)
+
+kbti-elearning plays each lesson as a **full-screen deck: one page per `##`
+section** (cover page = title + the metadata table, then Hook → The shift →
+How to BE it → Do this now → Summary, with the quiz as the last page — see the
+`elearning` skill). Author every `##` section so it fits a landscape screen
+without scrolling:
+
+- Keep sections compact (≈ ≤20 rendered lines / ≈ ≤380 words). Over-long
+  sections read badly as a "page" — split them into extra `##` sections or
+  move detail into the drill.
+- Tables ≤ ~8 rows with narrow columns; diagrams small/compact; avoid bullet
+  walls longer than ~8 items.
+- Sections are self-contained — the learner flips page-by-page, so no
+  "as discussed earlier" dependencies between sections.
+
 ## Output — modules preview
 
 Write **`docs/training/preview/modules-preview.md`** — what a stakeholder sees

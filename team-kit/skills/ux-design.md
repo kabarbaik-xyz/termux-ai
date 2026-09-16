@@ -101,8 +101,10 @@ the client's character:
   pills, lesson count), the course page (**cover panel**, stat row, lesson
   TOC with type/duration/quiz tags), and the lesson **app-shell** (sidebar
   index holding the course title + tagged lesson list, header pill + progress
-  bar + "Mark complete", framed centered reading surface, prev/next cards,
-  and a separate server-graded **quiz panel** fed from `course.json`).
+  bar + "Mark complete", and a framed **page deck**: one full-screen page per
+  `##` section — cover page (title + metadata table), then one page per
+  section flipped by dots/arrows/counter (no vertical scrolling between pages);
+  the quiz renders as the final page — while the sidebar switches lessons.
 - **Neumorphism is OUT** (poor accessibility, easy to render amateur).
   Do not choose it; if forced by the client profile, add a loud accessibility
   caveat in §6.

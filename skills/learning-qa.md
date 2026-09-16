@@ -58,6 +58,10 @@ A pass/fail checklist (with the failing evidence quoted), covering:
 8. **No spoilers in lesson bodies** — quiz options and answer indices live
    only in `course.json`; any inline answer key (e.g. "Jawaban benar …") in a
    lesson body is a FAIL (the platform grades the quiz in a separate panel).
+9. **Deck-ready pages** — the lesson body opens with the metadata cover table
+   and each `##` section reads as one screen (warning, not blocker: sections
+   over ~20 lines, huge tables, or bullet walls that overflow a landscape
+   page must be listed as a warning).
 
 Severity policy: **Blockers** fail the course (wrong facts, invalid package,
 broken quiz, uncovered outcomes). **Warnings** don't fail but must be listed

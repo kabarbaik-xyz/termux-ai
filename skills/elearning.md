@@ -19,9 +19,12 @@ Match the source documents' language for `course.json` fields and lesson
 bodies. **KBTI style comes from the platform chrome** (navy
 `#1a1a2e`/`#16213e` surfaces, red `#a11c1c` family accents, `bg #f7f6f5`,
 cards radius 14px) — course content is style-neutral: no brand colors, no CSS,
-no layout. You write content, not presentation. The chrome renders the package
-automatically (course cards, cover panel, sidebar index, quiz panel), so your
-job is a valid, complete, well-written package.
+no layout. You write content, not presentation. The chrome renders the package automatically (course cards, cover panel,
+sidebar index, quiz panel). Lessons play as a **full-screen deck: one page per
+`##` section** — cover page (title + the top-of-file metadata table), then one
+page per section, quiz as the last page; dots/arrows flip pages, the sidebar
+switches lessons. Keep every `##` section compact enough to fit a landscape
+screen (~≤20 rendered lines) — split long content into more sections.
 
 ## Inputs (read first)
 
@@ -43,7 +46,9 @@ elearning-package/<course-id>/
   course.json      ← the manifest (see schema below)
   cover.md         ← 2–5 line pitch shown on the course card + the course
                      page's Cover panel (title + standalone pitch, no HTML)
-  lessons/lesson-01-<slug>.md …   ← one file per lesson
+  lessons/lesson-01-<slug>.md …   ← one file per lesson; the body plays as a
+                     per-`##`-page deck (cover = title + metadata table,
+                     quiz lives only in `course.json`)
 ```
 
 `course-id` derives from the project (slug: lower-case, numbers, hyphens,
